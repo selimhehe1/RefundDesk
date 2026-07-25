@@ -1,0 +1,25 @@
+{
+  "name": "@refunddesk/stripe-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "stripe apps start --manifest stripe-app.dev.json",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@stripe/ui-extension-sdk": "9.1.0",
+    "react": "18.3.1",
+    "stripe": "22.3.2",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "18.3.31",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

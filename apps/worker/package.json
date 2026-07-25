@@ -1,0 +1,37 @@
+{
+  "name": "@refunddesk/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/apps/worker/src/index.d.ts",
+      "default": "./dist/apps/worker/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "dev": "pnpm build && node --watch --enable-source-maps dist/apps/worker/src/main.js",
+    "start": "node --enable-source-maps dist/apps/worker/src/main.js",
+    "pgboss:migrate": "pnpm build && node --enable-source-maps dist/apps/worker/src/migrate-pgboss.js",
+    "lint": "eslint src test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@refunddesk/config": "workspace:*",
+    "@refunddesk/contracts": "workspace:*",
+    "@refunddesk/db": "workspace:*",
+    "@refunddesk/domain": "workspace:*",
+    "@refunddesk/observability": "workspace:*",
+    "@refunddesk/stripe-adapter": "workspace:*",
+    "pg-boss": "12.26.3",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

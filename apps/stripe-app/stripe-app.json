@@ -1,0 +1,56 @@
+{
+  "id": "com.refunddesk.workflow",
+  "version": "0.1.0",
+  "name": "RefundDesk",
+  "icon": "./assets/icon.png",
+  "distribution_type": "public",
+  "stripe_api_access_type": "platform",
+  "sandbox_install_compatible": true,
+  "permissions": [
+    {
+      "permission": "charge_read",
+      "purpose": "Read captured card payments and refunded amounts to determine whether a refund request is eligible."
+    },
+    {
+      "permission": "charge_write",
+      "purpose": "Create an approved card Refund on the installed account after a separate user approves the request."
+    },
+    {
+      "permission": "payment_intent_read",
+      "purpose": "Read the PaymentIntent linked to a Dashboard payment and reject unsupported or uncaptured payments."
+    },
+    {
+      "permission": "event_read",
+      "purpose": "Reconcile Refund events and identify refunds created outside RefundDesk."
+    }
+  ],
+  "ui_extension": {
+    "views": [
+      {
+        "viewport": "stripe.dashboard.payment.detail",
+        "component": "PaymentDetail"
+      },
+      {
+        "viewport": "stripe.dashboard.drawer.default",
+        "component": "RefundDrawer"
+      },
+      {
+        "viewport": "onboarding",
+        "component": "Onboarding"
+      },
+      {
+        "viewport": "settings",
+        "component": "Settings"
+      }
+    ],
+    "content_security_policy": {
+      "connect-src": ["https://api.refunddesk.example/api/"],
+      "purpose": "Send authenticated refund workflow, settings, alert, and audit requests to the RefundDesk API."
+    }
+  },
+  "constants": {
+    "API_BASE": "https://api.refunddesk.example/api",
+    "PHASE0_PROBE_ENABLED": false,
+    "PILOT_LIVE_ENABLED": false
+  }
+}

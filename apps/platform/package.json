@@ -1,0 +1,39 @@
+{
+  "name": "@refunddesk/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
+    "lint": "eslint app src test next.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:sandbox": "vitest run --config vitest.sandbox.config.ts"
+  },
+  "dependencies": {
+    "@refunddesk/config": "workspace:*",
+    "@refunddesk/contracts": "workspace:*",
+    "@refunddesk/db": "workspace:*",
+    "@refunddesk/domain": "workspace:*",
+    "@refunddesk/notifications": "workspace:*",
+    "@refunddesk/observability": "workspace:*",
+    "@refunddesk/stripe-adapter": "workspace:*",
+    "next": "16.2.11",
+    "pg": "8.22.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "stripe": "22.3.2",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/pg": "8.20.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

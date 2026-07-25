@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "paths": {
+      "@refunddesk/config": ["./packages/config/src/index.ts"],
+      "@refunddesk/contracts": ["./packages/contracts/src/index.ts"],
+      "@refunddesk/domain": ["./packages/domain/src/index.ts"],
+      "@refunddesk/db": ["./packages/db/src/index.ts"],
+      "@refunddesk/notifications": ["./packages/notifications/src/index.ts"],
+      "@refunddesk/observability": ["./packages/observability/src/index.ts"],
+      "@refunddesk/stripe-adapter": ["./packages/stripe-adapter/src/index.ts"]
+    },
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  }
+}
