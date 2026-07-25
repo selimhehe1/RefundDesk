@@ -10,7 +10,11 @@ import {
 import type { AuditEvent } from "@refunddesk/db";
 
 import { OPTIONS as contextSyncOptions } from "../app/api/v1/context/sync/route.js";
-import { auditCsvResponse, renderRedactedAuditCsv } from "../src/server/pilot-audit-download.js";
+import {
+  auditCsvResponse,
+  isStoredStripeAdministrator,
+  renderRedactedAuditCsv,
+} from "../src/server/pilot-audit-download.js";
 import { createPilotAuditToken, verifyPilotAuditToken } from "../src/server/pilot-audit-token.js";
 import { TestAndSandboxAccessPolicy } from "../src/server/pilot-access-policy.js";
 import { PilotApiError } from "../src/server/pilot-errors.js";
@@ -480,7 +484,7 @@ describe("signed pilot API boundary", () => {
     } as const;
     const customAdministrator = await invoke(PILOT_ROUTE_SPECS.settingsUpdate, {
       command,
-      roles: [{ name: "Administrator", type: "custom" }],
+      roles: [{ id: "super_admin", type: "custom", name: "Super Administrator" }],
     });
     expect(customAdministrator.status).toBe(403);
     expect(await errorBody(customAdministrator)).toMatchObject({
@@ -490,6 +494,7 @@ describe("signed pilot API boundary", () => {
     const builtInAdministrator = await invoke(PILOT_ROUTE_SPECS.settingsUpdate, {
       command,
       nonce: "c1d21fd3-b011-42de-8e39-893b30a50315",
+      roles: [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }],
     });
     expect(builtInAdministrator.status).toBe(200);
     expect(repository.executeCount).toBe(1);
@@ -701,6 +706,7 @@ describe("signed pilot API boundary", () => {
 
     await invoke(PILOT_ROUTE_SPECS.contextSync, {
       nonce: "a63ed63a-b5be-4070-bf57-adcbe1cd6e5f",
+      roles: [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }],
     });
     expect(repository.resolutionOptions.at(-1)).toEqual({
       allowProvision: true,
@@ -710,6 +716,24 @@ describe("signed pilot API boundary", () => {
 
 describe("short-lived redacted audit exports", () => {
   const key = Buffer.alloc(32, 7);
+
+  it("authorizes persisted built-in Administrator IDs and rejects custom homonyms", () => {
+    expect(
+      isStoredStripeAdministrator([
+        { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+      ]),
+    ).toBe(true);
+    expect(
+      isStoredStripeAdministrator([
+        { id: "super_admin", type: "custom", name: "Super Administrator" },
+      ]),
+    ).toBe(false);
+    expect(
+      isStoredStripeAdministrator([
+        { id: "view_only", type: "builtIn", name: "Super Administrator" },
+      ]),
+    ).toBe(false);
+  });
 
   it("rejects expired and tampered bearer tokens", () => {
     const valid = createPilotAuditToken(

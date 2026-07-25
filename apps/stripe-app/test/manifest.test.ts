@@ -13,6 +13,7 @@ interface AppManifest {
   }[];
   readonly sandbox_install_compatible: boolean;
   readonly stripe_api_access_type: string;
+  readonly version: string;
   readonly ui_extension: {
     readonly content_security_policy: {
       readonly "connect-src": readonly string[];
@@ -24,16 +25,6 @@ interface AppManifest {
   };
 }
 
-interface DevelopmentManifest {
-  readonly constants: Record<string, unknown>;
-  readonly extends: string;
-  readonly ui_extension: {
-    readonly content_security_policy: {
-      readonly "connect-src": readonly string[];
-    };
-  };
-}
-
 async function readJson<T>(url: URL): Promise<T> {
   return JSON.parse(await readFile(url, "utf8")) as T;
 }
@@ -41,12 +32,16 @@ async function readJson<T>(url: URL): Promise<T> {
 describe("Stripe App manifests", () => {
   it("uses platform auth, sandbox compatibility, four views, and minimal permissions", async () => {
     const manifest = await readJson<AppManifest>(new URL("../stripe-app.json", import.meta.url));
+    const packageManifest = await readJson<{ readonly version: string }>(
+      new URL("../package.json", import.meta.url),
+    );
     expect(manifest).toMatchObject({
       id: "com.refunddesk.workflow",
       distribution_type: "public",
       stripe_api_access_type: "platform",
       sandbox_install_compatible: true,
     });
+    expect(manifest.version).toBe(packageManifest.version);
     expect(manifest.permissions.map(({ permission }) => permission)).toEqual([
       "charge_read",
       "charge_write",
@@ -78,20 +73,6 @@ describe("Stripe App manifests", () => {
     expect(sources.some((source) => source.includes("*"))).toBe(false);
     expect(manifest.constants).toMatchObject({
       PHASE0_PROBE_ENABLED: false,
-      PILOT_LIVE_ENABLED: false,
-    });
-  });
-
-  it("uses a separate localhost-only development manifest", async () => {
-    const manifest = await readJson<DevelopmentManifest>(
-      new URL("../stripe-app.dev.json", import.meta.url),
-    );
-    expect(manifest.extends).toBe("stripe-app.json");
-    expect(manifest.ui_extension.content_security_policy["connect-src"]).toEqual([
-      "http://localhost:3000/api/",
-    ]);
-    expect(manifest.constants).toMatchObject({
-      PHASE0_PROBE_ENABLED: true,
       PILOT_LIVE_ENABLED: false,
     });
   });

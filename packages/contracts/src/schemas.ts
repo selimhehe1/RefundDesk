@@ -24,8 +24,9 @@ export const resourceTypeSchema = z.enum(["account", "payment_intent", "charge"]
 
 export const stripeRoleSchema = z
   .object({
-    name: z.string().min(1).max(255),
+    id: z.string().min(1).max(255).optional(),
     type: z.enum(["builtIn", "custom"]),
+    name: z.string().min(1).max(255),
   })
   .strict();
 

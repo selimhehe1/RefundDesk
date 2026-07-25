@@ -6,5 +6,6 @@ export * from "./error-classification.js";
 export * from "./errors.js";
 export * from "./money.js";
 export * from "./refund-proof.js";
+export * from "./stripe-roles.js";
 export * from "./types.js";
 export * from "./workflow.js";

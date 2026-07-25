@@ -1,7 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 
 import type { OperationCommand, PilotOperation } from "@refunddesk/contracts";
-import { evaluatePaymentEligibility, type IneligibilityCode } from "@refunddesk/domain";
+import {
+  evaluatePaymentEligibility,
+  hasStripeAdministratorRole,
+  type IneligibilityCode,
+} from "@refunddesk/domain";
 
 import { PilotApiError } from "./pilot-errors";
 import type {
@@ -49,7 +53,7 @@ function response(body: PilotStoredResponse["body"], status = 200): PilotStoredR
 }
 
 function isAdministrator(identity: PilotSignedIdentity): boolean {
-  return identity.roles.some((role) => role.name === "Administrator" && role.type === "builtIn");
+  return hasStripeAdministratorRole(identity.roles);
 }
 
 function requireApprover(context: PilotTenantContext): void {

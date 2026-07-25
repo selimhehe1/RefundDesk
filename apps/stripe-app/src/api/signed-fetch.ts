@@ -40,6 +40,7 @@ export interface SignedRequestInput {
 
 export interface SignedStripeRole {
   readonly [key: string]: StripeSignatureValue;
+  readonly id?: string;
   readonly name: string;
   readonly type: "builtIn" | "custom";
 }
@@ -78,7 +79,8 @@ export class SignedExtensionRequestError extends Error {
       | "IDENTITY_UNAVAILABLE"
       | "LIVE_MODE_DISABLED"
       | "REQUEST_FAILED"
-      | "RESPONSE_INVALID",
+      | "RESPONSE_INVALID"
+      | "ROLE_CONTEXT_INVALID",
     message: string,
     readonly status?: number,
   ) {
@@ -147,9 +149,34 @@ export function isPhase0ProbeEnabled(context: ExtensionContextValue): boolean {
 }
 
 export function isAdministrator(context: ExtensionContextValue): boolean {
-  return (context.userContext.roles ?? []).some(
-    (role) => role.type === "builtIn" && role.name === "Administrator",
-  );
+  return normalizedStripeRoles(context).some((role) => {
+    if (role.type !== "builtIn") {
+      return false;
+    }
+    return role.id === undefined
+      ? role.name === "Administrator" || role.name === "Super Administrator"
+      : role.id === "admin" || role.id === "super_admin";
+  });
+}
+
+function normalizedStripeRoles(context: ExtensionContextValue): SignedStripeRole[] {
+  return (context.userContext.roles ?? []).map((role) => {
+    const runtimeRole = role as typeof role & { readonly id?: unknown };
+    if (
+      runtimeRole.id !== undefined &&
+      (typeof runtimeRole.id !== "string" || runtimeRole.id.length === 0)
+    ) {
+      throw new SignedExtensionRequestError(
+        "ROLE_CONTEXT_INVALID",
+        "The signed Stripe role context is invalid.",
+      );
+    }
+    return {
+      ...(runtimeRole.id === undefined ? {} : { id: runtimeRole.id }),
+      type: role.type,
+      name: role.name,
+    };
+  });
 }
 
 function requireIdentity(context: ExtensionContextValue): {
@@ -191,10 +218,7 @@ export function prepareSignedRequest(
     resource_type: input.resourceType,
     resource_id: input.resourceId,
     command_json: canonicalJson(input.command),
-    stripe_roles: (context.userContext.roles ?? []).map((role) => ({
-      name: role.name,
-      type: role.type,
-    })),
+    stripe_roles: normalizedStripeRoles(context),
   };
   const body = JSON.stringify({
     ...signaturePayload,

@@ -56,6 +56,24 @@ function postgresField(error: unknown, field: "code" | "constraint"): string | u
   return postgresField(record["cause"], field);
 }
 
+function hasErrorMarker(
+  value: unknown,
+  expectedMarker: string,
+  seen = new WeakSet<object>(),
+  depth = 0,
+): boolean {
+  if (typeof value === "string") {
+    return value === expectedMarker;
+  }
+  if (typeof value !== "object" || value === null || depth > 8 || seen.has(value)) {
+    return false;
+  }
+  seen.add(value);
+  return Object.values(value as Readonly<Record<string, unknown>>).some((nested) =>
+    hasErrorMarker(nested, expectedMarker, seen, depth + 1),
+  );
+}
+
 function createBarrier(participants: number): Barrier {
   let arrived = 0;
   let resolveBarrier: (() => void) | undefined;
@@ -818,6 +836,147 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
     expect(alert.rows[0]).toEqual({ status: "acknowledged", reconciled_at: null });
   });
 
+  it("observes external Refunds idempotently under the worker column grants", async () => {
+    const workerDatabase = createPrismaClient({
+      connectionString: ephemeralDatabaseUrl,
+      maxConnections: 1,
+    });
+    const observedAt = new Date("2030-01-01T12:01:00.000Z");
+    const stripeRefundCreatedAt = new Date("2030-01-01T12:00:00.000Z");
+    const observation = {
+      installationId,
+      stripeRefundId: "re_WorkerColumnGrant",
+      stripeRefundCreatedAt,
+      paymentKey: "pi_WorkerColumnGrant",
+      amountMinor: 500n,
+      currency: "eur",
+      classification: "external" as const,
+      observedAt,
+    };
+
+    await workerDatabase.$executeRawUnsafe("SET SESSION AUTHORIZATION refunddesk_worker");
+    try {
+      const identity = await workerDatabase.$queryRaw<
+        readonly { current_role: string; session_role: string; table_insert: boolean }[]
+      >`
+        SELECT
+          current_user::TEXT AS current_role,
+          session_user::TEXT AS session_role,
+          has_table_privilege(
+            current_user,
+            'public.external_refund_alerts',
+            'INSERT'
+          ) AS table_insert
+      `;
+      expect(identity).toEqual([
+        {
+          current_role: "refunddesk_worker",
+          session_role: "refunddesk_worker",
+          table_insert: false,
+        },
+      ]);
+
+      const insertableColumns = await workerDatabase.$queryRaw<readonly { column_name: string }[]>`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'external_refund_alerts'
+          AND has_column_privilege(
+            current_user,
+            'public.external_refund_alerts',
+            column_name,
+            'INSERT'
+          )
+        ORDER BY ordinal_position
+      `;
+      expect(insertableColumns.map((column) => column.column_name)).toEqual([
+        "tenant_id",
+        "installation_id",
+        "environment",
+        "stripe_refund_id",
+        "stripe_refund_created_at",
+        "payment_key",
+        "amount_minor",
+        "currency",
+        "classification",
+        "detected_at",
+        "overlapped_request_id",
+      ]);
+
+      const first = await withTenantTransaction(
+        workerDatabase,
+        tenantId,
+        ({ repositories }) => repositories.observeExternalRefund(observation),
+        { maxAttempts: 1 },
+      );
+      const replay = await withTenantTransaction(
+        workerDatabase,
+        tenantId,
+        ({ repositories }) => repositories.observeExternalRefund(observation),
+        { maxAttempts: 1 },
+      );
+      expect(replay.alert.id).toBe(first.alert.id);
+      expect(first.requestTransition).toBe("none");
+      expect(first.alert).toMatchObject({
+        status: "open",
+        acknowledgedAt: null,
+        acknowledgedByUserId: null,
+        reconciledAt: null,
+      });
+
+      const storedCount = await withTenantTransaction(
+        workerDatabase,
+        tenantId,
+        ({ tx }) =>
+          tx.$queryRaw<readonly { alert_count: number }[]>`
+            SELECT COUNT(*)::INTEGER AS alert_count
+            FROM external_refund_alerts
+            WHERE tenant_id = ${tenantId}::UUID
+              AND installation_id = ${installationId}::UUID
+              AND stripe_refund_id = ${observation.stripeRefundId}
+          `,
+        { maxAttempts: 1 },
+      );
+      expect(storedCount).toEqual([{ alert_count: 1 }]);
+
+      const forbiddenWrites = [
+        () =>
+          withTenantTransaction(
+            workerDatabase,
+            tenantId,
+            ({ tx }) =>
+              tx.$executeRaw`
+                INSERT INTO external_refund_alerts (status)
+                VALUES ('open')
+              `,
+            { maxAttempts: 1 },
+          ),
+        () =>
+          withTenantTransaction(
+            workerDatabase,
+            tenantId,
+            ({ tx }) =>
+              tx.$executeRaw`
+                INSERT INTO external_refund_alerts (reconciled_at)
+                VALUES (${observedAt.toISOString()}::TIMESTAMPTZ)
+              `,
+            { maxAttempts: 1 },
+          ),
+      ];
+      for (const forbiddenWrite of forbiddenWrites) {
+        try {
+          await forbiddenWrite();
+          expect.fail("Worker unexpectedly inserted a protected alert lifecycle column");
+        } catch (error) {
+          expect(hasErrorMarker(error, "42501")).toBe(true);
+        }
+      }
+    } finally {
+      await workerDatabase.$executeRawUnsafe("RESET SESSION AUTHORIZATION");
+      await workerDatabase.$disconnect();
+    }
+  });
+
   it("proves absence after a complete empty scan and resumes with the original key", async () => {
     const database = prismaClient;
     const client = fixtureClient;
@@ -1361,7 +1520,13 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
     };
 
     await Promise.all([operation(0, 1), operation(1, 2)]);
-    expect([attempts[0], attempts[1]].sort()).toEqual([1, 2]);
+    const orderedAttempts = [attempts[0], attempts[1]].sort((left, right) => left - right);
+    expect(orderedAttempts[0]).toBe(1);
+    // PostgreSQL may reject the loser's immediate retry once more while the
+    // winning transaction is still committing. Both two and three attempts
+    // exercise the intended bounded retry path.
+    expect(orderedAttempts[1]).toBeGreaterThanOrEqual(2);
+    expect(orderedAttempts[1]).toBeLessThanOrEqual(3);
     const rows = await client.query<{ id: number; value: number }>(
       "SELECT id, value FROM refunddesk_concurrency_retry_probe ORDER BY id",
     );

@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { canonicalJson } from "@refunddesk/contracts";
 import type { SignedEnvelope } from "@refunddesk/contracts";
+import { hasStripeAdministratorRole } from "@refunddesk/domain";
 
 export interface Phase0ProofPayload {
   readonly accountId: string;
@@ -13,7 +14,7 @@ export interface Phase0ProofPayload {
 }
 
 export function isPhase0Administrator(roles: SignedEnvelope["stripe_roles"]): boolean {
-  return roles.some((role) => role.type === "builtIn" && role.name === "Administrator");
+  return hasStripeAdministratorRole(roles);
 }
 
 function digest(payload: Phase0ProofPayload, key: Buffer): string {

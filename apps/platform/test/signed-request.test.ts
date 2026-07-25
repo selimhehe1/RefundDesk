@@ -14,7 +14,7 @@ const envelope: SignedEnvelope = {
   resource_type: "payment_intent",
   resource_id: "pi_synthetic",
   command_json: "{}",
-  stripe_roles: [{ name: "View only", type: "builtIn" }],
+  stripe_roles: [{ id: "view_only", type: "builtIn", name: "View only" }],
   user_id: "usr_synthetic",
   account_id: "acct_synthetic",
 };

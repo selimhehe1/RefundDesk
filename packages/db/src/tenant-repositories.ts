@@ -1708,24 +1708,40 @@ export class TenantRepositories {
     `;
     const overlappedRequestId = overlappedRequests[0]?.id ?? null;
 
-    await this.tx.externalRefundAlert.createMany({
-      data: [
-        {
-          tenantId: this.tenantId,
-          installationId: input.installationId,
-          environment,
-          stripeRefundId: input.stripeRefundId,
-          stripeRefundCreatedAt: input.stripeRefundCreatedAt,
-          paymentKey: input.paymentKey,
-          amountMinor: input.amountMinor,
-          currency: input.currency,
-          classification: input.classification,
-          detectedAt: input.observedAt,
-          overlappedRequestId,
-        },
-      ],
-      skipDuplicates: true,
-    });
+    // Keep this INSERT explicit. The runtime roles intentionally have
+    // column-scoped INSERT grants so callers cannot choose protected lifecycle
+    // fields such as status, acknowledged_at, or reconciled_at. Prisma's
+    // createMany includes database-defaulted columns in its generated INSERT,
+    // which requires privileges outside that allowlist on PostgreSQL.
+    await this.tx.$executeRaw`
+      INSERT INTO "external_refund_alerts" (
+        "tenant_id",
+        "installation_id",
+        "environment",
+        "stripe_refund_id",
+        "stripe_refund_created_at",
+        "payment_key",
+        "amount_minor",
+        "currency",
+        "classification",
+        "detected_at",
+        "overlapped_request_id"
+      )
+      VALUES (
+        ${this.tenantId}::UUID,
+        ${input.installationId}::UUID,
+        ${environment}::"stripe_environment",
+        ${input.stripeRefundId},
+        ${input.stripeRefundCreatedAt.toISOString()}::TIMESTAMPTZ,
+        ${input.paymentKey},
+        ${input.amountMinor},
+        ${input.currency},
+        ${input.classification},
+        ${input.observedAt.toISOString()}::TIMESTAMPTZ,
+        ${overlappedRequestId}::UUID
+      )
+      ON CONFLICT ("installation_id", "stripe_refund_id") DO NOTHING
+    `;
     const alert = await this.tx.externalRefundAlert.findUnique({
       where: {
         installationId_stripeRefundId: {

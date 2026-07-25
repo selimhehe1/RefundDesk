@@ -1,4 +1,6 @@
 node_modules/
+.build/
+apps/stripe-app/stripe-app.local.json
 .next/
 dist/
 coverage/

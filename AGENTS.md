@@ -40,11 +40,21 @@ from the web or worker runtime login.
 
 ## Development commands
 
-```bash
+```powershell
 pnpm dev:platform
 pnpm dev:worker
+$env:REFUNDDESK_DEV_API_BASE = "https://<temporary-host>/api"
 pnpm dev:stripe-app
 ```
+
+The workspace uses pnpm `11.17.0`. The Stripe Apps CLI packages `apps/stripe-app` as a standalone
+project, so that directory deliberately carries a separate pnpm `10.30.3` package-manager pin and
+lockfile. Keep its dependencies explicit and validate both lockfiles; do not remove or merge the
+standalone lock without re-running a real unpublished Stripe App upload.
+
+The installed test evidence is version `0.1.0`. Current source targets `0.1.1` and is deliberately
+unuploaded. Never reuse an already evidenced Stripe App version for changed source; upload only
+from a clean commit and record both commit and artifact checksum.
 
 Verification:
 
@@ -57,6 +67,16 @@ pnpm test:integration
 pnpm build
 pnpm secrets:check
 pnpm audit:prod
+```
+
+Validate the exact standalone extension graph with:
+
+```bash
+corepack pnpm@10.30.3 --dir apps/stripe-app install --frozen-lockfile --ignore-workspace --ignore-scripts
+corepack pnpm@10.30.3 --dir apps/stripe-app --ignore-workspace run lint
+corepack pnpm@10.30.3 --dir apps/stripe-app --ignore-workspace run build
+corepack pnpm@10.30.3 --dir apps/stripe-app --ignore-workspace run test
+corepack pnpm@10.30.3 --dir apps/stripe-app --ignore-workspace audit --prod --audit-level high
 ```
 
 Run `pnpm test:sandbox` only with explicit test/sandbox credentials and synthetic allowlisted objects. Its result is reported separately from local tests.

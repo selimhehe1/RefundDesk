@@ -29,6 +29,8 @@ docker --version
 ```
 
 Expected Node is `24.18.0`; expected pnpm is `11.17.0`.
+The independently packaged Stripe extension is the documented exception: its nested lockfile is
+validated with pnpm `10.30.3`, matching the successful unpublished upload.
 
 Install and initialize:
 
@@ -52,6 +54,11 @@ Application runtime grants are applied after Prisma, and pg-boss runtime grants
 are applied after the owner migration. Do not start the web or worker with the
 owner credential.
 
+External-alert INSERT rights are intentionally column-scoped. The repository uses a parameterized
+INSERT listing only those allowed columns so PostgreSQL, not runtime code, owns `id`, `status`,
+acknowledgement and reconciliation defaults. If this path returns `42501`, verify the generated SQL
+and current grants; never repair it by granting table-wide INSERT or lifecycle-column writes.
+
 Pilot queues use pg-boss' non-partitioned default. The worker has DML and
 function execution in the `pgboss` schema, but no schema `CREATE` privilege.
 Enabling partitioned queues therefore requires a reviewed owner migration
@@ -59,11 +66,27 @@ instead of a runtime privilege escalation.
 
 Start the three processes in separate terminals:
 
-```bash
+```powershell
 pnpm dev:platform
 pnpm dev:worker
+$env:REFUNDDESK_DEV_API_BASE = "https://<temporary-host>/api"
 pnpm dev:stripe-app
 ```
+
+The Stripe App launcher rejects HTTP, loopback, IP and reserved DNS suffixes, then verifies that
+every resolved address is public. It invokes the CLI without a command shell, generates an ignored
+local manifest from `stripe-app.json`, forces the probe on and live off, then removes the generated
+manifest and `.build` output when the CLI exits. DNS classification is a startup snapshot, not a
+defense against later rebinding; use only a short-lived operator-controlled tunnel hostname. The
+temporary HTTPS path is for a short evidence window only; stop it after use. A human must grant the
+Dashboard's browser prompt for local-network access so Stripe can load the CLI-served extension
+bundle.
+
+If the tunnel forwards the complete local Next.js origin, `/`, `/api/health` and `/api/ready` are
+also publicly reachable for that window without a Stripe signature. They expose no tenant data,
+but readiness performs a database probe. Prefer a path-restricted proxy where available; otherwise
+keep the window short, monitor the local process and stop the tunnel immediately after collecting
+the evidence.
 
 Webhook forwarding is environment-specific. Start only the test or sandbox listener being exercised and map it to the matching endpoint/secret. Never forward a live endpoint in this cycle.
 
@@ -76,7 +99,7 @@ Verify:
 - PostgreSQL is reachable with the unprivileged runtime role;
 - required migrations are applied;
 - pg-boss schema is ready before worker claims;
-- app signing secret is configured without printing it;
+- the App signing secret for the exact Stripe environment is configured without printing it;
 - exactly the intended test or sandbox Stripe credential is available;
 - global live switch is false;
 - tenant live switch is false;

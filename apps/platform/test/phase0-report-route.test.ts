@@ -29,7 +29,7 @@ function requestFor(
     resource_type: "payment_intent",
     resource_id: allowedPaymentIntent,
     command_json: "{}",
-    stripe_roles: [{ name: "Administrator", type: "builtIn" }],
+    stripe_roles: [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }],
     user_id: "usr_Phase0Report",
     account_id: "acct_Phase0Report",
     ...overrides,
@@ -62,7 +62,9 @@ describe("phase-0 signed report route", () => {
 
   it("rejects a signed non-Administrator and a non-allowlisted target", async () => {
     const roleResponse = await POST(
-      requestFor({ stripe_roles: [{ name: "View only", type: "builtIn" }] }),
+      requestFor({
+        stripe_roles: [{ id: "super_admin", type: "custom", name: "Super Administrator" }],
+      }),
     );
     const targetResponse = await POST(requestFor({ resource_id: "pi_notallowed" }));
 

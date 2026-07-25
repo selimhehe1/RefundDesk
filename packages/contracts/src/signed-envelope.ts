@@ -24,7 +24,11 @@ export function serializeSignedEnvelope(envelope: SignedEnvelope): string {
     resource_type: envelope.resource_type,
     resource_id: envelope.resource_id,
     command_json: envelope.command_json,
-    stripe_roles: envelope.stripe_roles,
+    stripe_roles: envelope.stripe_roles.map((role) => ({
+      ...(role.id === undefined ? {} : { id: role.id }),
+      type: role.type,
+      name: role.name,
+    })),
     user_id: envelope.user_id,
     account_id: envelope.account_id,
   });

@@ -20,13 +20,14 @@ import {
   type EligibilityResponse,
   type RefundReason,
 } from "../api/client";
-import { isAdministrator, isPhase0ProbeEnabled, publicRequestError } from "../api/signed-fetch";
+import { publicRequestError } from "../api/signed-fetch";
 import { ErrorState, LoadingState } from "../components/AsyncState";
 import {
   PilotLimitationNotice,
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { getPhase0ControlAvailability } from "../phase0-controls";
 import { validateRefundForm, type RefundFormErrors } from "../validation";
 
 function hasErrors(errors: RefundFormErrors): boolean {
@@ -50,6 +51,12 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   const [probeConfirmed, setProbeConfirmed] = useState(false);
   const [probeResult, setProbeResult] = useState<string | null>(null);
   const [probeEvidence, setProbeEvidence] = useState<string | null>(null);
+  const phase0Controls = getPhase0ControlAvailability(
+    context,
+    resourceType,
+    resourceId,
+    eligibility !== null,
+  );
 
   const loadEligibility = useCallback(async () => {
     if (liveMode || resourceType === undefined || resourceId === undefined) {
@@ -115,6 +122,7 @@ export default function PaymentDetail(context: ExtensionContextValue) {
 
   const runPhase0Probe = async () => {
     if (
+      !phase0Controls.runRefundProbe ||
       eligibility === null ||
       resourceType !== "payment_intent" ||
       resourceId === undefined ||
@@ -160,7 +168,11 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   };
 
   const refreshPhase0Evidence = async () => {
-    if (resourceType !== "payment_intent" || resourceId === undefined) {
+    if (
+      !phase0Controls.refreshEvidence ||
+      resourceType !== "payment_intent" ||
+      resourceId === undefined
+    ) {
       return;
     }
     setSubmitting(true);
@@ -180,6 +192,22 @@ export default function PaymentDetail(context: ExtensionContextValue) {
     }
   };
 
+  const initializePhase0Tenant = async () => {
+    if (!phase0Controls.initializeTenant || loading) {
+      return;
+    }
+    setSubmitting(true);
+    setLoadError(null);
+    try {
+      await refundDeskApi.syncContext(context);
+      await loadEligibility();
+    } catch (error) {
+      setLoadError(publicRequestError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const reasonChanged = (value: string) => {
     const parsed = refundReasonSchema.safeParse(value);
     if (parsed.success) {
@@ -187,8 +215,6 @@ export default function PaymentDetail(context: ExtensionContextValue) {
     }
   };
 
-  const phase0Enabled =
-    isPhase0ProbeEnabled(context) && isAdministrator(context) && resourceType === "payment_intent";
   const activeRequest = eligibility?.active_request ?? null;
   const requestDisabled =
     liveMode || loading || submitting || eligibility?.eligible !== true || activeRequest !== null;
@@ -303,14 +329,39 @@ export default function PaymentDetail(context: ExtensionContextValue) {
             >
               Request refund
             </Button>
+          </>
+        )}
 
-            {phase0Enabled ? (
+        {phase0Controls.refreshEvidence ? (
+          <>
+            <Divider />
+            <Banner
+              title="Phase-0 signed evidence"
+              description="Refreshing evidence sends a non-mutating Stripe-signed report request and creates no Refund. This development-only control is unavailable in the uploaded manifest."
+            />
+            {phase0Controls.initializeTenant ? (
               <>
-                <Divider />
+                <Banner
+                  title="Phase-0 local setup"
+                  description="Initializing creates only the local test tenant and signed Stripe-user record. It does not create a Refund or call a live environment."
+                />
+                <Button
+                  pending={submitting}
+                  disabled={submitting || loading}
+                  onPress={() => {
+                    void initializePhase0Tenant();
+                  }}
+                >
+                  Initialize test tenant
+                </Button>
+              </>
+            ) : null}
+            {phase0Controls.runRefundProbe && eligibility !== null ? (
+              <>
                 <Banner
                   type="caution"
                   title="Phase-0 technical refund probe"
-                  description="This development-only control creates an immediate Stripe test Refund and bypasses the approval workflow. It is unavailable in the production manifest."
+                  description="This control creates an immediate Stripe test Refund and bypasses the approval workflow."
                 />
                 <Checkbox
                   label="I confirm this is an allowlisted synthetic PaymentIntent and understand that a test Refund will be created now."
@@ -334,19 +385,19 @@ export default function PaymentDetail(context: ExtensionContextValue) {
                 >
                   Run technical refund probe
                 </Button>
-                <Button
-                  pending={submitting}
-                  disabled={submitting}
-                  onPress={() => {
-                    void refreshPhase0Evidence();
-                  }}
-                >
-                  Refresh verified webhook evidence
-                </Button>
               </>
             ) : null}
+            <Button
+              pending={submitting}
+              disabled={submitting}
+              onPress={() => {
+                void refreshPhase0Evidence();
+              }}
+            >
+              Refresh verified webhook evidence
+            </Button>
           </>
-        )}
+        ) : null}
       </Box>
     </ContextView>
   );

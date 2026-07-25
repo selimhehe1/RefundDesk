@@ -8,12 +8,29 @@ notifications, paid infrastructure and production deployment are deliberately di
 
 ## Current pilot status
 
-Phase 0 is `BLOCKED_HUMAN`: Stripe CLI authentication and one synthetic EUR PaymentIntent in test
-mode succeeded with `livemode=false`, but Stripe refused the unpublished app upload because the
-Stripe Apps Agreement has not been accepted by an authorized human.
+Phase 0 remains `BLOCKED_HUMAN`, but the original legal blocker is cleared. The authorized human
+accepted the Stripe Apps Agreement, Stripe accepted the unpublished RefundDesk `0.1.0` upload, and
+the version is installed only in the account's **Mode test** environment. The real extension renders
+on the synthetic EUR PaymentIntent with `livemode=false`; the uploaded production-safe manifest
+keeps both the direct probe and live operation disabled and fails closed against its placeholder API.
+The repository now targets unuploaded version `0.1.1`, separating the post-probe fixes from the
+installed evidence version; any next upload must come from a clean commit with a recorded checksum.
 
-No Refund, app upload or app installation was completed. Real signed UI, webhook, role-gap,
-idempotency and managed-sandbox cases therefore remain unvalidated.
+Chrome local-network access is granted. A real Stripe test-mode signed request now passes raw-body
+verification and the non-mutating Administrator-only Phase-0 report returns HTTP 200. The runtime
+role is identified by its signed stable ID (`super_admin`) even though the installed SDK's type
+definition omits that current field.
+
+The signed allowlisted probe created one small EUR partial Refund in test mode. An exact signed
+replay returned the same Stripe Refund without a second effect. A second test Refund, created
+outside RefundDesk with empty metadata, was found in under eight minutes by real periodic
+reconciliation and persisted as an open `external` alert under the restricted worker role.
+
+No live Refund, Marketplace publication, live request or production deployment was performed. The
+remaining real Stripe gate needs a distinct `View only` user, a distinct connected test account,
+and managed-sandbox credentials/installation. The connected-webhook, copied-proof replay,
+cross-test/sandbox signature and full environment-isolation cases are not yet complete, so the
+verdict correctly remains `BLOCKED_HUMAN`.
 
 The repository foundations, domain, signed API, worker, pilot UI and database layer are implemented
 locally. An isolated PostgreSQL 18.4 process exercised the real migration, pg-boss migration,
@@ -28,7 +45,11 @@ substitute for the blocked Stripe feasibility gate.
 - Node.js 24.18.0
 - pnpm 11.17.0
 - PostgreSQL 18 through Docker Desktop or an isolated local PostgreSQL 18 instance
-- Stripe CLI with the Apps plugin when resuming the human-gated Phase 0 work
+- Stripe CLI with the Apps plugin when continuing the real Phase 0 matrix
+
+The workspace uses pnpm 11.17.0. Stripe's CLI packages the UI extension independently, so
+`apps/stripe-app` intentionally has a standalone pnpm 10.30.3 lockfile with the same explicitly
+pinned direct dependency versions; CI verifies both installation graphs.
 
 ## Local setup
 
@@ -42,6 +63,8 @@ pnpm db:migrate:dev
 pnpm db:pgboss:migrate
 pnpm db:access:check
 pnpm verify
+pnpm test:integration
+pnpm audit:prod
 ```
 
 The local role bootstrap is idempotent and also repairs an existing Docker volume created before
@@ -49,6 +72,10 @@ the init script was added. Prisma migrations run with the dedicated owner creden
 apply the application grants. pg-boss migrations run with that owner and then delegate only its
 runtime schema privileges. `db:access:check` proves that the distinct web and worker logins are
 unprivileged, fail closed without tenant context, and that only the worker can use pg-boss.
+
+External-alert observation deliberately uses column-scoped PostgreSQL INSERT grants. Its
+parameterized SQL names only the allowed financial-observation fields, leaving alert lifecycle
+fields database-managed; do not replace this with a broad table grant.
 
 Never paste secrets into source files, Git, logs, issues, or chat. Put local credentials only in
 the ignored `.env.local`. Do not run real sandbox scenarios without explicit test/sandbox

@@ -54,3 +54,11 @@ jobs:
       - run: pnpm db:access:check
       - run: pnpm verify
       - run: pnpm audit:prod
+      - name: Verify standalone Stripe App package
+        working-directory: apps/stripe-app
+        run: |
+          corepack pnpm@10.30.3 install --frozen-lockfile --ignore-workspace --ignore-scripts
+          corepack pnpm@10.30.3 --ignore-workspace run lint
+          corepack pnpm@10.30.3 --ignore-workspace run build
+          corepack pnpm@10.30.3 --ignore-workspace run test
+          corepack pnpm@10.30.3 --ignore-workspace audit --prod --audit-level high

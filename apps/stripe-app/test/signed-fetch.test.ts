@@ -10,6 +10,11 @@ function createContext(
     readonly mode?: "live" | "test";
   } = {},
 ): ExtensionContextValue {
+  const roles = [
+    { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+    { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
+  ] as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
+
   return {
     userContext: {
       id: "usr_123",
@@ -19,10 +24,7 @@ function createContext(
         isSandbox: overrides.isSandbox ?? true,
       },
       locale: "en",
-      roles: [
-        { name: "Administrator", type: "builtIn" },
-        { name: "Refund reviewer", type: "custom" },
-      ],
+      roles,
     },
     environment: {
       constants: {
@@ -75,8 +77,28 @@ describe("prepareSignedRequest", () => {
   it("recognizes only Stripe's signed built-in Administrator role", () => {
     expect(isAdministrator(createContext())).toBe(true);
     const customAdministrator = createContext();
-    customAdministrator.userContext.roles = [{ name: "Administrator", type: "custom" }];
+    customAdministrator.userContext.roles = [
+      { id: "super_admin", type: "custom", name: "Super Administrator" },
+    ] as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
     expect(isAdministrator(customAdministrator)).toBe(false);
+
+    const misleadingName = createContext();
+    misleadingName.userContext.roles = [
+      { id: "view_only", type: "builtIn", name: "Super Administrator" },
+    ] as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
+    expect(isAdministrator(misleadingName)).toBe(false);
+  });
+
+  it.each(["", 42, null])("rejects a malformed present Stripe role ID: %s", (id) => {
+    const malformedRole = createContext();
+    malformedRole.userContext.roles = [
+      { id, type: "builtIn", name: "Super Administrator" },
+    ] as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
+
+    expect(() => isAdministrator(malformedRole)).toThrow("signed Stripe role context is invalid");
+    expect(() => prepareSignedRequest(malformedRole, requestInput)).toThrow(
+      "signed Stripe role context is invalid",
+    );
   });
 
   it("locks the Stripe-sensitive body field order", () => {
@@ -101,8 +123,12 @@ describe("prepareSignedRequest", () => {
   it("passes authentic Stripe role definitions in the special signed field", () => {
     const prepared = prepareSignedRequest(createContext(), requestInput);
     expect(prepared.signaturePayload.stripe_roles).toEqual([
-      { name: "Administrator", type: "builtIn" },
-      { name: "Refund reviewer", type: "custom" },
+      { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+      { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
+    ]);
+    expect(prepared.signaturePayload.stripe_roles.map((role) => Object.keys(role))).toEqual([
+      ["id", "type", "name"],
+      ["id", "type", "name"],
     ]);
     expect(prepared.signaturePayload).not.toHaveProperty("user_id");
     expect(prepared.signaturePayload).not.toHaveProperty("account_id");
@@ -151,8 +177,8 @@ describe("signedApiRequest", () => {
     expect(signatureFetcher).toHaveBeenCalledWith(
       expect.objectContaining({
         stripe_roles: [
-          { name: "Administrator", type: "builtIn" },
-          { name: "Refund reviewer", type: "custom" },
+          { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+          { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
         ],
       }),
     );

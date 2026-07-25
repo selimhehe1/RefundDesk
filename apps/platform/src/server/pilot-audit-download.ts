@@ -6,6 +6,7 @@ import {
   type Prisma,
   type PrismaClient,
 } from "@refunddesk/db";
+import { isStripeAdministratorRole } from "@refunddesk/domain";
 
 import { apiError } from "./http";
 import { verifyPilotAuditToken } from "./pilot-audit-token";
@@ -19,7 +20,7 @@ export interface PilotAuditDownloadDependencies {
   readonly client: PrismaClient;
 }
 
-function isAdministrator(roles: Prisma.JsonValue): boolean {
+export function isStoredStripeAdministrator(roles: Prisma.JsonValue): boolean {
   if (!Array.isArray(roles)) {
     return false;
   }
@@ -27,7 +28,19 @@ function isAdministrator(roles: Prisma.JsonValue): boolean {
     if (typeof role !== "object" || role === null || Array.isArray(role)) {
       return false;
     }
-    return role["name"] === "Administrator" && role["type"] === "builtIn";
+    const id = role["id"];
+    const name = role["name"];
+    const type = role["type"];
+    return (
+      (id === undefined || typeof id === "string") &&
+      typeof name === "string" &&
+      (type === "builtIn" || type === "custom") &&
+      isStripeAdministratorRole({
+        ...(typeof id === "string" ? { id } : {}),
+        name,
+        type,
+      })
+    );
   });
 }
 
@@ -129,7 +142,7 @@ export async function handlePilotAuditDownload(
           installation.status !== "active" ||
           installation.tenant.status !== "active" ||
           actor === null ||
-          (!actor.approverEnabled && !isAdministrator(actor.stripeRoles))
+          (!actor.approverEnabled && !isStoredStripeAdministrator(actor.stripeRoles))
         ) {
           throw new PilotApiError(
             "UNAUTHORIZED",

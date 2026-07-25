@@ -1,4 +1,5 @@
 import type { StripeEnvironment } from "./types.js";
+import { hasStripeAdministratorRole } from "./stripe-roles.js";
 
 export type AccessAction =
   | "onboarding"
@@ -27,6 +28,7 @@ export interface AccessContext {
   readonly globalLiveEnabled: boolean;
   readonly tenantLiveEnabled: boolean;
   readonly signedStripeRoles: readonly {
+    readonly id?: string | undefined;
     readonly name: string;
     readonly type: "builtIn" | "custom";
   }[];
@@ -60,9 +62,7 @@ export class PilotAccessPolicy implements AccessPolicy {
     }
     if (
       ADMIN_ACTIONS.has(context.action) &&
-      !context.signedStripeRoles.some(
-        (role) => role.name === "Administrator" && role.type === "builtIn",
-      )
+      !hasStripeAdministratorRole(context.signedStripeRoles)
     ) {
       return { allowed: false, code: "ADMIN_REQUIRED" };
     }

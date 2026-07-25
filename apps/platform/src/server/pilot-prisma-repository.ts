@@ -284,10 +284,11 @@ function alertClassification(value: string): PilotExternalAlert["classification"
   );
 }
 
-function rolesJson(roles: PilotSignedIdentity["roles"]): Prisma.InputJsonArray {
+export function pilotStripeRolesJson(roles: PilotSignedIdentity["roles"]): Prisma.InputJsonArray {
   return roles.map((role) => ({
-    name: role.name,
+    ...(role.id === undefined ? {} : { id: role.id }),
     type: role.type,
+    name: role.name,
   }));
 }
 
@@ -325,7 +326,7 @@ export class PilotPrismaRepository implements PilotRepository {
         const [installation, actor] = await Promise.all([
           repositories.getInstallationContext(resolved.installationId),
           repositories.observeTenantUser({
-            stripeRoles: rolesJson(identity.roles),
+            stripeRoles: pilotStripeRolesJson(identity.roles),
             stripeUserId: identity.userId,
             verifiedAt: this.now(),
           }),

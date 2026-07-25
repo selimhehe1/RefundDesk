@@ -74,6 +74,9 @@ import { POST } from "../app/api/internal/phase0/refund-probe/route.js";
 function signedRequest(
   reason: "duplicate" | "fraudulent" | "requested_by_customer" = "requested_by_customer",
   userId = "usr_Phase0Route",
+  roles: SignedEnvelope["stripe_roles"] = [
+    { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+  ],
 ): Request {
   const command = {
     amount_minor: "1000",
@@ -88,7 +91,7 @@ function signedRequest(
     resource_type: "payment_intent",
     resource_id: "pi_phase0route",
     command_json: canonicalJson(command),
-    stripe_roles: [{ name: "Administrator", type: "builtIn" }],
+    stripe_roles: roles,
     user_id: userId,
     account_id: "acct_Phase0Route",
   };
@@ -105,6 +108,18 @@ function signedRequest(
 }
 
 describe("phase-0 Refund route idempotency", () => {
+  it("rejects a custom role even when its stable ID and display name mimic an Administrator", async () => {
+    const response = await POST(
+      signedRequest("requested_by_customer", "usr_CustomRole", [
+        { id: "super_admin", type: "custom", name: "Super Administrator" },
+      ]),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "ADMIN_REQUIRED" });
+    expect(stripeState.createCalls).toHaveLength(0);
+  });
+
   it("replays a full Refund through Stripe and rejects changed parameters before another call", async () => {
     const first = await POST(signedRequest());
     const replay = await POST(signedRequest());

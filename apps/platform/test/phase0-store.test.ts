@@ -5,8 +5,19 @@ import { Phase0NonceConflictError, Phase0Store } from "../src/server/phase0-stor
 
 describe("phase-0 probe authorization", () => {
   it("accepts only the signed built-in Administrator role", () => {
+    expect(
+      isPhase0Administrator([{ id: "super_admin", type: "builtIn", name: "Super Administrator" }]),
+    ).toBe(true);
+    expect(isPhase0Administrator([{ id: "admin", type: "builtIn", name: "Administrator" }])).toBe(
+      true,
+    );
     expect(isPhase0Administrator([{ name: "Administrator", type: "builtIn" }])).toBe(true);
-    expect(isPhase0Administrator([{ name: "Administrator", type: "custom" }])).toBe(false);
+    expect(
+      isPhase0Administrator([{ id: "super_admin", type: "custom", name: "Super Administrator" }]),
+    ).toBe(false);
+    expect(
+      isPhase0Administrator([{ id: "view_only", type: "builtIn", name: "Super Administrator" }]),
+    ).toBe(false);
     expect(isPhase0Administrator([{ name: "View only", type: "builtIn" }])).toBe(false);
   });
 });

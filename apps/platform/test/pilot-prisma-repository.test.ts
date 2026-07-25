@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { PrismaClient } from "@refunddesk/db";
 import { FieldEncryptionKeyring } from "@refunddesk/domain";
 
-import { PilotPrismaRepository } from "../src/server/pilot-prisma-repository.js";
+import {
+  PilotPrismaRepository,
+  pilotStripeRolesJson,
+} from "../src/server/pilot-prisma-repository.js";
 import type {
   PilotMutationMetadata,
   PilotStoredResponse,
@@ -179,5 +182,21 @@ describe("atomic pilot mutation receipt storage", () => {
       status: "rejected",
     });
     expect(harness.createAttempts()).toBe(2);
+  });
+});
+
+describe("Stripe role persistence", () => {
+  it("retains the stable runtime role ID and omits only an actually absent ID", () => {
+    expect(
+      pilotStripeRolesJson([
+        { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+        { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
+        { type: "builtIn", name: "View only" },
+      ]),
+    ).toEqual([
+      { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+      { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
+      { type: "builtIn", name: "View only" },
+    ]);
   });
 });

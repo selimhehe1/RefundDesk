@@ -381,7 +381,7 @@ describe("pilot access policy", () => {
       policy.authorize({
         ...base,
         action: "settings",
-        signedStripeRoles: [{ name: "Administrator", type: "builtIn" }],
+        signedStripeRoles: [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }],
       }),
     ).toEqual({ allowed: true });
     expect(
@@ -389,6 +389,13 @@ describe("pilot access policy", () => {
         ...base,
         action: "settings",
         signedStripeRoles: [{ name: "Administrator", type: "custom" }],
+      }),
+    ).toEqual({ allowed: false, code: "ADMIN_REQUIRED" });
+    expect(
+      policy.authorize({
+        ...base,
+        action: "settings",
+        signedStripeRoles: [{ id: "view_only", type: "builtIn", name: "Super Administrator" }],
       }),
     ).toEqual({ allowed: false, code: "ADMIN_REQUIRED" });
     expect(policy.authorize({ ...base, action: "decide_refund_request" })).toEqual({

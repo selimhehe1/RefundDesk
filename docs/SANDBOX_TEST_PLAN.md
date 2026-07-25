@@ -23,7 +23,9 @@ The canonical source for the refund test PaymentMethods is [Stripe testing — r
 - One Administrator user.
 - One distinct `View only` user who can see Payments.
 - Unpublished RefundDesk Stripe App installed in both target test environments where required.
-- App signing secret available locally.
+- The App signing secret for the exact environment being exercised is available locally. Stripe
+  App signing secrets are environment-specific; a main-account secret does not validate a local
+  test-mode preview.
 - Test and managed-sandbox server credentials available locally.
 - Separate webhook endpoint secrets.
 - Stripe CLI authenticated to the intended test context.
@@ -56,15 +58,29 @@ pnpm secrets:check
 Upload and install the unpublished, production-safe `stripe-app.json` in **test mode only** after an
 authorized human has accepted the Stripe Apps Agreement. Do not pass `--live`. The uploaded manifest
 keeps the direct probe disabled and proves installation and permissions. For the local technical
-probe, start the developer overlay separately:
+probe, expose the local API through a temporary public-HTTPS origin, then start the developer
+overlay separately:
 
-```bash
+```powershell
+$env:REFUNDDESK_DEV_API_BASE = "https://<temporary-host>/api"
 pnpm dev:stripe-app
 ```
 
-That command uses `stripe apps start --manifest stripe-app.dev.json`, which overrides the API origin
-with loopback and enables the allowlisted Phase-0 control. The extended development manifest must
-never be uploaded as a release; it exists only for the local CLI development session.
+The current Stripe Apps CLI rejects loopback HTTP origins in `connect-src`. The launcher therefore
+accepts only a public-DNS HTTPS origin whose resolved addresses are all public, invokes Stripe
+without a command shell, derives an ignored `stripe-app.local.json` from the safe uploadable
+manifest, enables the Phase-0 control, forces live mode off, starts `stripe apps start`, then removes
+the generated manifest and `.build` output at exit. Never upload either generated artifact.
+
+The HTTPS origin can make the local Next.js origin reachable from the public internet. Keep every
+mutating or tenant-data route authenticated according to its route contract, expose it only for the
+evidence window, and stop the tunnel immediately afterward. A whole-origin tunnel also exposes the
+landing page and bounded health/readiness endpoints without a Stripe signature; prefer a
+path-restricted proxy where available. DNS validation is a startup snapshot; use only a short-lived
+tunnel hostname under the operator's control and do not treat it as protection against later
+rebinding.
+Chrome also requires the operator to grant `dashboard.stripe.com` local-network access before it can
+load the bundle served by the Stripe CLI. That privacy permission is a human checkpoint.
 
 Before any Stripe call, verify:
 

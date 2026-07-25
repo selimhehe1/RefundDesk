@@ -11,3 +11,4 @@ ADRs are immutable after acceptance. Supersede an ADR with a new file instead of
 | [0005](0005-payment-scoped-external-refund-protection.md)               | Durable payment protection after an external Refund  | Accepted |
 | [0006](0006-durable-executing-recovery-and-dual-lane-reconciliation.md) | Safe recovery and dual-lane Refund reconciliation    | Accepted |
 | [0007](0007-database-financial-authority-boundary.md)                   | Web/worker financial authority separation            | Accepted |
+| [0008](0008-stripe-app-local-packaging-and-preview-boundary.md)         | Standalone packaging and local preview boundary      | Accepted |

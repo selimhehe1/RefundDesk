@@ -5,6 +5,7 @@ import {
   parseOperationCommand,
   refundRequestCommandSchema,
   serializeSignedEnvelope,
+  signedEnvelopeSchema,
 } from "../src/index.js";
 
 describe("canonicalJson", () => {
@@ -38,7 +39,10 @@ describe("signed envelope serialization", () => {
       resource_type: "payment_intent",
       resource_id: "pi_123",
       command_json: "{}",
-      stripe_roles: [{ name: "View only", type: "builtIn" }],
+      stripe_roles: [
+        { id: "view_only", type: "builtIn", name: "View only" },
+        { type: "custom", name: "Legacy custom role" },
+      ],
       user_id: "usr_123",
       account_id: "acct_123",
     });
@@ -54,6 +58,11 @@ describe("signed envelope serialization", () => {
       "stripe_roles",
       "user_id",
       "account_id",
+    ]);
+    const parsed = JSON.parse(serialized) as { stripe_roles: Record<string, unknown>[] };
+    expect(parsed.stripe_roles.map((role) => Object.keys(role))).toEqual([
+      ["id", "type", "name"],
+      ["type", "name"],
     ]);
   });
 });
@@ -73,7 +82,7 @@ describe("operation contracts", () => {
 
   it("accepts authentic Stripe role definitions only", () => {
     expect(() =>
-      serializeSignedEnvelope({
+      signedEnvelopeSchema.parse({
         operation: "context.sync",
         request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
         mode: "test",
@@ -81,11 +90,32 @@ describe("operation contracts", () => {
         resource_type: "account",
         resource_id: "acct_123",
         command_json: "{}",
-        stripe_roles: [{ name: "View only", type: "builtIn" }],
+        stripe_roles: [{ id: "view_only", type: "builtIn", name: "View only" }],
         user_id: "usr_123",
         account_id: "acct_123",
       }),
     ).not.toThrow();
+    expect(() =>
+      signedEnvelopeSchema.parse({
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: false,
+        resource_type: "account",
+        resource_id: "acct_123",
+        command_json: "{}",
+        stripe_roles: [
+          {
+            id: "view_only",
+            type: "builtIn",
+            name: "View only",
+            unexpected: true,
+          },
+        ],
+        user_id: "usr_123",
+        account_id: "acct_123",
+      }),
+    ).toThrow();
   });
 
   it("accepts only Stripe user IDs in the explicit approver list", () => {

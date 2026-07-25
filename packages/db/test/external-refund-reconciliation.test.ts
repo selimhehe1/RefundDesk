@@ -58,8 +58,8 @@ function observationTransaction(
       .mockResolvedValueOnce(
         alert.overlappedRequestId === null ? [] : [{ id: alert.overlappedRequestId }],
       ),
+    $executeRaw: vi.fn().mockResolvedValue(1),
     externalRefundAlert: {
-      createMany: vi.fn().mockResolvedValue({ count: 1 }),
       findUnique: vi.fn().mockResolvedValue(alert),
     },
     refundRequest: {
@@ -97,19 +97,28 @@ describe("external refund reconciliation", () => {
       alert,
       requestTransition: "none",
     });
-    expect(tx.externalRefundAlert.createMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          tenantId,
-          installationId,
-          environment: "test",
-          paymentKey: "pi_external",
-          stripeRefundCreatedAt,
-          overlappedRequestId: requestId,
-        }),
-      ],
-      skipDuplicates: true,
-    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw.mock.calls[0]?.[0]).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('INSERT INTO "external_refund_alerts"'),
+        expect.stringContaining('ON CONFLICT ("installation_id", "stripe_refund_id") DO NOTHING'),
+      ]),
+    );
+    expect(tx.$executeRaw.mock.calls[0]?.slice(1)).toEqual(
+      expect.arrayContaining([
+        tenantId,
+        installationId,
+        "test",
+        "re_external",
+        stripeRefundCreatedAt.toISOString(),
+        "pi_external",
+        500n,
+        "eur",
+        "external",
+        observedAt.toISOString(),
+        requestId,
+      ]),
+    );
     expect(tx.refundRequest.updateMany).toHaveBeenCalledTimes(3);
   });
 
@@ -143,10 +152,8 @@ describe("external refund reconciliation", () => {
         stripeRefundCreatedAt: postTerminalCreatedAt,
       }),
     ).resolves.toEqual({ alert, requestTransition: "none" });
-    expect(tx.externalRefundAlert.createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ overlappedRequestId: null })],
-      skipDuplicates: true,
-    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$executeRaw.mock.calls[0]?.slice(1)).toContain(null);
   });
 
   it("neutralizes pre-effect work and protects possible effects under one payment lock", async () => {
