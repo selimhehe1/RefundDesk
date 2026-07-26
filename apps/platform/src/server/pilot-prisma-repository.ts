@@ -251,6 +251,7 @@ function mapRequest(
     is_requester: isRequester,
     justification,
     payment_intent_id: detail.paymentIntentId,
+    reason: detail.reason,
     requester_user_id: requesterStripeUserId,
     resource_id: resource.resourceId,
     resource_type: resource.resourceType,

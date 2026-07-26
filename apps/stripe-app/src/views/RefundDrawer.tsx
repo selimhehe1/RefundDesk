@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
 import {
@@ -23,13 +23,21 @@ import {
   type RefundRequestSummary,
   type WorkflowStatus,
 } from "../api/client";
-import { isAdministrator, publicRequestError } from "../api/signed-fetch";
+import { MutationIntentRegistry } from "../api/mutation-intent";
+import {
+  createRequestNonce,
+  isAdministrator,
+  isDefinitiveMutationRejection,
+  publicRequestError,
+} from "../api/signed-fetch";
 import { EmptyState, ErrorState, LoadingState } from "../components/AsyncState";
 import {
   PilotLimitationNotice,
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { formatMinorAmount } from "../money";
+import { viewContextKey } from "../view-context";
 
 type RequestScope = "all_activity" | "awaiting_my_approval" | "my_requests";
 
@@ -62,22 +70,37 @@ function itemResource(item: RefundRequestSummary): PaymentResource {
   };
 }
 
+function refundReasonLabel(reason: RefundRequestSummary["reason"]): string {
+  if (reason === "requested_by_customer") {
+    return "Requested by customer";
+  }
+  return reason === "fraudulent" ? "Fraudulent" : "Duplicate";
+}
+
 function RefundRequestCard({
+  actionsDisabled,
+  approvalUnderReview,
   busy,
   item,
   rejectionNote,
   onApprove,
   onCancel,
+  onDismissApproval,
   onNoteChange,
   onReject,
+  onReviewApproval,
 }: {
+  readonly actionsDisabled: boolean;
+  readonly approvalUnderReview: boolean;
   readonly busy: boolean;
   readonly item: RefundRequestSummary;
   readonly rejectionNote: string;
   readonly onApprove: () => void;
   readonly onCancel: () => void;
+  readonly onDismissApproval: () => void;
   readonly onNoteChange: (value: string) => void;
   readonly onReject: () => void;
+  readonly onReviewApproval: () => void;
 }) {
   const selfApprovalBlocked = item.is_requester && item.status === "pending_approval";
   return (
@@ -91,13 +114,13 @@ function RefundRequestCard({
       }}
     >
       <Box css={{ stack: "x", gap: "small", distribute: "space-between" }}>
-        <Box>
-          {item.amount_minor} {item.currency.toUpperCase()}
-        </Box>
+        <Box>{formatMinorAmount(item.amount_minor, item.currency)}</Box>
         <Badge type={statusBadgeType(item.status)}>{item.status}</Badge>
       </Box>
       <Box>Request {item.id}</Box>
       <Box>Payment {item.resource_id}</Box>
+      <Box>Requested by {item.requester_user_id}</Box>
+      <Box>Stripe reason: {refundReasonLabel(item.reason)}</Box>
       <Box>Created {item.created_at}</Box>
       {item.justification === null ? null : (
         <Box>Requester justification: {item.justification}</Box>
@@ -113,26 +136,44 @@ function RefundRequestCard({
 
       {item.can_decide && !item.is_requester ? (
         <>
-          <TextArea
-            label="Rejection reason"
-            description="Required only when rejecting; 10 to 2,000 characters."
-            value={rejectionNote}
-            minLength={10}
-            maxLength={2_000}
-            rows={3}
-            onChange={(event) => {
-              onNoteChange(event.target.value);
-            }}
-            disabled={busy}
-          />
-          <Box css={{ stack: "x", gap: "small" }}>
-            <Button type="primary" pending={busy} disabled={busy} onPress={onApprove}>
-              Approve
+          {approvalUnderReview ? (
+            <Banner
+              type="caution"
+              title="Confirm this refund approval"
+              description={`Approving queues a ${formatMinorAmount(item.amount_minor, item.currency)} refund for payment ${item.resource_id}. RefundDesk cannot undo it after Stripe executes it.`}
+            />
+          ) : (
+            <TextArea
+              label="Rejection reason"
+              description="Required only when rejecting; 10 to 2,000 characters."
+              value={rejectionNote}
+              minLength={10}
+              maxLength={2_000}
+              rows={3}
+              onChange={(event) => {
+                onNoteChange(event.target.value);
+              }}
+              disabled={actionsDisabled}
+            />
+          )}
+          <Box css={{ stack: "x", gap: "small", wrap: "wrap" }}>
+            <Button
+              type="primary"
+              pending={busy}
+              disabled={actionsDisabled}
+              onPress={approvalUnderReview ? onApprove : onReviewApproval}
+            >
+              {approvalUnderReview ? "Approve and queue refund" : "Review approval"}
             </Button>
+            {approvalUnderReview ? (
+              <Button type="secondary" disabled={actionsDisabled} onPress={onDismissApproval}>
+                Back
+              </Button>
+            ) : null}
             <Button
               type="destructive"
               pending={busy}
-              disabled={busy || rejectionNote.trim().length < 10}
+              disabled={approvalUnderReview || actionsDisabled || rejectionNote.trim().length < 10}
               onPress={onReject}
             >
               Reject
@@ -142,7 +183,7 @@ function RefundRequestCard({
       ) : null}
 
       {item.can_cancel ? (
-        <Button type="secondary" pending={busy} disabled={busy} onPress={onCancel}>
+        <Button type="secondary" pending={busy} disabled={actionsDisabled} onPress={onCancel}>
           Cancel request
         </Button>
       ) : null}
@@ -151,10 +192,12 @@ function RefundRequestCard({
 }
 
 function ExternalAlertCard({
+  actionsDisabled,
   alert,
   busy,
   onAcknowledge,
 }: {
+  readonly actionsDisabled: boolean;
   readonly alert: ExternalAlert;
   readonly busy: boolean;
   readonly onAcknowledge: () => void;
@@ -176,9 +219,7 @@ function ExternalAlertCard({
       }}
     >
       <Box css={{ stack: "x", gap: "small", distribute: "space-between" }}>
-        <Box>
-          {alert.amount_minor} {alert.currency.toUpperCase()}
-        </Box>
+        <Box>{formatMinorAmount(alert.amount_minor, alert.currency)}</Box>
         <Badge type={alert.acknowledged ? "neutral" : "warning"}>
           {alert.acknowledged ? "Acknowledged" : "Needs review"}
         </Badge>
@@ -194,15 +235,26 @@ function ExternalAlertCard({
         />
       ) : null}
       {!alert.acknowledged ? (
-        <Button type="secondary" pending={busy} disabled={busy} onPress={onAcknowledge}>
-          Acknowledge
-        </Button>
+        <>
+          <Box>
+            Acknowledging records review only; it does not reconcile the Refund or release its
+            financial protection.
+          </Box>
+          <Button
+            type="secondary"
+            pending={busy}
+            disabled={actionsDisabled}
+            onPress={onAcknowledge}
+          >
+            Acknowledge review
+          </Button>
+        </>
       ) : null}
     </Box>
   );
 }
 
-export default function RefundDrawer(context: ExtensionContextValue) {
+function RefundDrawerView({ context }: { readonly context: ExtensionContextValue }) {
   const liveMode = context.environment.mode === "live";
   const [scope, setScope] = useState<RequestScope>("my_requests");
   const [requests, setRequests] = useState<RefundRequestSummary[]>([]);
@@ -210,12 +262,18 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   const [alerts, setAlerts] = useState<ExternalAlert[]>([]);
   const [alertCursor, setAlertCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [alertLoading, setAlertLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [approvalReviewId, setApprovalReviewId] = useState<string | null>(null);
   const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({});
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [downloadExpiresAt, setDownloadExpiresAt] = useState<string | null>(null);
   const [currentUserIsApprover, setCurrentUserIsApprover] = useState(false);
   const [contextLoaded, setContextLoaded] = useState(false);
+  const requestSequence = useRef(0);
+  const alertSequence = useRef(0);
+  const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
   const administrator = isAdministrator(context);
 
   const loadRequests = useCallback(
@@ -224,16 +282,24 @@ export default function RefundDrawer(context: ExtensionContextValue) {
         setLoading(false);
         return;
       }
+      const sequence = ++requestSequence.current;
       setLoading(true);
       setError(null);
       try {
         const response = await refundDeskApi.listRefundRequests(context, scope, cursor);
+        if (sequence !== requestSequence.current) {
+          return;
+        }
         setRequests((current) => (append ? [...current, ...response.items] : response.items));
         setRequestCursor(response.next_cursor);
       } catch (requestError) {
-        setError(publicRequestError(requestError));
+        if (sequence === requestSequence.current) {
+          setError(publicRequestError(requestError));
+        }
       } finally {
-        setLoading(false);
+        if (sequence === requestSequence.current) {
+          setLoading(false);
+        }
       }
     },
     [context, liveMode, scope],
@@ -244,12 +310,23 @@ export default function RefundDrawer(context: ExtensionContextValue) {
       if (liveMode) {
         return;
       }
+      const sequence = ++alertSequence.current;
+      setAlertLoading(true);
       try {
         const response = await refundDeskApi.listExternalAlerts(context, cursor);
+        if (sequence !== alertSequence.current) {
+          return;
+        }
         setAlerts((current) => (append ? [...current, ...response.items] : response.items));
         setAlertCursor(response.next_cursor);
       } catch (alertError) {
-        setError(publicRequestError(alertError));
+        if (sequence === alertSequence.current) {
+          setError(publicRequestError(alertError));
+        }
+      } finally {
+        if (sequence === alertSequence.current) {
+          setAlertLoading(false);
+        }
       }
     },
     [context, liveMode],
@@ -302,16 +379,42 @@ export default function RefundDrawer(context: ExtensionContextValue) {
       return;
     }
 
+    const intentKey = `refund-request:decide:${item.id}:${decision}`;
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setBusyId(item.id);
     setError(null);
     try {
-      await refundDeskApi.decideRefundRequest(context, itemResource(item), {
-        request_id: item.id,
-        decision,
-        ...(decision === "reject" && note !== undefined ? { justification: note } : {}),
-      });
+      await refundDeskApi.decideRefundRequest(
+        context,
+        itemResource(item),
+        {
+          request_id: item.id,
+          decision,
+          ...(decision === "reject" && note !== undefined ? { justification: note } : {}),
+        },
+        requestNonce,
+      );
+      mutationIntents.complete(intentKey);
+      if (decision === "approve") {
+        setApprovalReviewId(null);
+      } else {
+        setRejectionNotes((current) => ({ ...current, [item.id]: "" }));
+      }
       await loadRequests();
     } catch (decisionError) {
+      if (isDefinitiveMutationRejection(decisionError)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setError(publicRequestError(decisionError));
     } finally {
       setBusyId(null);
@@ -319,12 +422,28 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   };
 
   const cancel = async (item: RefundRequestSummary) => {
+    const intentKey = `refund-request:cancel:${item.id}`;
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setBusyId(item.id);
     setError(null);
     try {
-      await refundDeskApi.cancelRefundRequest(context, itemResource(item), item.id);
+      await refundDeskApi.cancelRefundRequest(context, itemResource(item), item.id, requestNonce);
+      mutationIntents.complete(intentKey);
       await loadRequests();
     } catch (cancelError) {
+      if (isDefinitiveMutationRejection(cancelError)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setError(publicRequestError(cancelError));
     } finally {
       setBusyId(null);
@@ -332,12 +451,28 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   };
 
   const acknowledge = async (alert: ExternalAlert) => {
+    const intentKey = `external-alert:acknowledge:${alert.id}`;
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setBusyId(alert.id);
     setError(null);
     try {
-      await refundDeskApi.acknowledgeExternalAlert(context, alert.id);
+      await refundDeskApi.acknowledgeExternalAlert(context, alert.id, requestNonce);
+      mutationIntents.complete(intentKey);
       await loadAlerts();
     } catch (acknowledgeError) {
+      if (isDefinitiveMutationRejection(acknowledgeError)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setError(publicRequestError(acknowledgeError));
     } finally {
       setBusyId(null);
@@ -345,12 +480,29 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   };
 
   const exportAudit = async () => {
+    const intentKey = "audit:export";
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setBusyId("audit-export");
     setError(null);
     try {
-      const response = await refundDeskApi.createAuditExport(context);
+      const response = await refundDeskApi.createAuditExport(context, requestNonce);
+      mutationIntents.complete(intentKey);
       setDownloadUrl(response.download_url);
+      setDownloadExpiresAt(response.expires_at);
     } catch (exportError) {
+      if (isDefinitiveMutationRejection(exportError)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setError(publicRequestError(exportError));
     } finally {
       setBusyId(null);
@@ -367,9 +519,12 @@ export default function RefundDrawer(context: ExtensionContextValue) {
         <RefundRequestCard
           key={item.id}
           item={item}
+          actionsDisabled={busyId !== null}
+          approvalUnderReview={approvalReviewId === item.id}
           busy={busyId === item.id}
           rejectionNote={rejectionNotes[item.id] ?? ""}
           onNoteChange={(value) => {
+            mutationIntents.reset(`refund-request:decide:${item.id}:reject`);
             setRejectionNotes((current) => ({
               ...current,
               [item.id]: value,
@@ -377,6 +532,13 @@ export default function RefundDrawer(context: ExtensionContextValue) {
           }}
           onApprove={() => {
             void decide(item, "approve");
+          }}
+          onReviewApproval={() => {
+            setError(null);
+            setApprovalReviewId(item.id);
+          }}
+          onDismissApproval={() => {
+            setApprovalReviewId(null);
           }}
           onReject={() => {
             void decide(item, "reject");
@@ -398,6 +560,15 @@ export default function RefundDrawer(context: ExtensionContextValue) {
           Load more
         </Button>
       )}
+      <Button
+        type="secondary"
+        disabled={loading || busyId !== null}
+        onPress={() => {
+          void loadRequests();
+        }}
+      >
+        Refresh requests
+      </Button>
     </Box>
   );
 
@@ -420,10 +591,22 @@ export default function RefundDrawer(context: ExtensionContextValue) {
             selectedKey={scope}
             onSelectionChange={(value) => {
               if (isRequestScope(value)) {
+                if (busyId !== null) {
+                  setError("Wait for the current workflow action before changing views.");
+                  return;
+                }
                 if (value !== "my_requests" && !currentUserIsApprover) {
                   setError("Only an explicit approver can open this activity view.");
                   return;
                 }
+                if (value === scope) {
+                  return;
+                }
+                setApprovalReviewId(null);
+                requestSequence.current += 1;
+                setRequests([]);
+                setRequestCursor(null);
+                setLoading(true);
                 setScope(value);
               }
             }}
@@ -451,13 +634,15 @@ export default function RefundDrawer(context: ExtensionContextValue) {
               description="External refund alerts are available only to a configured RefundDesk approver."
             />
           ) : null}
-          {currentUserIsApprover && alerts.length === 0 ? (
+          {alertLoading ? <LoadingState label="Loading external refund alerts…" /> : null}
+          {currentUserIsApprover && !alertLoading && alerts.length === 0 ? (
             <EmptyState message="No external refund alert needs review." />
           ) : null}
           {alerts.map((alert) => (
             <ExternalAlertCard
               key={alert.id}
               alert={alert}
+              actionsDisabled={busyId !== null}
               busy={busyId === alert.id}
               onAcknowledge={() => {
                 void acknowledge(alert);
@@ -467,7 +652,8 @@ export default function RefundDrawer(context: ExtensionContextValue) {
           {alertCursor === null ? null : (
             <Button
               type="secondary"
-              disabled={busyId !== null}
+              pending={alertLoading}
+              disabled={busyId !== null || alertLoading}
               onPress={() => {
                 void loadAlerts(alertCursor, true);
               }}
@@ -495,12 +681,21 @@ export default function RefundDrawer(context: ExtensionContextValue) {
             Prepare audit CSV
           </Button>
           {downloadUrl === null ? null : (
-            <Button href={downloadUrl} target="_blank" type="primary">
-              Download audit CSV
-            </Button>
+            <>
+              <Box>
+                This redacted link expires at {downloadExpiresAt ?? "the server-provided time"}.
+              </Box>
+              <Button href={downloadUrl} target="_blank" type="primary">
+                Download audit CSV
+              </Button>
+            </>
           )}
         </Box>
       </Box>
     </ContextView>
   );
+}
+
+export default function RefundDrawer(context: ExtensionContextValue) {
+  return <RefundDrawerView key={viewContextKey(context, false)} context={context} />;
 }

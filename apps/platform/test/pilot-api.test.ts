@@ -12,6 +12,7 @@ import type { AuditEvent } from "@refunddesk/db";
 
 import { OPTIONS as contextSyncOptions } from "../app/api/v1/context/sync/route.js";
 import {
+  auditDownloadActorSnapshot,
   auditCsvResponse,
   isStoredStripeAdministrator,
   renderRedactedAuditCsv,
@@ -74,6 +75,7 @@ function defaultRequest(): PilotRequestRecord {
     is_requester: false,
     justification: "Customer requested a partial refund.",
     payment_intent_id: "pi_pilot",
+    reason: "requested_by_customer",
     requester_user_id: "usr_requester",
     resource_id: "pi_pilot",
     resource_type: "payment_intent",
@@ -664,6 +666,19 @@ describe("signed pilot API boundary", () => {
     expect(repository.executeCount).toBe(0);
   });
 
+  it("returns the requester and Stripe reason needed for an approval decision", async () => {
+    const response = await invoke(PILOT_ROUTE_SPECS.refundRequestGet, {
+      command: { request_id: REQUEST_ID },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      justification: "Customer requested a partial refund.",
+      reason: "requested_by_customer",
+      requester_user_id: "usr_requester",
+    });
+  });
+
   it("does not disclose request details to an unrelated non-approver", async () => {
     repository.context = {
       ...defaultContext(),
@@ -861,6 +876,23 @@ describe("short-lived redacted audit exports", () => {
         { id: "view_only", type: "builtIn", name: "Super Administrator" },
       ]),
     ).toBe(false);
+  });
+
+  it("records the persisted authorization basis without copying stored roles", () => {
+    expect(
+      auditDownloadActorSnapshot(true, [{ id: "view_only", type: "builtIn", name: "View only" }]),
+    ).toEqual({
+      explicit_approver: true,
+      stored_stripe_administrator: false,
+    });
+    expect(
+      auditDownloadActorSnapshot(false, [
+        { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+      ]),
+    ).toEqual({
+      explicit_approver: false,
+      stored_stripe_administrator: true,
+    });
   });
 
   it("rejects expired and tampered bearer tokens", () => {

@@ -114,6 +114,16 @@ export class SignedExtensionRequestError extends Error {
   }
 }
 
+export function isDefinitiveMutationRejection(error: unknown): boolean {
+  return (
+    error instanceof SignedExtensionRequestError &&
+    error.code === "REQUEST_FAILED" &&
+    error.status !== undefined &&
+    error.status >= 400 &&
+    error.status < 500
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -245,7 +255,7 @@ function requireIdentity(context: ExtensionContextValue): {
   return { accountId, userId };
 }
 
-function createRequestNonce(): string {
+export function createRequestNonce(): string {
   if (typeof globalThis.crypto?.randomUUID !== "function") {
     throw new SignedExtensionRequestError(
       "API_CONFIGURATION_INVALID",

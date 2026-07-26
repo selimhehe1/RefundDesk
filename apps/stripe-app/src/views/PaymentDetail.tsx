@@ -18,7 +18,12 @@ import {
   type EligibilityResponse,
   type RefundReason,
 } from "../api/client";
-import { publicRequestError } from "../api/signed-fetch";
+import { MutationIntentRegistry } from "../api/mutation-intent";
+import {
+  createRequestNonce,
+  isDefinitiveMutationRejection,
+  publicRequestError,
+} from "../api/signed-fetch";
 import { ErrorState, LoadingState } from "../components/AsyncState";
 import {
   PilotLimitationNotice,
@@ -26,12 +31,15 @@ import {
   PilotModeLabel,
 } from "../components/PilotModeBanner";
 import { validateRefundForm, type RefundFormErrors } from "../validation";
+import { viewContextKey } from "../view-context";
+
+const CREATE_REQUEST_INTENT = "refund-request:create";
 
 function hasErrors(errors: RefundFormErrors): boolean {
   return errors.amount !== undefined || errors.justification !== undefined;
 }
 
-export default function PaymentDetail(context: ExtensionContextValue) {
+function PaymentDetailView({ context }: { readonly context: ExtensionContextValue }) {
   const paymentResource = getPaymentResource(context);
   const resourceType = paymentResource?.resourceType;
   const resourceId = paymentResource?.resourceId;
@@ -45,6 +53,7 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   const [formErrors, setFormErrors] = useState<RefundFormErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
 
   const loadEligibility = useCallback(async () => {
     if (liveMode || resourceType === undefined || resourceId === undefined) {
@@ -84,8 +93,18 @@ export default function PaymentDetail(context: ExtensionContextValue) {
     if (hasErrors(errors)) {
       return;
     }
+    const intentStart = mutationIntents.begin(CREATE_REQUEST_INTENT);
+    if (intentStart.status === "failed") {
+      setLoadError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
 
     setSubmitting(true);
+    setLoadError(null);
     setSuccessMessage(null);
     try {
       const response = await refundDeskApi.createRefundRequest(
@@ -97,11 +116,18 @@ export default function PaymentDetail(context: ExtensionContextValue) {
           reason,
           justification: justification.trim(),
         },
+        requestNonce,
       );
+      mutationIntents.complete(CREATE_REQUEST_INTENT);
       setSuccessMessage(`Request ${response.request_id} is awaiting another approver.`);
       setJustification("");
       await loadEligibility();
     } catch (error) {
+      if (isDefinitiveMutationRejection(error)) {
+        mutationIntents.complete(CREATE_REQUEST_INTENT);
+      } else {
+        mutationIntents.release(CREATE_REQUEST_INTENT);
+      }
       setLoadError(publicRequestError(error));
     } finally {
       setSubmitting(false);
@@ -111,6 +137,7 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   const reasonChanged = (value: string) => {
     const parsed = refundReasonSchema.safeParse(value);
     if (parsed.success) {
+      mutationIntents.reset(CREATE_REQUEST_INTENT);
       setReason(parsed.data);
     }
   };
@@ -128,6 +155,16 @@ export default function PaymentDetail(context: ExtensionContextValue) {
       return;
     }
 
+    const intentKey = `refund-request:cancel:${activeRequest.id}`;
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setLoadError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setSubmitting(true);
     setLoadError(null);
     setSuccessMessage(null);
@@ -136,10 +173,17 @@ export default function PaymentDetail(context: ExtensionContextValue) {
         context,
         { resourceType, resourceId },
         activeRequest.id,
+        requestNonce,
       );
+      mutationIntents.complete(intentKey);
       setSuccessMessage(`Request ${activeRequest.id} was canceled before execution.`);
       await loadEligibility();
     } catch (error) {
+      if (isDefinitiveMutationRejection(error)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setLoadError(publicRequestError(error));
     } finally {
       setSubmitting(false);
@@ -214,6 +258,7 @@ export default function PaymentDetail(context: ExtensionContextValue) {
               type="text"
               value={amountMinor}
               onChange={(event) => {
+                mutationIntents.reset(CREATE_REQUEST_INTENT);
                 setAmountMinor(event.target.value);
                 setFormErrors({});
               }}
@@ -251,6 +296,7 @@ export default function PaymentDetail(context: ExtensionContextValue) {
               rows={5}
               value={justification}
               onChange={(event) => {
+                mutationIntents.reset(CREATE_REQUEST_INTENT);
                 setJustification(event.target.value);
                 setFormErrors({});
               }}
@@ -273,4 +319,8 @@ export default function PaymentDetail(context: ExtensionContextValue) {
       </Box>
     </ContextView>
   );
+}
+
+export default function PaymentDetail(context: ExtensionContextValue) {
+  return <PaymentDetailView key={viewContextKey(context, true)} context={context} />;
 }

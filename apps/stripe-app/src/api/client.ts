@@ -80,6 +80,7 @@ const refundRequestSummarySchema = z
     can_decide: z.boolean(),
     can_cancel: z.boolean(),
     is_requester: z.boolean(),
+    reason: refundReasonSchema,
   })
   .strict();
 
@@ -232,6 +233,7 @@ export const refundDeskApi = {
       readonly reason: RefundReason;
       readonly justification: string;
     },
+    requestNonce: string,
   ) {
     return requestAndParse(
       context,
@@ -240,6 +242,7 @@ export const refundDeskApi = {
         operation: "refund_request.create",
         ...resource,
         command,
+        requestNonce,
       },
       createRequestResponseSchema,
     );
@@ -283,6 +286,7 @@ export const refundDeskApi = {
       readonly decision: "approve" | "reject";
       readonly justification?: string;
     },
+    requestNonce: string,
   ) {
     const canonicalCommand: JsonValue = {
       request_id: command.request_id,
@@ -296,6 +300,7 @@ export const refundDeskApi = {
         operation: "refund_request.decide",
         ...resource,
         command: canonicalCommand,
+        requestNonce,
       },
       requestMutationResponseSchema,
     );
@@ -305,6 +310,7 @@ export const refundDeskApi = {
     context: ExtensionContextValue,
     resource: PaymentResource,
     requestId: string,
+    requestNonce: string,
   ) {
     return requestAndParse(
       context,
@@ -313,6 +319,7 @@ export const refundDeskApi = {
         operation: "refund_request.cancel",
         ...resource,
         command: { request_id: requestId },
+        requestNonce,
       },
       requestMutationResponseSchema,
     );
@@ -334,7 +341,7 @@ export const refundDeskApi = {
     );
   },
 
-  acknowledgeExternalAlert(context: ExtensionContextValue, alertId: string) {
+  acknowledgeExternalAlert(context: ExtensionContextValue, alertId: string, requestNonce: string) {
     return requestAndParse(
       context,
       {
@@ -342,6 +349,7 @@ export const refundDeskApi = {
         operation: "external_alert.acknowledge",
         ...accountResource(context),
         command: { alert_id: alertId },
+        requestNonce,
       },
       alertMutationResponseSchema,
     );
@@ -367,6 +375,7 @@ export const refundDeskApi = {
       readonly expiration_days: 7;
       readonly onboarding_completed: boolean;
     },
+    requestNonce: string,
   ) {
     return requestAndParse(
       context,
@@ -375,12 +384,13 @@ export const refundDeskApi = {
         operation: "settings.update",
         ...accountResource(context),
         command,
+        requestNonce,
       },
       settingsResponseSchema,
     );
   },
 
-  createAuditExport(context: ExtensionContextValue) {
+  createAuditExport(context: ExtensionContextValue, requestNonce: string) {
     return requestAndParse(
       context,
       {
@@ -388,6 +398,7 @@ export const refundDeskApi = {
         operation: "audit.export",
         ...accountResource(context),
         command: { format: "csv" },
+        requestNonce,
       },
       auditExportResponseSchema,
     );

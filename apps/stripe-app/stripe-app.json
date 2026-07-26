@@ -2,7 +2,7 @@
   "$schema": "https://stripe.com/stripe-app.schema.json",
   "id": "com.refunddesk.workflow",
   "name": "RefundDesk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "icon": "./assets/icon.png",
   "ui_extension": {
     "views": [
@@ -28,7 +28,6 @@
       "purpose": "Send authenticated refund workflow, settings, alert, and audit requests to the RefundDesk API."
     }
   },
-  "extensions": null,
   "permissions": [
     {
       "permission": "charge_read",

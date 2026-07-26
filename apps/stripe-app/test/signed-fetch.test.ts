@@ -4,10 +4,33 @@ import { describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../src/api/canonical-json";
 import {
   isAdministrator,
+  isDefinitiveMutationRejection,
   prepareSignedRequest,
+  SignedExtensionRequestError,
   signedApiRequest,
   type SignaturePayload,
 } from "../src/api/signed-fetch";
+
+describe("mutation response certainty", () => {
+  it("rotates only after an authoritative 4xx rejection", () => {
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Rejected", 422),
+      ),
+    ).toBe(true);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Unavailable", 500),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("RESPONSE_INVALID", "Unreadable success", 200),
+      ),
+    ).toBe(false);
+    expect(isDefinitiveMutationRejection(new TypeError("Network failed"))).toBe(false);
+  });
+});
 
 function createContext(
   overrides: {

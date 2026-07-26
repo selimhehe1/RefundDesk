@@ -44,6 +44,16 @@ export function isStoredStripeAdministrator(roles: Prisma.JsonValue): boolean {
   });
 }
 
+export function auditDownloadActorSnapshot(
+  approverEnabled: boolean,
+  roles: Prisma.JsonValue,
+): Prisma.InputJsonObject {
+  return {
+    explicit_approver: approverEnabled,
+    stored_stripe_administrator: isStoredStripeAdministrator(roles),
+  };
+}
+
 function safeCsvCell(value: string): string {
   const formulaSafe = /^[=+\-@\t\r\n]/u.test(value) ? `'${value}` : value;
   return `"${formulaSafe.replaceAll('"', '""')}"`;
@@ -172,7 +182,7 @@ export async function handlePilotAuditDownload(
         await repositories.appendAuditEvent({
           action: "audit.export_downloaded",
           actorId: actor.stripeUserId,
-          actorSnapshot: {},
+          actorSnapshot: auditDownloadActorSnapshot(actor.approverEnabled, actor.stripeRoles),
           actorType: "stripe_user",
           correlationRequestId: token.nonce,
           entityId: installation.id,

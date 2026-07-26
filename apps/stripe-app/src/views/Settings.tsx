@@ -4,22 +4,30 @@ import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
 import { Banner, Box, SettingsView, TextArea, TextField } from "@stripe/ui-extension-sdk/ui";
 
 import { refundDeskApi, type SettingsResponse } from "../api/client";
-import { isAdministrator, publicRequestError } from "../api/signed-fetch";
+import { MutationIntentRegistry } from "../api/mutation-intent";
+import {
+  createRequestNonce,
+  isAdministrator,
+  isDefinitiveMutationRejection,
+  publicRequestError,
+} from "../api/signed-fetch";
 import { LoadingState } from "../components/AsyncState";
 import {
   PilotLimitationNotice,
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
-import { parseApproverUserIds } from "../validation";
+import { parseApproverUserIdsStrict } from "../validation";
+import { viewContextKey } from "../view-context";
 
-export default function Settings(context: ExtensionContextValue) {
+function SettingsViewContent({ context }: { readonly context: ExtensionContextValue }) {
   const liveMode = context.environment.mode === "live";
   const administrator = isAdministrator(context);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
   const [loading, setLoading] = useState(!liveMode);
   const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
 
   useEffect(() => {
     if (liveMode) {
@@ -51,24 +59,53 @@ export default function Settings(context: ExtensionContextValue) {
 
   const save = async (values: { readonly [key: string]: string }) => {
     const rawApprovers = values["approver_user_ids"] ?? "";
-    const approverUserIds = parseApproverUserIds(rawApprovers);
+    const { approverUserIds, invalidValues } = parseApproverUserIdsStrict(rawApprovers);
+    if (invalidValues.length > 0) {
+      setError(
+        "Every approver must be a Stripe user ID beginning with usr_. Remove names or e-mail addresses.",
+      );
+      setStatusMessage("Not saved");
+      return;
+    }
     if (approverUserIds.length === 0) {
       setError("Keep at least one eligible Stripe user ID as an approver.");
       setStatusMessage("Not saved");
       return;
     }
 
+    const onboardingCompleted = settings?.onboarding_completed ?? true;
+    const intentKey = `settings:update:${onboardingCompleted ? "complete" : "incomplete"}:${approverUserIds.join(",")}`;
+    const intentStart = mutationIntents.begin(intentKey);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      setStatusMessage("Not saved");
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setStatusMessage("Saving…");
     setError(null);
     try {
-      const response = await refundDeskApi.updateSettings(context, {
-        approver_user_ids: approverUserIds,
-        expiration_days: 7,
-        onboarding_completed: settings?.onboarding_completed ?? true,
-      });
+      const response = await refundDeskApi.updateSettings(
+        context,
+        {
+          approver_user_ids: approverUserIds,
+          expiration_days: 7,
+          onboarding_completed: onboardingCompleted,
+        },
+        requestNonce,
+      );
+      mutationIntents.complete(intentKey);
       setSettings(response);
       setStatusMessage("Saved");
     } catch (saveError) {
+      if (isDefinitiveMutationRejection(saveError)) {
+        mutationIntents.complete(intentKey);
+      } else {
+        mutationIntents.release(intentKey);
+      }
       setStatusMessage("Not saved");
       setError(publicRequestError(saveError));
     }
@@ -145,4 +182,8 @@ export default function Settings(context: ExtensionContextValue) {
       </Box>
     </SettingsView>
   );
+}
+
+export default function Settings(context: ExtensionContextValue) {
+  return <SettingsViewContent key={viewContextKey(context, false)} context={context} />;
 }

@@ -5,14 +5,23 @@ import { Banner, Box, Button, Checkbox, OnboardingView } from "@stripe/ui-extens
 import type { OnboardingViewProps } from "@stripe/ui-extension-sdk/ui";
 
 import { refundDeskApi } from "../api/client";
-import { isAdministrator, publicRequestError } from "../api/signed-fetch";
+import { MutationIntentRegistry } from "../api/mutation-intent";
+import {
+  createRequestNonce,
+  isAdministrator,
+  isDefinitiveMutationRejection,
+  publicRequestError,
+} from "../api/signed-fetch";
 import {
   PilotLimitationNotice,
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { viewContextKey } from "../view-context";
 
-export default function Onboarding(context: ExtensionContextValue) {
+const COMPLETE_ONBOARDING_INTENT = "settings:onboarding";
+
+function OnboardingViewContent({ context }: { readonly context: ExtensionContextValue }) {
   const liveMode = context.environment.mode === "live";
   const administrator = isAdministrator(context);
   const userId = context.userContext.id;
@@ -20,6 +29,7 @@ export default function Onboarding(context: ExtensionContextValue) {
   const [completed, setCompleted] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
 
   useEffect(() => {
     if (liveMode) {
@@ -30,6 +40,7 @@ export default function Onboarding(context: ExtensionContextValue) {
       try {
         const response = await refundDeskApi.syncContext(context);
         if (active && response.onboarding_completed) {
+          setLimitationAccepted(true);
           setCompleted(true);
         }
       } catch (syncError) {
@@ -48,16 +59,35 @@ export default function Onboarding(context: ExtensionContextValue) {
     if (liveMode || !administrator || !limitationAccepted || userId === undefined) {
       return;
     }
+    const intentStart = mutationIntents.begin(COMPLETE_ONBOARDING_INTENT);
+    if (intentStart.status === "failed") {
+      setError(publicRequestError(intentStart.error));
+      return;
+    }
+    if (intentStart.status === "busy") {
+      return;
+    }
+    const { requestNonce } = intentStart;
     setPending(true);
     setError(null);
     try {
-      await refundDeskApi.updateSettings(context, {
-        approver_user_ids: [userId],
-        expiration_days: 7,
-        onboarding_completed: true,
-      });
+      await refundDeskApi.updateSettings(
+        context,
+        {
+          approver_user_ids: [userId],
+          expiration_days: 7,
+          onboarding_completed: true,
+        },
+        requestNonce,
+      );
+      mutationIntents.complete(COMPLETE_ONBOARDING_INTENT);
       setCompleted(true);
     } catch (onboardingError) {
+      if (isDefinitiveMutationRejection(onboardingError)) {
+        mutationIntents.complete(COMPLETE_ONBOARDING_INTENT);
+      } else {
+        mutationIntents.release(COMPLETE_ONBOARDING_INTENT);
+      }
       setError(publicRequestError(onboardingError));
     } finally {
       setPending(false);
@@ -77,10 +107,6 @@ export default function Onboarding(context: ExtensionContextValue) {
     {
       title: "Activate the current Administrator as first approver",
       status: administrator ? (completed ? "complete" : "in-progress") : "blocked",
-    },
-    {
-      title: "Complete a two-person synthetic refund workflow",
-      status: "not-started",
     },
   ];
 
@@ -148,4 +174,8 @@ export default function Onboarding(context: ExtensionContextValue) {
       </Box>
     </OnboardingView>
   );
+}
+
+export default function Onboarding(context: ExtensionContextValue) {
+  return <OnboardingViewContent key={viewContextKey(context, false)} context={context} />;
 }

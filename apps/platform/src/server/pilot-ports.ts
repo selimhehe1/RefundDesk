@@ -61,6 +61,7 @@ export interface PilotRequestSummary {
   readonly id: string;
   readonly is_requester: boolean;
   readonly justification: string | null;
+  readonly reason: "duplicate" | "fraudulent" | "requested_by_customer";
   readonly requester_user_id: string;
   readonly resource_id: string;
   readonly resource_type: PilotPaymentResourceType;

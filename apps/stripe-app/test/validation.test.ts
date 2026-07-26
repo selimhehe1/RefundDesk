@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseApproverUserIds, validateRefundForm } from "../src/validation";
+import {
+  parseApproverUserIds,
+  parseApproverUserIdsStrict,
+  validateRefundForm,
+} from "../src/validation";
 
 describe("refund form validation", () => {
   it("accepts an exact positive minor-unit amount", () => {
@@ -56,5 +60,14 @@ describe("approver IDs", () => {
       "usr_Admin",
       "usr_Reviewer",
     ]);
+  });
+
+  it("reports every invalid approver value instead of silently dropping it", () => {
+    expect(
+      parseApproverUserIdsStrict("usr_Admin\nperson@example.com, display-name, person@example.com"),
+    ).toEqual({
+      approverUserIds: ["usr_Admin"],
+      invalidValues: ["person@example.com", "display-name"],
+    });
   });
 });
