@@ -26,10 +26,16 @@ claim that `0.1.1` was reinstalled or rerun in that external account. Likewise,
 impossible, not that Stripe has approved the App for Marketplace distribution. External-test link
 access was closed after verification.
 
-Phase 1 repository foundations are complete and locally verified. The pinned workspace, strict
-contracts, PostgreSQL role separation, four migrations, RLS checks, 248 local tests, 19 PostgreSQL
-integration tests, build, secret scanning and dependency audits pass. RefundDesk remains strictly
-local plus Stripe test/managed sandbox until a separately authorized cycle.
+The repository foundations and durable pilot path are implemented and locally verified. The pinned
+workspace, strict contracts, PostgreSQL role separation, five migrations, forced-RLS checks,
+PostgreSQL integration suites, build, secret scanning and dependency audits pass.
+
+On 26 July 2026, the opt-in durable gate also passed against the selected Stripe test account. It
+created a synthetic card PaymentIntent, routed a partial refund through a distinct requester and
+approver, executed exactly one real test Refund through pg-boss, replayed the execution without a
+second Refund or attempt, reconciled the immutable Refund link, and removed its ephemeral database
+and login roles before writing redacted `PASS` evidence. This is test-mode engineering evidence,
+not live authorization or production readiness.
 
 ## Prerequisites
 
@@ -71,6 +77,30 @@ fields database-managed; do not replace this with a broad table grant.
 Never paste secrets into source files, Git, logs, issues, or chat. Put local credentials only in
 the ignored `.env.local`. Do not run real sandbox scenarios without explicit test/sandbox
 credentials and synthetic allowlisted objects.
+
+## Durable Stripe test gate
+
+`pnpm test:sandbox` is deliberately excluded from ordinary tests and fails closed unless every
+required test/sandbox setting and the exact synthetic-test consent are present:
+
+```powershell
+$env:REFUNDDESK_RUN_SANDBOX_E2E = "I_ACKNOWLEDGE_SYNTHETIC_TEST_ONLY"
+$env:REFUNDDESK_GLOBAL_LIVE_ENABLED = "false"
+$env:REFUNDDESK_SANDBOX_E2E_ENVIRONMENT = "test"
+$env:REFUNDDESK_SANDBOX_E2E_ACCOUNT_ID = "<selected test account ID>"
+$env:REFUNDDESK_SANDBOX_E2E_ADMIN_DATABASE_URL = "<explicit loopback PostgreSQL 18 owner URL>"
+$env:STRIPE_PLATFORM_TEST_KEY = "<test-mode platform key>"
+$env:STRIPE_FIXTURE_TEST_KEY = "<test-mode key bound to the selected account>"
+$env:STRIPE_MANAGED_SANDBOX_KEY = "<separate managed-sandbox test key>"
+pnpm test:sandbox
+```
+
+The gate refuses production, live mode, live keys, non-loopback PostgreSQL and a fixture key bound
+to another account. It creates only a synthetic EUR card payment of 10.99 and a partial test refund
+of 1.09. A fully converged run deletes its isolated database and runtime logins before atomically
+writing a fingerprint-only JSON result under the ignored `sandbox-evidence.local` directory. If
+execution has started but convergence is uncertain, it preserves the database for reconciliation
+and does not write `PASS`.
 
 The human checkpoints, real Stripe cases, operating procedures and evidence rules are documented
 in [PLANS.md](./PLANS.md), [docs/SANDBOX_TEST_PLAN.md](./docs/SANDBOX_TEST_PLAN.md), and

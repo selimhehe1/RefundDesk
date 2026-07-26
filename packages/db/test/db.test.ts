@@ -340,6 +340,24 @@ describe("migration hardening", () => {
     );
   });
 
+  it("converges a succeeded linked Refund when Stripe later cancels it", async () => {
+    const sql = await readFile(
+      new URL(
+        "../prisma/migrations/20260726190000_canceled_refund_terminal_convergence/migration.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(sql).toContain("current_refund_status NOT IN ('failed', 'canceled')");
+    expect(sql).toContain("NEW.\"stripe_refund_status\" IN ('failed', 'canceled')");
+    expect(sql).toContain(
+      "OLD.\"stripe_refund_status\" = 'canceled'\n         AND NEW.\"stripe_refund_status\" = 'failed'",
+    );
+    expect(sql).not.toContain('NEW."terminal_at"');
+    expect(sql).not.toContain('NEW."payment_guard_released_at"');
+  });
+
   it("exposes only a guarded tenant-purge capability to maintenance", async () => {
     const [sql, runtimeRoles] = await Promise.all([
       readFile(

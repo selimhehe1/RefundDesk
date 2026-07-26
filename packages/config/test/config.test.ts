@@ -9,6 +9,7 @@ function validEnvironment(): NodeJS.ProcessEnv {
     WORKER_DATABASE_URL: "postgresql://worker:local@localhost:5432/refunddesk",
     PGBOSS_DATABASE_URL: "postgresql://worker:local@localhost:5432/refunddesk",
     STRIPE_API_VERSION: "2026-06-24.dahlia",
+    STRIPE_APP_ID: "ca_synthetic",
     STRIPE_APP_SIGNING_SECRET: "absec_synthetic",
     STRIPE_PLATFORM_TEST_KEY: "sk_test_synthetic",
     STRIPE_MANAGED_SANDBOX_KEY: "rk_test_synthetic",
@@ -42,6 +43,20 @@ describe("loadConfig", () => {
         STRIPE_PLATFORM_TEST_KEY: "replace_me",
       }),
     ).toThrow();
+  });
+
+  it("requires, validates, and exposes the Stripe App application ID", () => {
+    const missingAppId = validEnvironment();
+    delete missingAppId["STRIPE_APP_ID"];
+
+    expect(() => loadConfig(missingAppId)).toThrow();
+    expect(() =>
+      loadConfig({
+        ...validEnvironment(),
+        STRIPE_APP_ID: "com.refunddesk.workflow",
+      }),
+    ).toThrow();
+    expect(loadConfig(validEnvironment()).stripe.appId).toBe("ca_synthetic");
   });
 
   it("requires independent encryption and proof keys", () => {

@@ -247,11 +247,14 @@ function shouldApplyRefundObservation(
     return false;
   }
 
-  if (currentStatus === "failed" || currentStatus === "canceled") {
-    return incomingStatus === currentStatus;
+  if (currentStatus === "failed") {
+    return incomingStatus === "failed";
+  }
+  if (currentStatus === "canceled") {
+    return incomingStatus === "canceled" || incomingStatus === "failed";
   }
   if (currentStatus === "succeeded" && incomingStatus !== "succeeded") {
-    return incomingStatus === "failed";
+    return incomingStatus === "failed" || incomingStatus === "canceled";
   }
   if (currentStatus !== null && incomingStatus === null) {
     return false;
@@ -387,11 +390,9 @@ export class TenantRepositories {
   }
 
   async getSettings(installationId: string): Promise<SettingsSnapshot | null> {
-    const [installation, activePolicy, approvers] = await Promise.all([
-      this.getInstallationContext(installationId),
-      this.getActiveApprovalPolicy(),
-      this.listApprovers(),
-    ]);
+    const installation = await this.getInstallationContext(installationId);
+    const activePolicy = await this.getActiveApprovalPolicy();
+    const approvers = await this.listApprovers();
     return installation === null ? null : { installation, activePolicy, approvers };
   }
 
@@ -1025,7 +1026,7 @@ export class TenantRepositories {
     if (
       lockedRequest.workflow_status === "succeeded" &&
       lockedRequest.stripe_refund_status === "succeeded" &&
-      input.stripeRefundStatus === "failed"
+      (input.stripeRefundStatus === "failed" || input.stripeRefundStatus === "canceled")
     ) {
       const corrected = await this.tx.refundRequest.updateMany({
         where: {

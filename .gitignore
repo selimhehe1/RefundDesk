@@ -20,3 +20,4 @@ Thumbs.db
 packages/db/src/generated/
 stripe-fixtures.local.json
 phase-0-evidence.local/
+sandbox-evidence.local/

@@ -293,6 +293,15 @@ export function pilotAssertedStripeRolesSnapshot(
   return roles === null ? [] : pilotStripeRolesJson(roles);
 }
 
+export function pilotAuditActorSnapshot(
+  roles: PilotMutationMetadata["assertedStripeRoles"],
+): Prisma.InputJsonObject {
+  return {
+    roles_asserted: roles !== null,
+    stripe_roles: pilotAssertedStripeRolesSnapshot(roles),
+  };
+}
+
 export class PilotPrismaRepository implements PilotRepository {
   private readonly now: () => Date;
 
@@ -324,16 +333,12 @@ export class PilotPrismaRepository implements PilotRepository {
       this.options.client,
       resolved.tenantId,
       async ({ repositories }) => {
-        const [installation, actor] = await Promise.all([
-          repositories.getInstallationContext(resolved.installationId),
-          repositories.observeTenantUser({
-            stripeUserId: identity.userId,
-            verifiedAt: this.now(),
-            ...(identity.rolesAsserted
-              ? { stripeRoles: pilotStripeRolesJson(identity.roles) }
-              : {}),
-          }),
-        ]);
+        const installation = await repositories.getInstallationContext(resolved.installationId);
+        const actor = await repositories.observeTenantUser({
+          stripeUserId: identity.userId,
+          verifiedAt: this.now(),
+          ...(identity.rolesAsserted ? { stripeRoles: pilotStripeRolesJson(identity.roles) } : {}),
+        });
         if (installation === null) {
           return null;
         }
@@ -681,11 +686,12 @@ export class PilotPrismaRepository implements PilotRepository {
     mutation: Extract<PilotMutation, { kind: "refund_request_create" }>,
     repositories: TenantRepositories,
   ): Promise<PilotStoredResponse> {
-    const [policy, activeRequest, distinctApprovers] = await Promise.all([
-      repositories.getActiveApprovalPolicy(),
-      repositories.getActiveRequestByPayment(context.environment, mutation.payment.paymentKey),
-      repositories.countEligibleDistinctApprovers(context.actor.id),
-    ]);
+    const policy = await repositories.getActiveApprovalPolicy();
+    const activeRequest = await repositories.getActiveRequestByPayment(
+      context.environment,
+      mutation.payment.paymentKey,
+    );
+    const distinctApprovers = await repositories.countEligibleDistinctApprovers(context.actor.id);
     if (
       policy === null ||
       policy.requiredApprovals !== 1 ||
@@ -742,7 +748,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "refund_request.created",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: request.id,
@@ -767,12 +773,10 @@ export class PilotPrismaRepository implements PilotRepository {
     repositories: TenantRepositories,
     tx: Prisma.TransactionClient,
   ): Promise<PilotStoredResponse> {
-    const [request, actor] = await Promise.all([
-      repositories.getRefundRequestDetail(mutation.requestId),
-      tx.tenantUser.findFirst({
-        where: { id: context.actor.id, tenantId: context.tenantId },
-      }),
-    ]);
+    const request = await repositories.getRefundRequestDetail(mutation.requestId);
+    const actor = await tx.tenantUser.findFirst({
+      where: { id: context.actor.id, tenantId: context.tenantId },
+    });
     if (request === null) {
       throw new PilotApiError("REQUEST_NOT_FOUND", 404, "The refund request was not found.");
     }
@@ -839,7 +843,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: `refund_request.${mutation.decision}d`,
       actorId: actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: mutation.requestId,
@@ -883,7 +887,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "refund_request.canceled",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: mutation.requestId,
@@ -924,7 +928,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "external_refund_alert.acknowledged",
       actorId: actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: alert.id,
@@ -982,7 +986,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "settings.updated",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: context.installationId,
@@ -1030,7 +1034,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "audit.export_prepared",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
+      actorSnapshot: pilotAuditActorSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: context.installationId,

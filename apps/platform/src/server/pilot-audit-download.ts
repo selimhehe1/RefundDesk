@@ -127,15 +127,13 @@ export async function handlePilotAuditDownload(
       dependencies.client,
       token.tenant_id,
       async ({ repositories, tx }) => {
-        const [installation, actor] = await Promise.all([
-          repositories.getInstallationContext(token.installation_id),
-          tx.tenantUser.findFirst({
-            where: {
-              stripeUserId: token.actor_id,
-              tenantId: token.tenant_id,
-            },
-          }),
-        ]);
+        const installation = await repositories.getInstallationContext(token.installation_id);
+        const actor = await tx.tenantUser.findFirst({
+          where: {
+            stripeUserId: token.actor_id,
+            tenantId: token.tenant_id,
+          },
+        });
         if (
           installation === null ||
           installation.environment !== token.environment ||

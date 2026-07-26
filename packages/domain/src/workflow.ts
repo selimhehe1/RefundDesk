@@ -1,6 +1,7 @@
 import { DomainError } from "./errors.js";
 import { transitionEffectState } from "./effect.js";
 import type {
+  AbsenceProvingStripeRefundStatus,
   ApprovalDecision,
   ApprovalDecisionKind,
   EffectState,
@@ -29,7 +30,7 @@ export interface LinkedRefundTerminalCorrection {
   readonly linkedStripeRefundId: string;
   readonly observedStripeRefundId: string;
   readonly previousStripeRefundStatus: "succeeded";
-  readonly authoritativeStripeRefundStatus: "failed";
+  readonly authoritativeStripeRefundStatus: AbsenceProvingStripeRefundStatus;
 }
 
 export interface StandardTransitionContext {
@@ -40,7 +41,7 @@ export interface StandardTransitionContext {
 
 export interface LinkedRefundTerminalCorrectionContext {
   readonly effectState: "absence_proven";
-  readonly stripeRefundStatus: "failed";
+  readonly stripeRefundStatus: AbsenceProvingStripeRefundStatus;
   readonly linkedRefundTerminalCorrection: LinkedRefundTerminalCorrection;
 }
 
@@ -123,7 +124,7 @@ export function transitionWorkflowStatus(
 export interface CorrectLinkedRefundTerminalStatusInput {
   readonly workflow: RefundWorkflow;
   readonly observedStripeRefundId: string;
-  readonly authoritativeStripeRefundStatus: "failed";
+  readonly authoritativeStripeRefundStatus: AbsenceProvingStripeRefundStatus;
 }
 
 export function correctLinkedRefundTerminalStatus(

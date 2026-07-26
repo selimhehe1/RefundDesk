@@ -164,6 +164,26 @@ describe("workflow", () => {
       }),
     ).toThrowError(expect.objectContaining({ code: "INVALID_WORKFLOW_TRANSITION" }));
   });
+
+  it("corrects the same succeeded Refund when Stripe later cancels it", () => {
+    const corrected = correctLinkedRefundTerminalStatus({
+      workflow: pendingWorkflow({
+        status: "succeeded",
+        effectState: "identified",
+        stripeRefundId: "re_linked",
+        stripeRefundStatus: "succeeded",
+      }),
+      observedStripeRefundId: "re_linked",
+      authoritativeStripeRefundStatus: "canceled",
+    });
+
+    expect(corrected).toMatchObject({
+      status: "failed_terminal",
+      effectState: "absence_proven",
+      stripeRefundId: "re_linked",
+      stripeRefundStatus: "canceled",
+    });
+  });
 });
 
 describe("payment eligibility and guard", () => {

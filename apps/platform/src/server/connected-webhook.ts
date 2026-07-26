@@ -65,6 +65,7 @@ export interface ConnectedWebhookPersistence {
 }
 
 export interface ConnectedWebhookDependencies {
+  readonly expectedApplicationId: string;
   readonly signingSecret: string;
   readonly constructEvent: (
     rawBody: Buffer,
@@ -192,6 +193,7 @@ function defaultDependencies(
     }),
   );
   return {
+    expectedApplicationId: config.stripe.appId,
     signingSecret,
     constructEvent: (rawBody, signature, secret) =>
       stripe.constructWebhookEvent(rawBody, signature, secret),
@@ -338,6 +340,16 @@ export async function receiveConnectedWebhook(
   }
   if (normalized === null) {
     return jsonResponse({ received: true, event_id: event.id, ignored: true });
+  }
+  if (
+    "application_id" in normalized.payload &&
+    normalized.payload.application_id !== dependencies.expectedApplicationId
+  ) {
+    return apiError(
+      "APPLICATION_MISMATCH",
+      "Lifecycle event belongs to a different Stripe App",
+      400,
+    );
   }
 
   const dbEndpoint = connectedEndpoint(endpoint);

@@ -4,6 +4,7 @@ import type { PrismaClient } from "@refunddesk/db";
 import { FieldEncryptionKeyring } from "@refunddesk/domain";
 
 import {
+  pilotAuditActorSnapshot,
   pilotAssertedStripeRolesSnapshot,
   PilotPrismaRepository,
   pilotStripeRolesJson,
@@ -198,6 +199,14 @@ describe("Stripe role persistence", () => {
 
     expect(pilotAssertedStripeRolesSnapshot(null)).toEqual([]);
     expect(pilotAssertedStripeRolesSnapshot(assertedRoles)).toEqual(assertedRoles);
+    expect(pilotAuditActorSnapshot(null)).toEqual({
+      roles_asserted: false,
+      stripe_roles: [],
+    });
+    expect(pilotAuditActorSnapshot(assertedRoles)).toEqual({
+      roles_asserted: true,
+      stripe_roles: assertedRoles,
+    });
   });
 
   it.each([
@@ -311,7 +320,10 @@ describe("Stripe role persistence", () => {
     expect(capturedDecisions).toHaveLength(1);
     expect(capturedDecisions[0]?.["stripeRolesSnapshot"]).toEqual(expectedSnapshot);
     expect(capturedAuditEvents).toHaveLength(1);
-    expect(capturedAuditEvents[0]?.["actorSnapshot"]).toEqual(expectedSnapshot);
+    expect(capturedAuditEvents[0]?.["actorSnapshot"]).toEqual({
+      roles_asserted: assertedStripeRoles !== null,
+      stripe_roles: expectedSnapshot,
+    });
     expect(capturedAuditEvents[0]?.["payload"]).toEqual({
       decision: "approve",
       roles_asserted: assertedStripeRoles !== null,

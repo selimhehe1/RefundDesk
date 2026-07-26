@@ -17,6 +17,7 @@ import {
 
 const TEST_SECRET = "whsec_connected_test";
 const SANDBOX_SECRET = "whsec_connected_sandbox";
+const APP_ID = "ca_connected";
 const TENANT_ID = "4f7718e3-783b-4698-8f86-af631bd4c91e";
 const INSTALLATION_ID = "8f9dd61e-5ce4-4c74-a88f-297730aab274";
 const RECEIPT_ID = "67f37649-b880-4bb9-847f-21da2cf53580";
@@ -40,9 +41,11 @@ class FakePersistence implements ConnectedWebhookPersistence {
   };
   readonly resolutions: Array<Parameters<ConnectedWebhookPersistence["resolve"]>[0]> = [];
   readonly inserts: InsertCall[] = [];
+  findExistingCalls = 0;
   insertError: Error | null = null;
 
   findExisting(): Promise<{ readonly receiptId: string } | null> {
+    this.findExistingCalls += 1;
     return Promise.resolve(
       this.existingReceiptId === null ? null : { receiptId: this.existingReceiptId },
     );
@@ -105,6 +108,7 @@ function refundEvent(
 
 function lifecycleEvent(
   type: "account.application.authorized" | "account.application.deauthorized",
+  applicationId = APP_ID,
 ): Readonly<Record<string, unknown>> {
   return {
     id:
@@ -117,7 +121,7 @@ function lifecycleEvent(
     created: Math.floor(Date.now() / 1_000),
     data: {
       object: {
-        id: "ca_connected",
+        id: applicationId,
         object: "application",
         name: "RefundDesk",
       },
@@ -152,6 +156,7 @@ function dependencies(
   signingSecret = TEST_SECRET,
 ): ConnectedWebhookDependencies {
   return {
+    expectedApplicationId: APP_ID,
     signingSecret,
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300),
@@ -256,6 +261,24 @@ describe("durable connected Stripe webhook ingress", () => {
     expect(persistence.resolutions).toHaveLength(1);
     expect(persistence.inserts).toHaveLength(1);
   });
+
+  it.each(["account.application.authorized", "account.application.deauthorized"] as const)(
+    "rejects a %s Event for another Stripe App before persistence",
+    async (eventType) => {
+      const persistence = new FakePersistence();
+      persistence.existingReceiptId = RECEIPT_ID;
+
+      const response = await receive(lifecycleEvent(eventType, "ca_other"), persistence);
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "APPLICATION_MISMATCH",
+      });
+      expect(persistence.findExistingCalls).toBe(0);
+      expect(persistence.resolutions).toEqual([]);
+      expect(persistence.inserts).toEqual([]);
+    },
+  );
 
   it("accepts a signed non-UUID request metadata value for tampering classification", async () => {
     const persistence = new FakePersistence();

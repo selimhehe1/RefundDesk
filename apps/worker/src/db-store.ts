@@ -132,9 +132,15 @@ export function shouldApplyLinkedRefundObservation({
     return false;
   }
 
-  const incomingIsFailure =
-    observation.source.eventType === "refund.failed" || observation.refund.status === "failed";
-  return currentStatus !== "failed" && incomingIsFailure;
+  const incomingStatus =
+    observation.source.eventType === "refund.failed" ? "failed" : observation.refund.status;
+  if (incomingStatus === "failed") {
+    return currentStatus !== "failed";
+  }
+  if (incomingStatus === "canceled") {
+    return currentStatus !== "failed" && currentStatus !== "canceled";
+  }
+  return false;
 }
 
 function dateEquals(left: Date, right: Date): boolean {

@@ -229,6 +229,7 @@ async function deliverWebhook(input: {
   readonly trace: string[];
 }): Promise<Readonly<Record<string, unknown>>> {
   const dependencies: ConnectedWebhookDependencies = {
+    expectedApplicationId: "ca_refunddesk",
     signingSecret: SIGNING_SECRET,
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300, undefined, EVENT_CREATED),

@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 const appSigningSecret = z.string().regex(/^absec_[A-Za-z0-9_]+$/u);
+const stripeAppId = z
+  .string()
+  .regex(/^ca_[A-Za-z0-9]+$/u)
+  .max(255);
 const testApiKey = z.string().regex(/^(?:sk|rk)_test_[A-Za-z0-9_]+$/u);
 const webhookSecret = z.string().regex(/^whsec_[A-Za-z0-9_]+$/u);
 const base64Key = z
@@ -40,6 +44,7 @@ const environmentSchema = z
     DATABASE_MIGRATION_URL: z.string().min(1).optional(),
     PGBOSS_DATABASE_URL: z.string().min(1),
     STRIPE_API_VERSION: z.literal("2026-06-24.dahlia"),
+    STRIPE_APP_ID: stripeAppId,
     STRIPE_APP_SIGNING_SECRET: appSigningSecret,
     STRIPE_PLATFORM_TEST_KEY: testApiKey,
     STRIPE_MANAGED_SANDBOX_KEY: testApiKey,
@@ -181,6 +186,7 @@ export interface RefundDeskConfig {
   readonly liveEnabled: false;
   readonly stripe: {
     readonly apiVersion: "2026-06-24.dahlia";
+    readonly appId: string;
     readonly appSigningSecret: string;
     readonly platformTestKey: string;
     readonly managedSandboxKey: string;
@@ -213,6 +219,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): RefundDeskC
     liveEnabled: false,
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,
+      appId: env.STRIPE_APP_ID,
       appSigningSecret: env.STRIPE_APP_SIGNING_SECRET,
       platformTestKey: env.STRIPE_PLATFORM_TEST_KEY,
       managedSandboxKey: env.STRIPE_MANAGED_SANDBOX_KEY,

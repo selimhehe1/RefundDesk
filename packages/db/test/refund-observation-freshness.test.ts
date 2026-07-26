@@ -102,6 +102,31 @@ describe("Stripe refund observation freshness", () => {
     });
   });
 
+  it("corrects a succeeded Refund cancellation without rewriting terminal timestamps", async () => {
+    const tx = transaction(
+      lockedObservation({
+        workflowStatus: "succeeded",
+        effectState: "identified",
+        refundStatus: "succeeded",
+      }),
+    );
+    const repositories = new TenantRepositories(
+      tx as unknown as Prisma.TransactionClient,
+      tenantId,
+    );
+
+    await expect(repositories.markRefundIdentified(observation("canceled"))).resolves.toBe(true);
+    expect(tx.refundRequest.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          effectState: "absence_proven",
+          workflowStatus: "failed_terminal",
+          version: { increment: 1 },
+        },
+      }),
+    );
+  });
+
   it("returns a successful no-op for a stale event", async () => {
     const tx = transaction(lockedObservation({ refundStatus: "pending" }));
     const repositories = new TenantRepositories(
@@ -121,9 +146,9 @@ describe("Stripe refund observation freshness", () => {
   it("gives failed priority when Stripe Event.created is equal", async () => {
     const tx = transaction(
       lockedObservation({
-        workflowStatus: "succeeded",
-        effectState: "identified",
-        refundStatus: "succeeded",
+        workflowStatus: "failed_terminal",
+        effectState: "absence_proven",
+        refundStatus: "canceled",
       }),
     );
     const repositories = new TenantRepositories(
@@ -135,19 +160,7 @@ describe("Stripe refund observation freshness", () => {
       true,
     );
     expect(tx.refundExecution.updateMany).toHaveBeenCalledOnce();
-    expect(tx.refundRequest.updateMany).toHaveBeenCalledWith({
-      where: {
-        id: requestId,
-        tenantId,
-        workflowStatus: "succeeded",
-        effectState: "identified",
-      },
-      data: {
-        effectState: "absence_proven",
-        workflowStatus: "failed_terminal",
-        version: { increment: 1 },
-      },
-    });
+    expect(tx.refundRequest.updateMany).not.toHaveBeenCalled();
   });
 
   it("lets an authoritative scanner snapshot converge a nonterminal status to failed", async () => {

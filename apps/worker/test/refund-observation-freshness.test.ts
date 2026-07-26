@@ -91,6 +91,30 @@ describe("linked refund observation freshness", () => {
         observation: webhook("succeeded", eventCreated),
       }),
     ).toBe(false);
+    expect(
+      shouldApplyLinkedRefundObservation({
+        currentStatus: "canceled",
+        lastStripeEventCreatedAt,
+        observation: webhook("failed", eventCreated),
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyLinkedRefundObservation({
+        currentStatus: "failed",
+        lastStripeEventCreatedAt,
+        observation: webhook("canceled", eventCreated),
+      }),
+    ).toBe(false);
+  });
+
+  it("applies an equal-time cancellation after an observed success", () => {
+    expect(
+      shouldApplyLinkedRefundObservation({
+        currentStatus: "succeeded",
+        lastStripeEventCreatedAt: new Date(eventCreated * 1_000),
+        observation: webhook("canceled", eventCreated),
+      }),
+    ).toBe(true);
   });
 
   it("treats the refund.failed event type as failure evidence when status is absent", () => {
@@ -131,5 +155,12 @@ describe("linked refund observation freshness", () => {
         observation: scan("failed"),
       }),
     ).toBe(false);
+    expect(
+      shouldApplyLinkedRefundObservation({
+        currentStatus: "succeeded",
+        lastStripeEventCreatedAt: new Date(eventCreated * 1_000),
+        observation: scan("canceled"),
+      }),
+    ).toBe(true);
   });
 });
