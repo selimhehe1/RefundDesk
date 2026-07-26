@@ -4,7 +4,9 @@ Read `REFUNDDESK_CODEX_BUILD_SPEC.md` before changing product behavior. Read the
 
 ## Scope
 
-- Phase 0 is a real Stripe gate. Mocks never produce `PASS`.
+- Phase 0 passed with `34/34` real Stripe cases; mocks never contributed to that verdict.
+- Phase-0 `PASS` authorizes continued test/sandbox engineering only. It does not authorize live
+  mode, deployment, Stripe review submission or Marketplace publication.
 - Test mode and managed sandbox only until separately authorized.
 - Never use customer data, live keys, live webhooks or live PaymentIntents.
 - Do not deploy, publish the Stripe App, create paid resources or push remotely without explicit authorization.
@@ -52,9 +54,13 @@ project, so that directory deliberately carries a separate pnpm `10.30.3` packag
 lockfile. Keep its dependencies explicit and validate both lockfiles; do not remove or merge the
 standalone lock without re-running a real unpublished Stripe App upload.
 
-The installed test evidence is version `0.1.0`. Current source targets `0.1.1` and is deliberately
-unuploaded. Never reuse an already evidenced Stripe App version for changed source; upload only
-from a clean commit and record both commit and artifact checksum.
+The distinct external-account installation evidence remains tied to unpublished version `0.1.0`.
+Version `0.1.1` was uploaded unpublished from clean commit
+`100ae946ec593df1f21ba3efa6fe5c72ec366e89` with packaged artifact SHA-256
+`ec5fc4940092343c9d6bd8b25948ea31272666d4e041a2ff23d36f10e27446be`, after removal of every
+Phase-0 runtime surface. Upload alone does not prove that `0.1.1` was installed or rerun in the
+external test account. Never transfer evidence between versions without an explicit artifact, and
+never reuse an evidenced version for changed source.
 
 Verification:
 

@@ -8,55 +8,35 @@ notifications, paid infrastructure and production deployment are deliberately di
 
 ## Current pilot status
 
-Phase 0 remains `BLOCKED_HUMAN`, but the original legal blocker is cleared. The authorized human
-accepted the Stripe Apps Agreement, Stripe accepted the unpublished RefundDesk `0.1.0` upload, and
-the version is installed only in the account's **Mode test** environment. The real extension renders
-on the synthetic EUR PaymentIntent with `livemode=false`; the uploaded production-safe manifest
-keeps both the direct probe and live operation disabled and fails closed against its placeholder API.
-The repository now targets unuploaded version `0.1.1`, separating the post-probe fixes from the
-installed evidence version; any next upload must come from a clean commit with a recorded checksum.
+Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
+real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
+backend Refund permission, Stripe idempotency, connected webhook deduplication and ordering,
+external-Refund detection, copied-proof classification and minimal permission set.
 
-Chrome local-network access is granted. A real Stripe test-mode signed request now passes raw-body
-verification and the non-mutating Administrator-only Phase-0 report returns HTTP 200. The runtime
-role is identified by its signed stable ID (`super_admin`) even though the installed SDK's type
-definition omits that current field.
+Every Phase-0 runtime route, client call, UI control and manifest switch has been removed from the
+pilot surface. Unpublished version `0.1.1` was uploaded from clean commit
+`100ae946ec593df1f21ba3efa6fe5c72ec366e89` with packaged artifact SHA-256
+`ec5fc4940092343c9d6bd8b25948ea31272666d4e041a2ff23d36f10e27446be`. No live request,
+production deployment, Stripe review submission or Marketplace publication was performed.
 
-The signed allowlisted probe created one small EUR partial Refund in test mode. An exact signed
-replay returned the same Stripe Refund without a second effect. A second test Refund, created
-outside RefundDesk with empty metadata, was found in under eight minutes by real periodic
-reconciliation and persisted as an open `external` alert under the restricted worker role.
+The distinct external-account installation evidence remains attributed to installed version
+`0.1.0`. The clean `0.1.1` upload proves reproducible packaging provenance; it does not by itself
+claim that `0.1.1` was reinstalled or rerun in that external account. Likewise,
+`P0-PUBLISH-001` means that no currently observed distribution constraint makes the pilot
+impossible, not that Stripe has approved the App for Marketplace distribution. External-test link
+access was closed after verification.
 
-No live Refund, Marketplace publication, live request or production deployment was performed. The
-same distinct real user with Stripe's built-in `View only` role now passes both role-gap cases. The
-user can view a successful synthetic card payment but Stripe exposes no native refund action. The
-exact Stripe user identity then submitted a real Stripe-authenticated RefundDesk request, which was
-persisted as `pending_approval/not_started` and safely canceled by the requester with no approval,
-execution attempt or Stripe Refund.
-
-Stripe did not attest that user's `View only` claim in the request: with the app retaining
-`charge_write`, Stripe rejected the special `stripe_roles` signing input before it reached
-RefundDesk. The request therefore proves authenticated identity and request creation, not signed
-role propagation. RefundDesk now models that boundary explicitly with `roles_asserted=false`, omits
-`stripe_roles`, preserves durable role observations and still requires an asserted Administrator
-role for privileged operations. A distinct connected test account and the remaining independently
-bound test/sandbox topology are still necessary. The connected-webhook, copied-proof replay,
-cross-test/sandbox signature and full environment-isolation cases are not yet complete, so the
-verdict correctly remains `BLOCKED_HUMAN`.
-
-The repository foundations, domain, signed API, worker, pilot UI and database layer are implemented
-locally. An isolated PostgreSQL 18.4 process exercised the real migration, pg-boss migration,
-least-privilege bootstrap, runtime access checks, tenant isolation, purge behavior and concurrency
-matrix. The PostgreSQL integration and local test suites pass; exact executed counts and gate
-evidence are recorded in [PLANS.md](./PLANS.md). Formatting, lint, type checks, the production
-build, secret scanning and production dependency audits also pass. This local evidence is not a
-substitute for the blocked Stripe feasibility gate.
+Phase 1 repository foundations are complete and locally verified. The pinned workspace, strict
+contracts, PostgreSQL role separation, four migrations, RLS checks, 248 local tests, 19 PostgreSQL
+integration tests, build, secret scanning and dependency audits pass. RefundDesk remains strictly
+local plus Stripe test/managed sandbox until a separately authorized cycle.
 
 ## Prerequisites
 
 - Node.js 24.18.0
 - pnpm 11.17.0
 - PostgreSQL 18 through Docker Desktop or an isolated local PostgreSQL 18 instance
-- Stripe CLI with the Apps plugin when continuing the real Phase 0 matrix
+- Stripe CLI with the Apps plugin for local preview or future test/sandbox validation
 
 The workspace uses pnpm 11.17.0. Stripe's CLI packages the UI extension independently, so
 `apps/stripe-app` intentionally has a standalone pnpm 10.30.3 lockfile with the same explicitly

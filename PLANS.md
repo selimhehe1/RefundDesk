@@ -1,72 +1,59 @@
 # RefundDesk implementation plan
 
 > Last updated: 26 July 2026
-> Current gate: `BLOCKED_HUMAN`
-> Blocker: connected-account topology and the second independently bound test/sandbox environment
-> required by the remaining Phase-0 matrix
+> Current gate: `PASS`
+> Phase-0 evidence: `34/34 passed_real`
+> Current delivery status: Phase 1 complete and locally verified
 > Allowed environment: local + Stripe test/managed sandbox
 
-Checkboxes represent observed evidence or locally implemented scope. Local tests, fixtures and
-PostgreSQL integration do not validate the real Stripe Phase 0 gate.
+Checkboxes represent observed evidence or locally implemented scope. Real Stripe evidence remains
+distinct from local tests, fixtures and PostgreSQL integration evidence.
 
 ## Phase 0 — real Stripe feasibility gate
 
-Status: `BLOCKED_HUMAN`.
+Status: `PASS`.
 
-Real preflight completed:
+All 34 required cases are recorded as `passed_real`, with no unresolved `failed_real`,
+`blocked_human` or `not_run` case:
 
-- [x] Authenticate the Stripe CLI against the intended test account.
-- [x] Create and confirm one synthetic EUR PaymentIntent in test mode with `livemode=false`.
-- [x] Obtain explicit human acceptance of the Stripe Apps Agreement.
-- [x] Upload unpublished RefundDesk version `0.1.0` without `--live` or Marketplace publication.
-- [x] Install version `0.1.0` only in the account's **Mode test** environment.
-- [x] Render the installed extension on the allowlisted synthetic PaymentIntent.
-- [x] Confirm the uploaded safe manifest hides the direct probe and fails closed.
-- [x] Grant Chrome local-network access and load the Stripe CLI preview.
-- [x] Verify a real canonical Stripe-signed request against the environment-specific test App
-      signing secret; the non-mutating Phase-0 report returned HTTP 200.
-- [x] Preserve Stripe's signed stable role ID and authorize the observed built-in `super_admin`
-      role without trusting a custom homonym.
-- [x] Move the post-probe source and manifest to `0.1.1` so the installed `0.1.0` evidence is not
-      conflated with later fixes. Version `0.1.1` has not been uploaded.
-- [x] Add a distinct real user with Stripe's built-in `View only` role and prove `P0-ROLE-001` in
-      Pattamap's test environment: the user can view a successful synthetic card payment but Stripe
-      exposes no native refund action. The redacted real evidence is retained locally.
+- [x] Create, upload and install the unpublished Stripe App in test-only contexts.
+- [x] Render the payment-detail UI on allowlisted synthetic card payments and fail closed elsewhere.
+- [x] Prove canonical signed requests and all same- and cross-environment rejection cases.
+- [x] Prove the real `View only` role gap and authenticated RefundDesk request creation.
+- [x] Create a Refund through the App's real permissions and preserve one immutable first Refund ID.
+- [x] Prove Stripe idempotency, webhook verification, deduplication and webhook-before-response
+      safety.
+- [x] Detect a real external Refund and classify copied workflow metadata as proof replay/tampering.
+- [x] Prove test mode and managed sandbox independently and reject both credential crossovers.
+- [x] Confirm the minimal permission set: `charge_read`, `charge_write`,
+      `payment_intent_read` and `event_read`; `user_email_read` is absent.
+- [x] Confirm no currently observed distribution constraint makes the test/sandbox pilot impossible.
+- [x] Upload unpublished version `0.1.1` from clean commit
+      `100ae946ec593df1f21ba3efa6fe5c72ec366e89` and record packaged artifact SHA-256
+      `ec5fc4940092343c9d6bd8b25948ea31272666d4e041a2ff23d36f10e27446be`.
+- [x] Remove every Phase-0 runtime route, client call, UI control and manifest switch before pilot
+      handoff.
 
-Not performed:
+Provenance remains explicit. The distinct external-account installation evidence is attributed to
+installed version `0.1.0`; that first upload was not a reproducible release snapshot. Version
+`0.1.1` establishes clean source and packaging provenance, but its upload alone is not described as
+an external-account reinstall or rerun. The `34/34` verdict applies to the complete Phase-0
+evidence set.
 
-- [x] Complete `P0-ROLE-002` with the exact Stripe user identity already evidenced as built-in
-      `View only` in `P0-ROLE-001`. A real Stripe-authenticated request reached RefundDesk, persisted
-      as `pending_approval/not_started`, and was canceled by the same requester with zero decisions,
-      executions, attempts or Stripe Refunds. Stripe rejected the special `stripe_roles` signing
-      input for this restricted user while `charge_write` remained present, so the case proves
-      authenticated identity and request creation, not signed role propagation.
-- [x] Create a backend Refund with the app’s real permissions.
-- [x] Replay the exact signed command and Stripe idempotency key against the real Refund; Stripe
-      retained one effect and returned the same Refund.
-- [ ] Receive and deduplicate a real `refund.created` Event.
-- [x] Detect a real Refund created outside RefundDesk through periodic reconciliation.
-- [ ] Classify copied metadata from real Stripe objects.
-- [ ] Prove test mode and managed sandbox independently.
-- [ ] Confirm the minimal permissions and pilot publishability.
-- [ ] Upload only from a clean, committed `0.1.1` source snapshot and record its commit and
-      artifact checksum; the installed `0.1.0` upload did not preserve a reproducible clean snapshot.
-- [ ] Complete the redacted Phase 0 evidence set; 17 test-account cases are recorded as
-      `passed_real`, including the Refund, replay, external-detection, non-allowlisted UI and all
-      signed-request cases except the cross-test/sandbox `P0-SIGN-008`, plus the native
-      `View only` refund denial and authenticated RefundDesk request.
-- [x] Disable and remove every Phase-0 runtime route, client call, UI control and manifest switch
-      before pilot completion.
+`P0-PUBLISH-001` establishes feasibility only: Stripe accepted the unpublished test version, marked
+it approved for external testing, and no known distribution blocker invalidated the pilot. It is
+not Stripe review approval, Marketplace approval, production readiness or live authorization.
+External-test link access was closed after the evidence window.
 
-Exactly two small partial Refunds were created on the allowlisted synthetic PaymentIntent in test
-mode: one through the signed RefundDesk probe and one deliberately outside it. No Marketplace
-action or live operation was performed. The app upload and test-only installation are complete.
-Login, MFA, the second Stripe user, distinct connected-account topology and managed-sandbox
-credentials remain human-controlled checkpoints.
+No live credential, live object, live request, production deployment, paid resource, review
+submission or Marketplace publication was used.
 
 ## Phase 1 — repository foundations
 
-Status: `LOCALLY_VERIFIED`.
+Status: `COMPLETE (local scope)`.
+
+Phase 1 is complete as repository work and locally verified. This status does not authorize live
+mode, production deployment or Marketplace publication.
 
 - [x] Preserve the v1.0 specification and publish the v1.1 pilot contract locally.
 - [x] Add the agent guide, implementation plan, ADRs, threat model, runbook and retention policy.
@@ -95,9 +82,8 @@ This remains local implementation evidence, not real Stripe evidence.
 
 ## Phase 3 — signed API and policy
 
-Status: `LOCALLY_IMPLEMENTED`; one canonical real Stripe App request and the same-environment
-negative matrix are validated in test mode, while the cross-test/sandbox signature case remains
-blocked.
+Status: `LOCALLY_VERIFIED`; the real canonical request and same- and cross-environment rejection
+matrix passed in Stripe test mode and managed sandbox.
 
 - [x] Implement raw-body Stripe App signature verification.
 - [x] Implement canonical mutation idempotency.
@@ -122,13 +108,14 @@ complete durable approval-to-worker execution path remains unvalidated against r
       key; divert `possible`, mismatched, linked or incomplete identities to reconciliation.
 - [x] Stamp a database-managed safe boundary when ambiguous or orphaned work enters reconciliation.
 
-All execution evidence in this phase is local or simulated. The worker remains test/sandbox-only
+The isolated Phase-0 probe supplied the real Stripe Refund evidence. Evidence for the durable
+approval-to-worker execution path remains local or simulated. The worker remains test/sandbox-only
 and fails closed for live mode.
 
 ## Phase 5 — webhooks and reconciliation
 
-Status: `LOCALLY_IMPLEMENTED`; real connected-Event delivery remains unvalidated, while a real
-external test Refund was detected by periodic scanning in under eight minutes.
+Status: `LOCALLY_VERIFIED`; real connected-Event delivery, deduplication, tamper rejection and
+webhook-before-response ordering passed, and periodic scanning detected a real external test Refund.
 
 - [x] Separate test, sandbox and disabled-live endpoints.
 - [x] Verify raw webhook bodies and persist deduplicated receipts.
@@ -145,6 +132,8 @@ external test Refund was detected by periodic scanning in under eight minutes.
       aggregate job for retry.
 - [x] Prove with real Stripe evidence that periodic scanning finds an external Refund without
       relying on webhook delivery; the external test Refund was classified in under eight minutes.
+- [x] Prove with real Stripe evidence that connected test Events are accepted once, replayed safely,
+      rejected after byte tampering and correlated correctly before the API response.
 
 Local evidence on 2026-07-25: both PostgreSQL 18 integration suites pass `19/19`, including the
 safe-boundary, linked-Refund, real-login role, column-scoped external-alert insert and
@@ -165,17 +154,18 @@ Status: `LOCALLY_IMPLEMENTED`; real test-mode upload, installation and initial r
 
 ## Phase 7 — hardening
 
-Status: `LOCALLY_VERIFIED`; real Stripe and operational drills remain blocked or pending.
+Status: `LOCALLY_VERIFIED`; the Phase-0 Stripe hardening matrix is complete while broader
+operational drills remain deferred.
 
 - [x] Local crash matrix, `429`, timeout and `5xx` worker tests.
 - [x] Local idempotency, state-transition and isolation tests.
 - [x] Local deauthorization and guarded purge database rehearsal.
-- [x] Final consolidated local verification: 237 local tests, 19 PostgreSQL integration tests,
+- [x] Final consolidated local verification: 248 local tests, 19 PostgreSQL integration tests,
       formatting, lint, type checks, build, secret scan and dependency audits.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox.
 - [ ] Real Stripe App uninstallation rehearsal.
 - [ ] Key rotation and compromise drills.
-- [ ] Complete real managed-sandbox gate.
+- [x] Complete the real managed-sandbox credential, object, webhook and cross-environment gate.
 
 ## Deferred until a separately authorized cycle
 

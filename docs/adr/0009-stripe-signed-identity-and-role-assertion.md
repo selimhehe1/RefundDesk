@@ -26,7 +26,8 @@ The signed envelope has two strict role variants:
 - `roles_asserted=false` omits `stripe_roles`. It authenticates the signed identity, account,
   environment and command, but proves no role.
 - `roles_asserted=true` requires a non-empty strict `stripe_roles` list. Administrator-only
-  operations, provisioning and direct Phase-0 controls require this variant.
+  operations and provisioning require this variant. The direct Phase-0 controls also required it
+  during the evidence window, and were removed before the pilot snapshot.
 
 The backend maps an unasserted request to no current role claims and never replaces durable
 `tenant_users.stripe_roles` from it. Explicit approver authority remains a RefundDesk database

@@ -2,7 +2,7 @@
 
 > Purpose: produce the evidence required for Phase 0 and pilot acceptance  
 > Safety: test mode and managed sandbox only; synthetic data only  
-> Result at document creation: not run
+> Final result: `PASS` — 34/34 required cases recorded as `passed_real` on 2026-07-26
 
 ## 1. Rules of execution
 
@@ -10,7 +10,8 @@
 - Use ignored local environment files or an interactive secret mechanism.
 - Never use a real card, customer identity or production PaymentIntent.
 - Confirm `livemode=false` from the returned Stripe objects before continuing.
-- Keep a strict allowlist of synthetic PaymentIntent IDs for the Phase 0 probe.
+- Use only synthetic PaymentIntents recorded for the exact evidence case. The direct Phase-0 probe
+  surface no longer exists in the pilot runtime.
 - Use separate credentials, app installations and webhook secrets for test mode and managed sandbox.
 - Stop immediately if the account, mode or sandbox marker is not the expected one.
 - Do not use this plan for load testing.
@@ -58,9 +59,9 @@ pnpm secrets:check
 ```
 
 Upload and install the unpublished, production-safe `stripe-app.json` in **test mode only** after an
-authorized human has accepted the Stripe Apps Agreement. Do not pass `--live`. The uploaded manifest
-keeps the direct probe disabled and proves installation and permissions. For the local technical
-probe, expose the local API through a temporary public-HTTPS origin, then start the developer
+authorized human has accepted the Stripe Apps Agreement. Do not pass `--live`. The `0.1.1` manifest
+contains no direct Phase-0 probe route, client call, UI control or runtime switch. For a future local
+UI preview, expose the local API through a temporary public-HTTPS origin, then start the developer
 overlay separately:
 
 ```powershell
@@ -71,8 +72,9 @@ pnpm dev:stripe-app
 The current Stripe Apps CLI rejects loopback HTTP origins in `connect-src`. The launcher therefore
 accepts only a public-DNS HTTPS origin whose resolved addresses are all public, invokes Stripe
 without a command shell, derives an ignored `stripe-app.local.json` from the safe uploadable
-manifest, enables the Phase-0 control, forces live mode off, starts `stripe apps start`, then removes
-the generated manifest and `.build` output at exit. Never upload either generated artifact.
+manifest, points the local build at the configured development API, keeps live mode off, starts
+`stripe apps start`, then removes the generated manifest and `.build` output at exit. Never upload
+either generated artifact.
 
 The HTTPS origin can make the local Next.js origin reachable from the public internet. Keep every
 mutating or tenant-data route authenticated according to its route contract, expose it only for the
@@ -88,8 +90,8 @@ Before any Stripe call, verify:
 
 - global live switch is false;
 - tenant live switch is false;
-- probe is enabled only for Phase 0;
-- allowlist is empty until synthetic PaymentIntents are created;
+- no direct Phase-0 route, client method, UI control or runtime switch is present;
+- every synthetic PaymentIntent belongs to the exact recorded test/sandbox case;
 - expected account ID and environment are displayed to the operator;
 - live webhook secret and live credential are unavailable to the process.
 
@@ -115,7 +117,8 @@ For every fixture, record only:
 - `livemode=false`;
 - creation timestamp.
 
-Add the generated PaymentIntent IDs to the probe allowlist only after verifying the environment.
+Record the generated PaymentIntent IDs only in the redacted case evidence after verifying the
+environment. There is no runtime probe allowlist after Phase-0 acceptance.
 
 ## 5. Evidence format
 
@@ -398,9 +401,8 @@ The Markdown report lists every gate, case ID, result and redacted artifact path
 
 ## 9. Cleanup
 
-- disable the probe immediately after evidence collection;
-- remove the direct probe endpoint before pilot acceptance;
-- remove synthetic allowlist entries;
+- verify that the direct Phase-0 route, client method, UI control and runtime switch remain absent;
+- remove temporary synthetic-fixture references and local helper artifacts;
 - stop local webhook forwarding;
 - remove temporary test objects where Stripe supports safe cleanup;
 - keep only redacted evidence for the documented retention period;

@@ -75,12 +75,13 @@ pnpm dev:stripe-app
 
 The Stripe App launcher rejects HTTP, loopback, IP and reserved DNS suffixes, then verifies that
 every resolved address is public. It invokes the CLI without a command shell, generates an ignored
-local manifest from `stripe-app.json`, forces the probe on and live off, then removes the generated
-manifest and `.build` output when the CLI exits. DNS classification is a startup snapshot, not a
-defense against later rebinding; use only a short-lived operator-controlled tunnel hostname. The
-temporary HTTPS path is for a short evidence window only; stop it after use. A human must grant the
-Dashboard's browser prompt for local-network access so Stripe can load the CLI-served extension
-bundle.
+local manifest from `stripe-app.json`, points only the development build at the configured API
+origin and keeps live mode off. It removes the generated manifest and `.build` output when the CLI
+exits. No direct Phase-0 probe route, client call or UI control exists. DNS classification is a
+startup snapshot, not a defense against later rebinding; use only a short-lived
+operator-controlled tunnel hostname. The temporary HTTPS path is for a short evidence window only;
+stop it after use. A human must grant the Dashboard's browser prompt for local-network access so
+Stripe can load the CLI-served extension bundle.
 
 If the tunnel forwards the complete local Next.js origin, `/`, `/api/health` and `/api/ready` are
 also publicly reachable for that window without a Stripe signature. They expose no tenant data,

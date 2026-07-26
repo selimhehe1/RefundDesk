@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-25
+- Last updated: 2026-07-26
 - Owners: Engineering and security
 
 ## Context
@@ -11,8 +12,9 @@ upload succeeded only after using the pnpm 10 dependency graph expected by that 
 while the repository workspace itself uses pnpm 11.
 
 The current Stripe Apps CLI also rejects loopback HTTP origins in the UI extension `connect-src`
-policy. A short-lived public HTTPS tunnel is therefore required to run the local Phase 0 overlay,
-even though the uploaded manifest must keep the direct probe and live operation disabled.
+policy. During the Phase-0 evidence window, a short-lived public HTTPS tunnel was therefore used to
+run the local overlay. The uploaded `0.1.1` manifest contains no direct probe surface and keeps live
+operation disabled.
 
 ## Decision
 
@@ -40,9 +42,17 @@ the landing page and bounded health/readiness endpoints are also reachable witho
 signature; prefer a path-restricted proxy where available and otherwise minimize the exposure
 window.
 
-The installed evidence remains unpublished version `0.1.0`. Current source is version `0.1.1` and
-has not been uploaded. Any future upload must come from a clean commit and record the source commit
-and artifact checksum.
+The distinct external-account installation evidence remains attributed to unpublished version
+`0.1.0`; that first upload did not preserve reproducible release provenance. Unpublished version
+`0.1.1` was subsequently uploaded from clean commit
+`100ae946ec593df1f21ba3efa6fe5c72ec366e89`, with packaged artifact SHA-256
+`ec5fc4940092343c9d6bd8b25948ea31272666d4e041a2ff23d36f10e27446be`. The direct Refund probe
+route, client call and UI control were removed before that snapshot.
+
+The `0.1.1` upload proves clean packaging provenance but does not, by itself, prove an external
+reinstall or rerun of that version. Earlier external-account observations remain attributed to
+`0.1.0` unless separate evidence says otherwise. No live upload, Stripe review submission or
+Marketplace publication occurred.
 
 ## Consequences
 
@@ -51,6 +61,11 @@ and artifact checksum.
 - The temporary tunnel expands the local API's network exposure, so short lifetime, strict
   signatures and immediate shutdown remain mandatory.
 - Dependency upgrades must update and validate both lockfiles.
+- Phase-0 `PASS` is an evidence-set verdict, not a claim that every case was rerun on one uploaded
+  App version.
+- An accepted unpublished upload establishes packaging feasibility, not external installation,
+  Stripe review approval, Marketplace approval or live readiness.
+- Every future uploaded version requires a new clean commit and recorded artifact checksum.
 
 ## Rejected alternatives
 

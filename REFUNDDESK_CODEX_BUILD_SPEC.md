@@ -2,11 +2,17 @@
 
 > Version : 1.1
 > Date de décision : 25 juillet 2026
-> Statut : pilote test/sandbox, bloqué par un spike Stripe réel de phase 0
+> Statut : phase 0 `PASS` — 34/34 cas Stripe réels `passed_real`
+> Livraison : pilote test/sandbox uniquement ; phase 1 complète localement
 > Langue produit : anglais
 > Langue de référence : français, identifiants techniques en anglais
 
 Ce document est la source de vérité produit et technique de RefundDesk. La version 1.0 reste disponible dans l’historique Git. Les décisions marquées « verrouillées » ne peuvent être changées qu’au moyen d’un ADR.
+
+Le verdict de phase 0 confirme la faisabilité du pilote dans les environnements autorisés. Il ne
+constitue ni une approbation Stripe Marketplace, ni une autorisation live, ni une validation de
+production. La provenance exacte de la version Stripe App téléversée est consignée dans
+`PLANS.md` et dans le rapport de preuve local expurgé.
 
 ## 1. Mission et promesse
 
@@ -169,7 +175,7 @@ Les champs suivants sont ensuite sérialisés :
 compte, l’environnement, la ressource éventuelle et la commande, mais ne constitue aucune preuve de
 rôle. Elle suffit aux opérations ordinaires dont l’autorisation ne dépend pas d’un rôle Stripe.
 `roles_asserted=true` exige une liste non vide de rôles Stripe strictement validés. Toute opération
-Administrateur, tout provisioning et toute surface directe de Phase 0 exigent cette seconde forme.
+Administrateur et tout provisioning exigent cette seconde forme.
 Une requête sans assertion de rôle ne peut jamais effacer ou remplacer la dernière observation
 durable de rôles.
 
@@ -208,7 +214,7 @@ Utilisateurs nécessaires :
 - un Administrator ;
 - un utilisateur Stripe `View only` capable de voir les paiements mais pas de les rembourser nativement.
 
-Permissions candidates minimales à confirmer par le spike :
+Permissions minimales confirmées par la phase 0 :
 
 - `charge_read`
 - `charge_write`
