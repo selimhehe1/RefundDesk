@@ -4,6 +4,7 @@ import type { PrismaClient } from "@refunddesk/db";
 import { FieldEncryptionKeyring } from "@refunddesk/domain";
 
 import {
+  pilotAssertedStripeRolesSnapshot,
   PilotPrismaRepository,
   pilotStripeRolesJson,
 } from "../src/server/pilot-prisma-repository.js";
@@ -25,6 +26,11 @@ interface StoredReceipt {
   readonly responseStatus: number;
 }
 
+interface CapturedTenantUserUpsert {
+  readonly create: Readonly<Record<string, unknown>>;
+  readonly update: Readonly<Record<string, unknown>>;
+}
+
 function context(): PilotTenantContext {
   return {
     actor: {
@@ -44,6 +50,7 @@ function context(): PilotTenantContext {
 function metadata(hashByte: number, responseRequestId: string): PilotMutationMetadata {
   return {
     actorId: "usr_approver",
+    assertedStripeRoles: null,
     canonicalRequestHash: Uint8Array.from([hashByte]),
     operation: "refund_request.create",
     requestNonce: NONCE,
@@ -186,6 +193,131 @@ describe("atomic pilot mutation receipt storage", () => {
 });
 
 describe("Stripe role persistence", () => {
+  it("uses only the roles asserted by the current signed command", () => {
+    const assertedRoles = [{ id: "view_only", type: "builtIn", name: "View only" }] as const;
+
+    expect(pilotAssertedStripeRolesSnapshot(null)).toEqual([]);
+    expect(pilotAssertedStripeRolesSnapshot(assertedRoles)).toEqual(assertedRoles);
+  });
+
+  it.each([
+    {
+      name: "writes an empty snapshot for an unasserted command",
+      assertedStripeRoles: null,
+      expectedSnapshot: [],
+    },
+    {
+      name: "keeps the current assertion when a concurrent observation changed durable roles",
+      assertedStripeRoles: [{ id: "view_only", type: "builtIn", name: "View only" }] as const,
+      expectedSnapshot: [{ id: "view_only", type: "builtIn", name: "View only" }],
+    },
+  ])("$name", async ({ assertedStripeRoles, expectedSnapshot }) => {
+    const requestId = "d4522945-a0f4-4b0c-88ff-78ee2fed55d6";
+    const capturedDecisions: Readonly<Record<string, unknown>>[] = [];
+    const capturedAuditEvents: Readonly<Record<string, unknown>>[] = [];
+    const durableRoles = [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }];
+    const transaction = {
+      $queryRaw: () => Promise.resolve([]),
+      apiMutationReceipt: {
+        findUnique: () => Promise.resolve(null),
+        create: (input: { readonly data: Readonly<Record<string, unknown>> }) =>
+          Promise.resolve(input.data),
+      },
+      approvalDecision: {
+        create: (input: { readonly data: Readonly<Record<string, unknown>> }) => {
+          capturedDecisions.push(input.data);
+          return Promise.resolve(input.data);
+        },
+      },
+      auditEvent: {
+        create: (input: { readonly data: Readonly<Record<string, unknown>> }) => {
+          capturedAuditEvents.push(input.data);
+          return Promise.resolve(input.data);
+        },
+      },
+      refundRequest: {
+        findFirst: () =>
+          Promise.resolve({
+            chargeId: "ch_pilot",
+            decisions: [],
+            effectState: "not_started",
+            execution: null,
+            id: requestId,
+            paymentIntentId: "pi_pilot",
+            requesterUserId: "aa1d1b56-567a-4e76-a9d6-962aed9224ad",
+            workflowStatus: "pending_approval",
+          }),
+        updateMany: () => Promise.resolve({ count: 1 }),
+      },
+      stripeInstallation: {
+        findFirst: () =>
+          Promise.resolve({
+            environment: "test",
+            id: INSTALLATION_ID,
+            status: "active",
+            stripeAccountId: "acct_pilot",
+            tenant: {
+              id: TENANT_ID,
+              liveEnabled: false,
+              status: "active",
+            },
+            tenantId: TENANT_ID,
+          }),
+      },
+      tenantUser: {
+        findFirst: () =>
+          Promise.resolve({
+            approverEnabled: true,
+            id: context().actor.id,
+            stripeRoles: durableRoles,
+            stripeUserId: context().actor.stripeUserId,
+            tenantId: TENANT_ID,
+          }),
+      },
+    };
+    const client = {
+      $transaction: <T>(operation: (tx: typeof transaction) => Promise<T>): Promise<T> =>
+        operation(transaction),
+    } as unknown as PrismaClient;
+    const repository = new PilotPrismaRepository({
+      appBaseUrl: "https://refunddesk.example",
+      auditSigningKey: Buffer.alloc(32, 1),
+      client,
+      fieldKeyring: new FieldEncryptionKeyring({
+        active: { key: Buffer.alloc(32, 2), version: "v1" },
+      }),
+      now: () => new Date("2030-01-01T12:00:00.000Z"),
+    });
+
+    const result = await repository.executeMutation(
+      context(),
+      {
+        ...metadata(3, "6d201081-2da7-4f8f-8a4d-583515011d47"),
+        assertedStripeRoles,
+        operation: "refund_request.decide",
+      },
+      {
+        decision: "approve",
+        kind: "refund_request_decide",
+        requestId,
+        resource: { id: "pi_pilot", type: "payment_intent" },
+      },
+    );
+
+    expect(result).toEqual({
+      body: { request_id: requestId, status: "approved" },
+      status: 200,
+    });
+    expect(capturedDecisions).toHaveLength(1);
+    expect(capturedDecisions[0]?.["stripeRolesSnapshot"]).toEqual(expectedSnapshot);
+    expect(capturedAuditEvents).toHaveLength(1);
+    expect(capturedAuditEvents[0]?.["actorSnapshot"]).toEqual(expectedSnapshot);
+    expect(capturedAuditEvents[0]?.["payload"]).toEqual({
+      decision: "approve",
+      roles_asserted: assertedStripeRoles !== null,
+    });
+  });
+
   it("retains the stable runtime role ID and omits only an actually absent ID", () => {
     expect(
       pilotStripeRolesJson([
@@ -198,5 +330,94 @@ describe("Stripe role persistence", () => {
       { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
       { type: "builtIn", name: "View only" },
     ]);
+  });
+
+  it("preserves stored roles without an assertion and persists an asserted role snapshot", async () => {
+    const observedAt = new Date("2030-01-01T12:00:00.000Z");
+    const upserts: CapturedTenantUserUpsert[] = [];
+    const transaction = {
+      $queryRaw: () => Promise.resolve([]),
+      stripeInstallation: {
+        findFirst: () =>
+          Promise.resolve({
+            environment: "test",
+            id: INSTALLATION_ID,
+            status: "active",
+            stripeAccountId: "acct_pilot",
+            tenant: {
+              id: TENANT_ID,
+              liveEnabled: false,
+              status: "active",
+            },
+            tenantId: TENANT_ID,
+          }),
+      },
+      tenantUser: {
+        upsert: (input: CapturedTenantUserUpsert) => {
+          upserts.push(input);
+          return Promise.resolve({
+            approverEnabled: false,
+            id: "5950a897-6150-4372-8193-b3a9f2593c68",
+            stripeUserId: "usr_view_only",
+          });
+        },
+      },
+    };
+    const client = {
+      $queryRaw: () =>
+        Promise.resolve([
+          {
+            installation_id: INSTALLATION_ID,
+            status: "active",
+            tenant_id: TENANT_ID,
+          },
+        ]),
+      $transaction: <T>(operation: (tx: typeof transaction) => Promise<T>): Promise<T> =>
+        operation(transaction),
+    } as unknown as PrismaClient;
+    const repository = new PilotPrismaRepository({
+      appBaseUrl: "https://refunddesk.example",
+      auditSigningKey: Buffer.alloc(32, 1),
+      client,
+      fieldKeyring: new FieldEncryptionKeyring({
+        active: { key: Buffer.alloc(32, 2), version: "v1" },
+      }),
+      now: () => observedAt,
+    });
+    const roles = [{ id: "view_only", name: "View only", type: "builtIn" }] as const;
+
+    await repository.resolveContext(
+      {
+        accountId: "acct_pilot",
+        environment: "test",
+        roles,
+        rolesAsserted: false,
+        userId: "usr_view_only",
+      },
+      { allowProvision: false },
+    );
+    await repository.resolveContext(
+      {
+        accountId: "acct_pilot",
+        environment: "test",
+        roles,
+        rolesAsserted: true,
+        userId: "usr_view_only",
+      },
+      { allowProvision: false },
+    );
+
+    expect(upserts).toHaveLength(2);
+    expect(upserts[0]?.create).not.toHaveProperty("stripeRoles");
+    expect(upserts[0]?.update).not.toHaveProperty("stripeRoles");
+    expect(upserts[0]?.update).not.toHaveProperty("lastVerifiedAt");
+    expect(upserts[1]?.create).toMatchObject({
+      lastVerifiedAt: observedAt,
+      stripeRoles: roles,
+    });
+    expect(upserts[1]?.update).toEqual({
+      lastVerifiedAt: observedAt,
+      stripeRoles: roles,
+    });
   });
 });

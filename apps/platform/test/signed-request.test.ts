@@ -14,7 +14,19 @@ const envelope: SignedEnvelope = {
   resource_type: "payment_intent",
   resource_id: "pi_synthetic",
   command_json: "{}",
+  roles_asserted: true,
   stripe_roles: [{ id: "view_only", type: "builtIn", name: "View only" }],
+  user_id: "usr_synthetic",
+  account_id: "acct_synthetic",
+};
+const unassertedEnvelope: SignedEnvelope = {
+  operation: "settings.get",
+  request_nonce: "4c47821e-4248-4d38-ab97-b1bcaee68e4e",
+  mode: "test",
+  is_sandbox: false,
+  resource_type: "account",
+  command_json: "{}",
+  roles_asserted: false,
   user_id: "usr_synthetic",
   account_id: "acct_synthetic",
 };
@@ -32,6 +44,16 @@ describe("verifySignedExtensionRequest", () => {
     const raw = serializeSignedEnvelope(envelope);
     expect(verifySignedExtensionRequest(raw, signatureFor(raw), signingSecret).envelope).toEqual(
       envelope,
+    );
+  });
+
+  it("accepts an account-scoped payload without a resource ID or role assertion", () => {
+    const raw = serializeSignedEnvelope(unassertedEnvelope);
+
+    expect(raw).not.toContain('"resource_id"');
+    expect(raw).not.toContain('"stripe_roles"');
+    expect(verifySignedExtensionRequest(raw, signatureFor(raw), signingSecret).envelope).toEqual(
+      unassertedEnvelope,
     );
   });
 

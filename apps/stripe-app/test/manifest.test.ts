@@ -71,8 +71,8 @@ describe("Stripe App manifests", () => {
     const sources = manifest.ui_extension.content_security_policy["connect-src"];
     expect(sources).toEqual(["https://api.refunddesk.example/api/"]);
     expect(sources.some((source) => source.includes("*"))).toBe(false);
-    expect(manifest.constants).toMatchObject({
-      PHASE0_PROBE_ENABLED: false,
+    expect(manifest.constants).toEqual({
+      API_BASE: "https://api.refunddesk.example/api",
       PILOT_LIVE_ENABLED: false,
     });
   });

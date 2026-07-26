@@ -1,8 +1,9 @@
 # RefundDesk implementation plan
 
-> Last updated: 25 July 2026
+> Last updated: 26 July 2026
 > Current gate: `BLOCKED_HUMAN`
-> Blocker: a distinct `View only` user, connected test account and managed-sandbox credentials
+> Blocker: connected-account topology and the second independently bound test/sandbox environment
+> required by the remaining Phase-0 matrix
 > Allowed environment: local + Stripe test/managed sandbox
 
 Checkboxes represent observed evidence or locally implemented scope. Local tests, fixtures and
@@ -28,10 +29,18 @@ Real preflight completed:
       role without trusting a custom homonym.
 - [x] Move the post-probe source and manifest to `0.1.1` so the installed `0.1.0` evidence is not
       conflated with later fixes. Version `0.1.1` has not been uploaded.
+- [x] Add a distinct real user with Stripe's built-in `View only` role and prove `P0-ROLE-001` in
+      Pattamap's test environment: the user can view a successful synthetic card payment but Stripe
+      exposes no native refund action. The redacted real evidence is retained locally.
 
 Not performed:
 
-- [ ] Prove the Administrator / `View only` role gap with two real users.
+- [x] Complete `P0-ROLE-002` with the exact Stripe user identity already evidenced as built-in
+      `View only` in `P0-ROLE-001`. A real Stripe-authenticated request reached RefundDesk, persisted
+      as `pending_approval/not_started`, and was canceled by the same requester with zero decisions,
+      executions, attempts or Stripe Refunds. Stripe rejected the special `stripe_roles` signing
+      input for this restricted user while `charge_write` remained present, so the case proves
+      authenticated identity and request creation, not signed role propagation.
 - [x] Create a backend Refund with the app’s real permissions.
 - [x] Replay the exact signed command and Stripe idempotency key against the real Refund; Stripe
       retained one effect and returned the same Refund.
@@ -42,10 +51,12 @@ Not performed:
 - [ ] Confirm the minimal permissions and pilot publishability.
 - [ ] Upload only from a clean, committed `0.1.1` source snapshot and record its commit and
       artifact checksum; the installed `0.1.0` upload did not preserve a reproducible clean snapshot.
-- [ ] Complete the redacted Phase 0 evidence set; 15 test-account cases are recorded as
+- [ ] Complete the redacted Phase 0 evidence set; 17 test-account cases are recorded as
       `passed_real`, including the Refund, replay, external-detection, non-allowlisted UI and all
-      signed-request cases except the cross-test/sandbox `P0-SIGN-008`.
-- [ ] Disable and remove the direct probe endpoint before pilot completion.
+      signed-request cases except the cross-test/sandbox `P0-SIGN-008`, plus the native
+      `View only` refund denial and authenticated RefundDesk request.
+- [x] Disable and remove every Phase-0 runtime route, client call, UI control and manifest switch
+      before pilot completion.
 
 Exactly two small partial Refunds were created on the allowlisted synthetic PaymentIntent in test
 mode: one through the signed RefundDesk probe and one deliberately outside it. No Marketplace

@@ -23,9 +23,11 @@ The canonical source for the refund test PaymentMethods is [Stripe testing — r
 - One Administrator user.
 - One distinct `View only` user who can see Payments.
 - Unpublished RefundDesk Stripe App installed in both target test environments where required.
-- The App signing secret for the exact environment being exercised is available locally. Stripe
-  App signing secrets are environment-specific; a main-account secret does not validate a local
-  test-mode preview.
+- The signing secret for the exact uploaded Stripe App is available locally. Stripe documents one
+  signing secret per App, with temporary overlap during rotation; unlike webhook endpoint secrets,
+  it is not split between test mode and managed sandboxes. Environment isolation is therefore
+  proved by the signed `is_sandbox` value, account binding, environment-specific API credentials
+  and webhook endpoints rather than by assuming distinct App signing secrets.
 - Test and managed-sandbox server credentials available locally.
 - Separate webhook endpoint secrets.
 - Stripe CLI authenticated to the intended test context.
@@ -159,19 +161,26 @@ Redact account and resource IDs in any artifact intended for broad sharing. Loca
 
 ### 6.2 Signed request
 
-Use the exact canonical field order from the v1.1 specification.
+Use the exact canonical variant from the v1.1 specification. Payment envelopes include
+`resource_id`; account envelopes omit it and bind through the Stripe-signed `account_id`.
+`roles_asserted=false` must omit `stripe_roles`; `roles_asserted=true` must contain a non-empty,
+strictly validated role list.
 
-| Case          | Mutation                                      | Expected                          |
-| ------------- | --------------------------------------------- | --------------------------------- |
-| `P0-SIGN-001` | Valid current signature and canonical body    | Accepted                          |
-| `P0-SIGN-002` | Change one byte in `command_json`             | `401` signature failure           |
-| `P0-SIGN-003` | Reorder two signed fields                     | Rejected                          |
-| `P0-SIGN-004` | Add an unknown field                          | Strict validation rejection       |
-| `P0-SIGN-005` | Substitute `user_id`                          | Rejected                          |
-| `P0-SIGN-006` | Substitute `account_id`                       | Rejected                          |
-| `P0-SIGN-007` | Use an expired signature                      | Rejected                          |
-| `P0-SIGN-008` | Cross test/sandbox credential or installation | Rejected                          |
-| `P0-SIGN-009` | Present `livemode=true`                       | Rejected before any Stripe effect |
+| Case          | Mutation                                        | Expected                          |
+| ------------- | ----------------------------------------------- | --------------------------------- |
+| `P0-SIGN-001` | Valid current signature and canonical body      | Accepted                          |
+| `P0-SIGN-002` | Change one byte in `command_json`               | `401` signature failure           |
+| `P0-SIGN-003` | Reorder two signed fields                       | Rejected                          |
+| `P0-SIGN-004` | Add an unknown field                            | Strict validation rejection       |
+| `P0-SIGN-005` | Substitute `user_id`                            | Rejected                          |
+| `P0-SIGN-006` | Substitute `account_id`                         | Rejected                          |
+| `P0-SIGN-007` | Use an expired signature                        | Rejected                          |
+| `P0-SIGN-008` | Cross test/sandbox credential or installation   | Rejected                          |
+| `P0-SIGN-009` | Present `livemode=true`                         | Rejected before any Stripe effect |
+| `P0-SIGN-010` | Add `resource_id` to an account envelope        | Strict validation rejection       |
+| `P0-SIGN-011` | Omit `resource_id` from a payment envelope      | Strict validation rejection       |
+| `P0-SIGN-012` | Send `stripe_roles` with `roles_asserted=false` | Strict validation rejection       |
+| `P0-SIGN-013` | Omit roles with `roles_asserted=true`           | Strict validation rejection       |
 
 ### 6.3 Role gap and Refund
 
@@ -179,8 +188,9 @@ Use the exact canonical field order from the v1.1 specification.
 2. As `View only`, confirm the payment is visible.
 3. As `View only`, attempt to locate/use Stripe’s native refund capability and record that the role cannot perform the refund.
 4. From RefundDesk as `View only`, submit a small partial request.
-5. As the distinct enabled approver, approve it.
-6. Observe the backend create the Refund using the app/platform credential for the exact account and environment.
+5. Verify the raw signed body, exact signed user/requester match, `pending_approval/not_started`
+   persistence, zero decision/execution/Refund, then cancel the request as the same requester.
+6. Exercise the separate allowlisted Administrator-only Refund probe for the Refund permission gate.
 
 | Case            | Expected                                                      |
 | --------------- | ------------------------------------------------------------- |
@@ -189,7 +199,12 @@ Use the exact canonical field order from the v1.1 specification.
 | `P0-REFUND-001` | Backend returns one `re_...`, exact minor amount and currency |
 | `P0-REFUND-002` | Stripe account and `livemode=false` match the installation    |
 
-If current Stripe role behavior differs, capture the real behavior. Do not reinterpret the result as success.
+`P0-ROLE-002` may omit a role assertion when Stripe refuses to sign `stripe_roles` for the restricted
+user. In that case it proves authenticated identity and request creation, not role propagation or
+role-based authorization. It passes only when a stable redacted actor hash proves that the exact same
+full Stripe user ID was independently observed as built-in `View only` in `P0-ROLE-001`. Record the
+limitation explicitly. If that identity link is missing, the case fails. Do not reinterpret different
+role behavior as success.
 
 ### 6.4 Stripe idempotency
 
@@ -221,9 +236,12 @@ PostgreSQL state and does not inherit this exception.
 | `P0-WEBHOOK-004` | Send sandbox Event to test endpoint           | Environment binding rejects it              |
 | `P0-WEBHOOK-005` | Deliver Event before API-response persistence | Same first Refund ID is linked safely       |
 
-After delivery, use the signed Administrator-only Phase-0 report control in the payment view. Record
-the redacted correlation returned by `/api/internal/phase0/report`; never expose the signing secret,
-raw Event body or full evidence from another account.
+During the bounded evidence window, the signed Administrator-only report control captured the
+redacted webhook correlation. The sealed local evidence records that observation without retaining
+the signing secret, raw Event body or another account's evidence.
+
+The control, route and manifest switch were removed after the Phase-0 verdict. They were evidence
+tooling and are not part of the pilot runtime surface.
 
 ### 6.6 External Refund and proof replay
 
@@ -231,7 +249,9 @@ Use a fresh synthetic payment.
 
 1. Create a Refund manually in the Stripe Dashboard or with a credential outside RefundDesk.
 2. Confirm RefundDesk classifies it as external.
-3. Create a Refund carrying copied RefundDesk metadata on a separate refundable fixture.
+3. On that same still-refundable payment, create a **different Refund object** carrying the copied
+   RefundDesk metadata. The proof binds the payment key, so copying it to a different PaymentIntent
+   must produce `invalid_proof`, not `proof_replay`.
 4. Confirm it becomes a `proof_replay`/tampering alert and does not replace an existing link.
 
 Cases:

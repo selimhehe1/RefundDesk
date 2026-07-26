@@ -5,7 +5,7 @@ import {
   provisionInstallation,
   resolveInstallation,
   withTenantTransaction,
-  Prisma,
+  type Prisma,
   type PrismaClient,
   type RefundRequestDetail,
   type TenantRepositories,
@@ -93,11 +93,6 @@ function prismaJsonObject(
   value: Readonly<Record<string, CanonicalJsonValue>>,
 ): Prisma.InputJsonObject {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, prismaJson(item)]));
-}
-
-function databaseJson(value: Prisma.JsonValue): Prisma.InputJsonValue | typeof Prisma.JsonNull {
-  const converted = prismaJson(canonicalFromPrisma(value));
-  return converted === null ? Prisma.JsonNull : converted;
 }
 
 function isCanonicalObject(
@@ -292,6 +287,12 @@ export function pilotStripeRolesJson(roles: PilotSignedIdentity["roles"]): Prism
   }));
 }
 
+export function pilotAssertedStripeRolesSnapshot(
+  roles: PilotMutationMetadata["assertedStripeRoles"],
+): Prisma.InputJsonArray {
+  return roles === null ? [] : pilotStripeRolesJson(roles);
+}
+
 export class PilotPrismaRepository implements PilotRepository {
   private readonly now: () => Date;
 
@@ -326,9 +327,11 @@ export class PilotPrismaRepository implements PilotRepository {
         const [installation, actor] = await Promise.all([
           repositories.getInstallationContext(resolved.installationId),
           repositories.observeTenantUser({
-            stripeRoles: pilotStripeRolesJson(identity.roles),
             stripeUserId: identity.userId,
             verifiedAt: this.now(),
+            ...(identity.rolesAsserted
+              ? { stripeRoles: pilotStripeRolesJson(identity.roles) }
+              : {}),
           }),
         ]);
         if (installation === null) {
@@ -480,7 +483,16 @@ export class PilotPrismaRepository implements PilotRepository {
           context.environment,
           paymentKey,
         );
-        return request === null ? null : { id: request.id, status: request.workflowStatus };
+        return request === null
+          ? null
+          : {
+              can_cancel:
+                request.requesterUserId === context.actor.id &&
+                request.workflowStatus === "pending_approval" &&
+                request.effectState === "not_started",
+              id: request.id,
+              status: request.workflowStatus,
+            };
       },
     );
   }
@@ -730,7 +742,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "refund_request.created",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: {},
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: request.id,
@@ -739,6 +751,7 @@ export class PilotPrismaRepository implements PilotRepository {
         amount_minor: mutation.amountMinor.toString(),
         currency: mutation.currency,
         payment_key: mutation.payment.paymentKey,
+        roles_asserted: metadata.assertedStripeRoles !== null,
       },
     });
     return response({
@@ -813,7 +826,7 @@ export class PilotPrismaRepository implements PilotRepository {
               rejectionNonce: Buffer.from(rejection.nonce, "base64url"),
             }),
         requestId: mutation.requestId,
-        stripeRolesSnapshot: databaseJson(actor.stripeRoles),
+        stripeRolesSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       },
       now,
     );
@@ -826,12 +839,15 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: `refund_request.${mutation.decision}d`,
       actorId: actor.stripeUserId,
-      actorSnapshot: databaseJson(actor.stripeRoles),
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: mutation.requestId,
       entityType: "refund_request",
-      payload: { decision: mutation.decision },
+      payload: {
+        decision: mutation.decision,
+        roles_asserted: metadata.assertedStripeRoles !== null,
+      },
     });
     return response({ request_id: mutation.requestId, status });
   }
@@ -867,12 +883,12 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "refund_request.canceled",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: {},
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: mutation.requestId,
       entityType: "refund_request",
-      payload: {},
+      payload: { roles_asserted: metadata.assertedStripeRoles !== null },
     });
     return response({
       request_id: mutation.requestId,
@@ -908,12 +924,15 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "external_refund_alert.acknowledged",
       actorId: actor.stripeUserId,
-      actorSnapshot: databaseJson(actor.stripeRoles),
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: alert.id,
       entityType: "external_refund_alert",
-      payload: { stripe_refund_id: alert.stripeRefundId },
+      payload: {
+        roles_asserted: metadata.assertedStripeRoles !== null,
+        stripe_refund_id: alert.stripeRefundId,
+      },
     });
     return response({ acknowledged: true, alert_id: alert.id });
   }
@@ -963,7 +982,7 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "settings.updated",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: {},
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: context.installationId,
@@ -972,6 +991,7 @@ export class PilotPrismaRepository implements PilotRepository {
         approver_count: users.length,
         expiration_days: mutation.expirationDays,
         onboarding_completed: mutation.onboardingCompleted,
+        roles_asserted: metadata.assertedStripeRoles !== null,
       },
     });
     const settings = await repositories.getSettings(context.installationId);
@@ -1010,12 +1030,16 @@ export class PilotPrismaRepository implements PilotRepository {
     await repositories.appendAuditEvent({
       action: "audit.export_prepared",
       actorId: context.actor.stripeUserId,
-      actorSnapshot: {},
+      actorSnapshot: pilotAssertedStripeRolesSnapshot(metadata.assertedStripeRoles),
       actorType: "stripe_user",
       correlationRequestId: metadata.requestNonce,
       entityId: context.installationId,
       entityType: "stripe_installation",
-      payload: { expires_at: expiresAt.toISOString(), format: "csv" },
+      payload: {
+        expires_at: expiresAt.toISOString(),
+        format: "csv",
+        roles_asserted: metadata.assertedStripeRoles !== null,
+      },
     });
     return response({
       download_url: downloadUrl.toString(),

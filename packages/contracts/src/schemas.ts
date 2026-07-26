@@ -30,20 +30,40 @@ export const stripeRoleSchema = z
   })
   .strict();
 
-export const signedEnvelopeSchema = z
-  .object({
-    operation: z.string().regex(/^[a-z][a-z0-9_.-]{2,63}$/u),
-    request_nonce: uuidSchema,
-    mode: z.enum(["live", "test"]),
-    is_sandbox: z.boolean(),
-    resource_type: resourceTypeSchema,
-    resource_id: stripeIdSchema,
-    command_json: z.string().min(2).max(8_192),
-    stripe_roles: z.array(stripeRoleSchema).max(32),
-    user_id: stripeUserIdSchema,
-    account_id: stripeAccountIdSchema,
-  })
-  .strict();
+const signedEnvelopeBase = {
+  operation: z.string().regex(/^[a-z][a-z0-9_.-]{2,63}$/u),
+  request_nonce: uuidSchema,
+  mode: z.enum(["live", "test"]),
+  is_sandbox: z.boolean(),
+  command_json: z.string().min(2).max(8_192),
+  user_id: stripeUserIdSchema,
+  account_id: stripeAccountIdSchema,
+} as const;
+
+const assertedRoles = {
+  roles_asserted: z.literal(true),
+  stripe_roles: z.array(stripeRoleSchema).min(1).max(32),
+} as const;
+
+const unassertedRoles = {
+  roles_asserted: z.literal(false),
+} as const;
+
+const accountResource = {
+  resource_type: z.literal("account"),
+} as const;
+
+const paymentResource = {
+  resource_type: z.enum(["payment_intent", "charge"]),
+  resource_id: stripeIdSchema,
+} as const;
+
+export const signedEnvelopeSchema = z.union([
+  z.object({ ...signedEnvelopeBase, ...accountResource, ...unassertedRoles }).strict(),
+  z.object({ ...signedEnvelopeBase, ...accountResource, ...assertedRoles }).strict(),
+  z.object({ ...signedEnvelopeBase, ...paymentResource, ...unassertedRoles }).strict(),
+  z.object({ ...signedEnvelopeBase, ...paymentResource, ...assertedRoles }).strict(),
+]);
 
 export const refundRequestCommandSchema = z
   .object({
@@ -131,6 +151,7 @@ export const apiErrorSchema = z
   .strict();
 
 export type SignedEnvelope = z.infer<typeof signedEnvelopeSchema>;
+export type StripeRole = z.infer<typeof stripeRoleSchema>;
 export type RefundRequestCommand = z.infer<typeof refundRequestCommandSchema>;
 export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 export type Environment = z.infer<typeof environmentSchema>;

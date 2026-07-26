@@ -6,6 +6,7 @@ import {
   serializeSignedEnvelope,
   type CanonicalJsonValue,
   type SignedEnvelope,
+  type StripeRole,
 } from "@refunddesk/contracts";
 import type { AuditEvent } from "@refunddesk/db";
 
@@ -83,18 +84,25 @@ function defaultRequest(): PilotRequestRecord {
 class FakePilotRepository implements PilotRepository {
   context: PilotTenantContext | null = defaultContext();
   request: PilotRequestRecord | null = defaultRequest();
-  activeRequest: { readonly id: string; readonly status: "pending_approval" } | null = null;
+  activeRequest: {
+    readonly can_cancel: boolean;
+    readonly id: string;
+    readonly status: "pending_approval";
+  } | null = null;
   readonly alerts: PilotExternalAlert[] = [];
   readonly receipts = new Map<string, PilotMutationReceipt>();
+  readonly resolvedIdentities: PilotSignedIdentity[] = [];
   readonly resolutionOptions: { readonly allowProvision: boolean }[] = [];
   executeError: Error | null = null;
   executeCount = 0;
+  findCount = 0;
   storeCount = 0;
 
   resolveContext(
-    _identity: PilotSignedIdentity,
+    identity: PilotSignedIdentity,
     options: { readonly allowProvision: boolean },
   ): Promise<PilotTenantContext | null> {
+    this.resolvedIdentities.push(identity);
     this.resolutionOptions.push(options);
     return Promise.resolve(this.context);
   }
@@ -103,6 +111,7 @@ class FakePilotRepository implements PilotRepository {
     _context: PilotTenantContext,
     requestNonce: string,
   ): Promise<PilotMutationReceipt | null> {
+    this.findCount += 1;
     return Promise.resolve(this.receipts.get(requestNonce) ?? null);
   }
 
@@ -222,6 +231,7 @@ class FakePilotRepository implements PilotRepository {
   }
 
   findActiveRequest(): Promise<{
+    readonly can_cancel: boolean;
     readonly id: string;
     readonly status: "pending_approval";
   } | null> {
@@ -287,7 +297,8 @@ interface SignedRequestOptions {
   readonly path?: string;
   readonly resourceId?: string;
   readonly resourceType?: "account" | "charge" | "payment_intent";
-  readonly roles?: SignedEnvelope["stripe_roles"];
+  readonly roles?: StripeRole[];
+  readonly rolesAsserted?: boolean;
   readonly signingSecret?: string;
   readonly userId?: string;
 }
@@ -296,21 +307,35 @@ function signedRequest(spec: PilotRouteSpec, options: SignedRequestOptions = {})
   const accountId = options.accountId ?? ACCOUNT_ID;
   const resourceType =
     options.resourceType ?? (spec.resource === "account" ? "account" : "payment_intent");
-  const resourceId =
-    options.resourceId ??
-    (resourceType === "account" ? accountId : resourceType === "charge" ? "ch_pilot" : "pi_pilot");
-  const envelope: SignedEnvelope = {
+  const base = {
     operation: options.operation ?? spec.operation,
     request_nonce: options.nonce ?? NONCE,
     mode: options.mode ?? "test",
     is_sandbox: options.isSandbox ?? false,
-    resource_type: resourceType,
-    resource_id: resourceId,
     command_json: options.commandJson ?? canonicalJson(options.command ?? {}),
-    stripe_roles: options.roles ?? [{ name: "Administrator", type: "builtIn" }],
     user_id: options.userId ?? USER_ID,
     account_id: accountId,
-  };
+  } as const;
+  const roleAssertion =
+    options.rolesAsserted === false
+      ? ({ roles_asserted: false } as const)
+      : ({
+          roles_asserted: true,
+          stripe_roles: options.roles ?? [{ name: "Administrator", type: "builtIn" }],
+        } as const);
+  const envelope: SignedEnvelope =
+    resourceType === "account"
+      ? {
+          ...base,
+          resource_type: "account",
+          ...roleAssertion,
+        }
+      : {
+          ...base,
+          resource_type: resourceType,
+          resource_id: options.resourceId ?? (resourceType === "charge" ? "ch_pilot" : "pi_pilot"),
+          ...roleAssertion,
+        };
   const raw = serializeSignedEnvelope(envelope);
   const signature = Stripe.webhooks.generateTestHeaderString({
     payload: raw,
@@ -427,7 +452,8 @@ describe("signed pilot API boundary", () => {
 
   it("rejects account and payment resource mismatches", async () => {
     const accountResponse = await invoke(PILOT_ROUTE_SPECS.settingsGet, {
-      resourceId: "acct_other",
+      resourceId: "pi_wrongscope",
+      resourceType: "payment_intent",
     });
     expect(accountResponse.status).toBe(403);
     expect(await errorBody(accountResponse)).toMatchObject({
@@ -441,6 +467,25 @@ describe("signed pilot API boundary", () => {
     expect(paymentResponse.status).toBe(400);
     expect(await errorBody(paymentResponse)).toMatchObject({
       code: "RESOURCE_MISMATCH",
+    });
+  });
+
+  it("exposes requester-bound cancellation capability on an active payment request", async () => {
+    repository.activeRequest = {
+      can_cancel: true,
+      id: "8391fd67-2901-4b2f-8ad1-6fd3c08c39bb",
+      status: "pending_approval",
+    };
+
+    const response = await invoke(PILOT_ROUTE_SPECS.paymentEligibility);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      active_request: {
+        can_cancel: true,
+        id: "8391fd67-2901-4b2f-8ad1-6fd3c08c39bb",
+        status: "pending_approval",
+      },
     });
   });
 
@@ -491,6 +536,16 @@ describe("signed pilot API boundary", () => {
       code: "ADMIN_REQUIRED",
     });
 
+    const unassertedAdministrator = await invoke(PILOT_ROUTE_SPECS.settingsUpdate, {
+      command,
+      nonce: "90d148d0-78ef-4cdc-aac2-3f4c854c26a1",
+      rolesAsserted: false,
+    });
+    expect(unassertedAdministrator.status).toBe(403);
+    expect(await errorBody(unassertedAdministrator)).toMatchObject({
+      code: "ADMIN_REQUIRED",
+    });
+
     const builtInAdministrator = await invoke(PILOT_ROUTE_SPECS.settingsUpdate, {
       command,
       nonce: "c1d21fd3-b011-42de-8e39-893b30a50315",
@@ -515,6 +570,60 @@ describe("signed pilot API boundary", () => {
     expect(await errorBody(response)).toMatchObject({
       code: "APPROVER_REQUIRED",
     });
+  });
+
+  it("rejects a revoked approver before replaying an audit-export receipt", async () => {
+    const options = {
+      command: { format: "csv" },
+      rolesAsserted: false,
+    } as const;
+    const first = await invoke(PILOT_ROUTE_SPECS.auditExport, options);
+    expect(first.status).toBe(200);
+    expect(repository.executeCount).toBe(1);
+    expect(repository.findCount).toBe(1);
+    expect(repository.receipts.size).toBe(1);
+
+    repository.context = {
+      ...defaultContext(),
+      actor: {
+        ...defaultContext().actor,
+        approverEnabled: false,
+      },
+    };
+    const replayAfterRevocation = await invoke(PILOT_ROUTE_SPECS.auditExport, options);
+
+    expect(replayAfterRevocation.status).toBe(403);
+    expect(await errorBody(replayAfterRevocation)).toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(repository.executeCount).toBe(1);
+    expect(repository.findCount).toBe(1);
+    expect(repository.storeCount).toBe(0);
+    expect(repository.receipts.size).toBe(1);
+  });
+
+  it("keeps current-access denials outside mutation receipts", async () => {
+    repository.context = {
+      ...defaultContext(),
+      actor: {
+        ...defaultContext().actor,
+        approverEnabled: false,
+      },
+    };
+
+    const response = await invoke(PILOT_ROUTE_SPECS.alertAcknowledge, {
+      command: { alert_id: "f890185d-11d4-4af8-a7c5-30aa96135aa2" },
+      rolesAsserted: false,
+    });
+
+    expect(response.status).toBe(403);
+    expect(await errorBody(response)).toMatchObject({
+      code: "APPROVER_REQUIRED",
+    });
+    expect(repository.executeCount).toBe(0);
+    expect(repository.findCount).toBe(0);
+    expect(repository.storeCount).toBe(0);
+    expect(repository.receipts.size).toBe(0);
   });
 
   it("preserves proof-replay classifications at the API boundary", async () => {
@@ -648,6 +757,7 @@ describe("signed pilot API boundary", () => {
       reason: "requested_by_customer",
     } as const;
     repository.activeRequest = {
+      can_cancel: false,
       id: "8391fd67-2901-4b2f-8ad1-6fd3c08c39bb",
       status: "pending_approval",
     };
@@ -698,11 +808,29 @@ describe("signed pilot API boundary", () => {
 
   it("allows only a built-in Administrator to provision context", async () => {
     repository.context = null;
+    const unasserted = await invoke(PILOT_ROUTE_SPECS.contextSync, {
+      rolesAsserted: false,
+    });
+    expect(unasserted.status).toBe(404);
+    expect(repository.resolutionOptions).toEqual([{ allowProvision: false }]);
+    expect(repository.resolvedIdentities[0]).toMatchObject({
+      roles: [],
+      rolesAsserted: false,
+    });
+
     const nonAdmin = await invoke(PILOT_ROUTE_SPECS.contextSync, {
+      nonce: "445198f4-ae73-46e7-83d4-88298826c182",
       roles: [{ name: "View only", type: "builtIn" }],
     });
     expect(nonAdmin.status).toBe(404);
-    expect(repository.resolutionOptions).toEqual([{ allowProvision: false }]);
+    expect(repository.resolutionOptions).toEqual([
+      { allowProvision: false },
+      { allowProvision: false },
+    ]);
+    expect(repository.resolvedIdentities[1]).toMatchObject({
+      roles: [{ name: "View only", type: "builtIn" }],
+      rolesAsserted: true,
+    });
 
     await invoke(PILOT_ROUTE_SPECS.contextSync, {
       nonce: "a63ed63a-b5be-4070-bf57-adcbe1cd6e5f",

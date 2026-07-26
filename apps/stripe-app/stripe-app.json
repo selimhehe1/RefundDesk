@@ -49,7 +49,6 @@
   ],
   "constants": {
     "API_BASE": "https://api.refunddesk.example/api",
-    "PHASE0_PROBE_ENABLED": false,
     "PILOT_LIVE_ENABLED": false
   },
   "distribution_type": "public",

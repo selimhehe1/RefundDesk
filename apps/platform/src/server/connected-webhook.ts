@@ -18,7 +18,7 @@ import {
 import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import { apiError, jsonResponse } from "./http";
-import { phase0Store, type Phase0Correlation, type Phase0ObservedRefund } from "./phase0-store";
+import type { Phase0Correlation, Phase0ObservedRefund } from "./phase0-store";
 import { getPilotRuntime } from "./pilot-runtime";
 
 export type WebhookEndpoint = "live" | "test" | "sandbox";
@@ -197,9 +197,6 @@ function defaultDependencies(
       stripe.constructWebhookEvent(rawBody, signature, secret),
     persistence: new PrismaConnectedWebhookPersistence(getPilotRuntime().client),
     now: () => new Date(),
-    ...(config.phase0ProbeEnabled && config.nodeEnv !== "production"
-      ? { phase0Observer: phase0Store }
-      : {}),
   };
 }
 

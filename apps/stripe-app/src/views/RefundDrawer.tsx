@@ -23,7 +23,7 @@ import {
   type RefundRequestSummary,
   type WorkflowStatus,
 } from "../api/client";
-import { publicRequestError } from "../api/signed-fetch";
+import { isAdministrator, publicRequestError } from "../api/signed-fetch";
 import { EmptyState, ErrorState, LoadingState } from "../components/AsyncState";
 import {
   PilotLimitationNotice,
@@ -204,7 +204,7 @@ function ExternalAlertCard({
 
 export default function RefundDrawer(context: ExtensionContextValue) {
   const liveMode = context.environment.mode === "live";
-  const [scope, setScope] = useState<RequestScope>("awaiting_my_approval");
+  const [scope, setScope] = useState<RequestScope>("my_requests");
   const [requests, setRequests] = useState<RefundRequestSummary[]>([]);
   const [requestCursor, setRequestCursor] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<ExternalAlert[]>([]);
@@ -214,6 +214,9 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({});
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [currentUserIsApprover, setCurrentUserIsApprover] = useState(false);
+  const [contextLoaded, setContextLoaded] = useState(false);
+  const administrator = isAdministrator(context);
 
   const loadRequests = useCallback(
     async (cursor?: string, append = false) => {
@@ -257,8 +260,36 @@ export default function RefundDrawer(context: ExtensionContextValue) {
   }, [loadRequests]);
 
   useEffect(() => {
-    void loadAlerts();
-  }, [loadAlerts]);
+    if (liveMode) {
+      setContextLoaded(true);
+      return;
+    }
+    let active = true;
+    const loadContext = async () => {
+      try {
+        const response = await refundDeskApi.syncContext(context);
+        if (!active) {
+          return;
+        }
+        setCurrentUserIsApprover(response.current_user_is_approver);
+        if (response.current_user_is_approver) {
+          await loadAlerts();
+        }
+      } catch (contextError) {
+        if (active) {
+          setError(publicRequestError(contextError));
+        }
+      } finally {
+        if (active) {
+          setContextLoaded(true);
+        }
+      }
+    };
+    void loadContext();
+    return () => {
+      active = false;
+    };
+  }, [context, liveMode, loadAlerts]);
 
   const decide = async (item: RefundRequestSummary, decision: "approve" | "reject") => {
     if (item.is_requester) {
@@ -389,18 +420,22 @@ export default function RefundDrawer(context: ExtensionContextValue) {
             selectedKey={scope}
             onSelectionChange={(value) => {
               if (isRequestScope(value)) {
+                if (value !== "my_requests" && !currentUserIsApprover) {
+                  setError("Only an explicit approver can open this activity view.");
+                  return;
+                }
                 setScope(value);
               }
             }}
           >
             <TabList>
-              <Tab id="awaiting_my_approval">Awaiting my approval</Tab>
               <Tab id="my_requests">My requests</Tab>
+              <Tab id="awaiting_my_approval">Awaiting my approval</Tab>
               <Tab id="all_activity">All activity</Tab>
             </TabList>
             <TabPanels>
-              <TabPanel id="awaiting_my_approval">{requestCards}</TabPanel>
               <TabPanel id="my_requests">{requestCards}</TabPanel>
+              <TabPanel id="awaiting_my_approval">{requestCards}</TabPanel>
               <TabPanel id="all_activity">{requestCards}</TabPanel>
             </TabPanels>
           </Tabs>
@@ -409,7 +444,14 @@ export default function RefundDrawer(context: ExtensionContextValue) {
         <Divider />
         <Box css={{ stack: "y", gap: "medium" }}>
           <Box>Refunds detected outside RefundDesk</Box>
-          {alerts.length === 0 ? (
+          {contextLoaded && !currentUserIsApprover ? (
+            <Banner
+              type="caution"
+              title="Explicit approvers only"
+              description="External refund alerts are available only to a configured RefundDesk approver."
+            />
+          ) : null}
+          {currentUserIsApprover && alerts.length === 0 ? (
             <EmptyState message="No external refund alert needs review." />
           ) : null}
           {alerts.map((alert) => (
@@ -440,7 +482,12 @@ export default function RefundDrawer(context: ExtensionContextValue) {
           <Button
             type="secondary"
             pending={busyId === "audit-export"}
-            disabled={liveMode || busyId !== null}
+            disabled={
+              liveMode ||
+              busyId !== null ||
+              !contextLoaded ||
+              (!administrator && !currentUserIsApprover)
+            }
             onPress={() => {
               void exportAudit();
             }}

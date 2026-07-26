@@ -35,6 +35,41 @@ export type PilotDispatchRequest = {
   };
 }[PilotOperation];
 
+function assertCurrentMutationAccess(
+  context: PilotTenantContext,
+  input: PilotDispatchRequest,
+): void {
+  switch (input.operation) {
+    case "refund_request.decide":
+    case "external_alert.acknowledge":
+      requireApprover(context);
+      return;
+
+    case "settings.update":
+      if (!isAdministrator(input.identity)) {
+        throw new PilotApiError(
+          "ADMIN_REQUIRED",
+          403,
+          "A signed Stripe Administrator role is required.",
+        );
+      }
+      return;
+
+    case "audit.export":
+      if (!context.actor.approverEnabled && !isAdministrator(input.identity)) {
+        throw new PilotApiError(
+          "UNAUTHORIZED",
+          403,
+          "Audit export requires an Administrator or explicit approver.",
+        );
+      }
+      return;
+
+    default:
+      return;
+  }
+}
+
 const INELIGIBILITY_MESSAGES = {
   AMOUNT_EXCEEDS_REMAINING: "The requested amount exceeds the remaining refundable balance.",
   CARD_PRESENT_UNSUPPORTED: "Card-present payments are not supported during the pilot.",
@@ -53,7 +88,7 @@ function response(body: PilotStoredResponse["body"], status = 200): PilotStoredR
 }
 
 function isAdministrator(identity: PilotSignedIdentity): boolean {
-  return hasStripeAdministratorRole(identity.roles);
+  return identity.rolesAsserted && hasStripeAdministratorRole(identity.roles);
 }
 
 function requireApprover(context: PilotTenantContext): void {
@@ -208,9 +243,13 @@ export class PilotService {
       operation: input.operation,
       roles: input.identity.roles,
     });
+    if (input.mutation) {
+      assertCurrentMutationAccess(context, input);
+    }
 
     const metadata: PilotMutationMetadata = {
       actorId: input.identity.userId,
+      assertedStripeRoles: input.identity.rolesAsserted ? input.identity.roles : null,
       canonicalRequestHash: input.canonicalRequestHash,
       operation: input.operation,
       requestNonce: input.requestNonce,
@@ -344,7 +383,12 @@ export class PilotService {
           });
       }
     } catch (error) {
-      if (!input.mutation || !(error instanceof PilotApiError) || error.status >= 500) {
+      if (
+        !input.mutation ||
+        !(error instanceof PilotApiError) ||
+        error.status === 403 ||
+        error.status >= 500
+      ) {
         throw error;
       }
       return this.repository.storeMutationReceipt(context, metadata, {
@@ -379,7 +423,13 @@ export class PilotService {
     const activeRequest = await this.repository.findActiveRequest(context, payment.paymentKey);
     return response({
       active_request:
-        activeRequest === null ? null : { id: activeRequest.id, status: activeRequest.status },
+        activeRequest === null
+          ? null
+          : {
+              can_cancel: activeRequest.can_cancel,
+              id: activeRequest.id,
+              status: activeRequest.status,
+            },
       approvals_required: 1,
       currency: payment.currency.toLowerCase(),
       eligible: eligibility.eligible,

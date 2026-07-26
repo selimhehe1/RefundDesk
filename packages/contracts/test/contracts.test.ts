@@ -30,40 +30,204 @@ describe("refund request contract", () => {
 });
 
 describe("signed envelope serialization", () => {
-  it("locks the Stripe-sensitive field order", () => {
-    const serialized = serializeSignedEnvelope({
-      operation: "refund_request.create",
-      request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
-      mode: "test",
-      is_sandbox: true,
-      resource_type: "payment_intent",
-      resource_id: "pi_123",
-      command_json: "{}",
-      stripe_roles: [
-        { id: "view_only", type: "builtIn", name: "View only" },
-        { type: "custom", name: "Legacy custom role" },
+  it.each([
+    {
+      name: "account scope without an asserted role set",
+      envelope: {
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: true,
+        resource_type: "account",
+        command_json: "{}",
+        roles_asserted: false,
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+      expectedKeys: [
+        "operation",
+        "request_nonce",
+        "mode",
+        "is_sandbox",
+        "resource_type",
+        "command_json",
+        "roles_asserted",
+        "user_id",
+        "account_id",
       ],
-      user_id: "usr_123",
-      account_id: "acct_123",
-    });
+    },
+    {
+      name: "account scope with an asserted role set",
+      envelope: {
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: true,
+        resource_type: "account",
+        command_json: "{}",
+        roles_asserted: true,
+        stripe_roles: [
+          { id: "administrator", type: "builtIn", name: "Administrator" },
+          { type: "custom", name: "Legacy custom role" },
+        ],
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+      expectedKeys: [
+        "operation",
+        "request_nonce",
+        "mode",
+        "is_sandbox",
+        "resource_type",
+        "command_json",
+        "roles_asserted",
+        "stripe_roles",
+        "user_id",
+        "account_id",
+      ],
+    },
+    {
+      name: "payment scope without an asserted role set",
+      envelope: {
+        operation: "refund_request.create",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: true,
+        resource_type: "payment_intent",
+        resource_id: "pi_123",
+        command_json: "{}",
+        roles_asserted: false,
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+      expectedKeys: [
+        "operation",
+        "request_nonce",
+        "mode",
+        "is_sandbox",
+        "resource_type",
+        "resource_id",
+        "command_json",
+        "roles_asserted",
+        "user_id",
+        "account_id",
+      ],
+    },
+    {
+      name: "payment scope with an asserted role set",
+      envelope: {
+        operation: "refund_request.create",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: true,
+        resource_type: "payment_intent",
+        resource_id: "pi_123",
+        command_json: "{}",
+        roles_asserted: true,
+        stripe_roles: [
+          { id: "administrator", type: "builtIn", name: "Administrator" },
+          { type: "custom", name: "Legacy custom role" },
+        ],
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+      expectedKeys: [
+        "operation",
+        "request_nonce",
+        "mode",
+        "is_sandbox",
+        "resource_type",
+        "resource_id",
+        "command_json",
+        "roles_asserted",
+        "stripe_roles",
+        "user_id",
+        "account_id",
+      ],
+    },
+  ])("locks the canonical field order for $name", ({ envelope, expectedKeys }) => {
+    const parsedEnvelope = signedEnvelopeSchema.parse(envelope);
+    const serialized = serializeSignedEnvelope(parsedEnvelope);
+    const serializedEnvelope = JSON.parse(serialized) as Record<string, unknown>;
 
-    expect(Object.keys(JSON.parse(serialized) as object)).toEqual([
-      "operation",
-      "request_nonce",
-      "mode",
-      "is_sandbox",
-      "resource_type",
-      "resource_id",
-      "command_json",
-      "stripe_roles",
-      "user_id",
-      "account_id",
-    ]);
-    const parsed = JSON.parse(serialized) as { stripe_roles: Record<string, unknown>[] };
-    expect(parsed.stripe_roles.map((role) => Object.keys(role))).toEqual([
-      ["id", "type", "name"],
-      ["type", "name"],
-    ]);
+    expect(Object.keys(serializedEnvelope)).toEqual(expectedKeys);
+    expect(signedEnvelopeSchema.parse(serializedEnvelope)).toEqual(parsedEnvelope);
+
+    if (parsedEnvelope.roles_asserted) {
+      expect(
+        (serializedEnvelope.stripe_roles as Record<string, unknown>[]).map((role) =>
+          Object.keys(role),
+        ),
+      ).toEqual([
+        ["id", "type", "name"],
+        ["type", "name"],
+      ]);
+    } else {
+      expect(serializedEnvelope).not.toHaveProperty("stripe_roles");
+    }
+  });
+
+  it.each([
+    {
+      name: "an account resource with resource_id",
+      envelope: {
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: false,
+        resource_type: "account",
+        resource_id: "acct_123",
+        command_json: "{}",
+        roles_asserted: false,
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+    },
+    {
+      name: "a payment resource without resource_id",
+      envelope: {
+        operation: "refund_request.create",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: false,
+        resource_type: "payment_intent",
+        command_json: "{}",
+        roles_asserted: false,
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+    },
+    {
+      name: "unasserted roles with stripe_roles",
+      envelope: {
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: false,
+        resource_type: "account",
+        command_json: "{}",
+        roles_asserted: false,
+        stripe_roles: [{ id: "view_only", type: "builtIn", name: "View only" }],
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+    },
+    {
+      name: "asserted roles without stripe_roles",
+      envelope: {
+        operation: "context.sync",
+        request_nonce: "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9",
+        mode: "test",
+        is_sandbox: false,
+        resource_type: "account",
+        command_json: "{}",
+        roles_asserted: true,
+        user_id: "usr_123",
+        account_id: "acct_123",
+      },
+    },
+  ])("rejects $name", ({ envelope }) => {
+    expect(() => signedEnvelopeSchema.parse(envelope)).toThrow();
   });
 });
 
@@ -88,8 +252,8 @@ describe("operation contracts", () => {
         mode: "test",
         is_sandbox: false,
         resource_type: "account",
-        resource_id: "acct_123",
         command_json: "{}",
+        roles_asserted: true,
         stripe_roles: [{ id: "view_only", type: "builtIn", name: "View only" }],
         user_id: "usr_123",
         account_id: "acct_123",
@@ -102,8 +266,8 @@ describe("operation contracts", () => {
         mode: "test",
         is_sandbox: false,
         resource_type: "account",
-        resource_id: "acct_123",
         command_json: "{}",
+        roles_asserted: true,
         stripe_roles: [
           {
             id: "view_only",

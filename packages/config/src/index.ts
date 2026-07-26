@@ -46,9 +46,7 @@ const environmentSchema = z
     STRIPE_CONNECTED_TEST_WEBHOOK_SECRET: webhookSecret,
     STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: webhookSecret,
     STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: z.literal("disabled").default("disabled"),
-    STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS: z.string().default(""),
     REFUNDDESK_GLOBAL_LIVE_ENABLED: z.literal("false").default("false"),
-    REFUNDDESK_PHASE0_PROBE_ENABLED: z.enum(["true", "false"]).default("false"),
     REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: base64Key,
     REFUNDDESK_PROOF_HMAC_KEY_V1: base64Key,
     REFUNDDESK_EXPORT_SIGNING_KEY_V1: base64Key,
@@ -87,27 +85,6 @@ const environmentSchema = z
         code: "custom",
         path: ["APP_BASE_URL"],
         message: "Production APP_BASE_URL must use HTTPS",
-      });
-    }
-    const phase0PaymentIntents = value.STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS.split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    if (phase0PaymentIntents.some((paymentIntent) => !/^pi_[A-Za-z0-9]+$/u.test(paymentIntent))) {
-      context.addIssue({
-        code: "custom",
-        path: ["STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS"],
-        message: "The phase-0 allowlist accepts only PaymentIntent IDs",
-      });
-    }
-    if (
-      value.REFUNDDESK_PHASE0_PROBE_ENABLED === "true" &&
-      (value.NODE_ENV === "production" || phase0PaymentIntents.length === 0)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["REFUNDDESK_PHASE0_PROBE_ENABLED"],
-        message:
-          "The phase-0 probe requires a non-production environment and a non-empty allowlist",
       });
     }
     const webPrincipal = databasePrincipal(value.DATABASE_URL);
@@ -202,8 +179,6 @@ export interface RefundDeskConfig {
   readonly migrationDatabaseUrl?: string;
   readonly pgBossDatabaseUrl: string;
   readonly liveEnabled: false;
-  readonly phase0ProbeEnabled: boolean;
-  readonly phase0AllowedPaymentIntents: ReadonlySet<string>;
   readonly stripe: {
     readonly apiVersion: "2026-06-24.dahlia";
     readonly appSigningSecret: string;
@@ -236,12 +211,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): RefundDeskC
       : { migrationDatabaseUrl: env.DATABASE_MIGRATION_URL }),
     pgBossDatabaseUrl: env.PGBOSS_DATABASE_URL,
     liveEnabled: false,
-    phase0ProbeEnabled: env.REFUNDDESK_PHASE0_PROBE_ENABLED === "true",
-    phase0AllowedPaymentIntents: new Set(
-      env.STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS.split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
-    ),
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,
       appSigningSecret: env.STRIPE_APP_SIGNING_SECRET,

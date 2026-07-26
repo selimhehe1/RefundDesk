@@ -21,14 +21,15 @@ independent pnpm 10.30.3 lockfile and an independent ESLint configuration. CI ve
 lint, build, tests and production audit against that exact standalone graph with
 `--ignore-workspace`.
 
-The uploadable `stripe-app.json` always keeps `PHASE0_PROBE_ENABLED=false` and
-`PILOT_LIVE_ENABLED=false`. The local launcher:
+The uploadable `stripe-app.json` always keeps `PILOT_LIVE_ENABLED=false` and contains no Phase-0
+runtime switch or endpoint. The local launcher:
 
 - accepts no CLI arguments or live-mode flags;
 - accepts only an HTTPS public-DNS hostname and verifies its resolved addresses at startup;
 - uses only a short-lived, operator-controlled tunnel;
 - invokes Stripe without a command shell;
-- derives an ignored local manifest that enables the probe while forcing live mode off;
+- derives an ignored local manifest that points to the temporary development API while forcing live
+  mode off;
 - removes the generated manifest and `.build` output when the CLI exits;
 - never uploads generated development artifacts.
 

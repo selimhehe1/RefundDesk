@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { canonicalJson } from "@refunddesk/contracts";
-import type { SignedEnvelope } from "@refunddesk/contracts";
+import type { StripeRole } from "@refunddesk/contracts";
 import { hasStripeAdministratorRole } from "@refunddesk/domain";
 
 export interface Phase0ProofPayload {
@@ -13,7 +13,7 @@ export interface Phase0ProofPayload {
   readonly currency: string;
 }
 
-export function isPhase0Administrator(roles: SignedEnvelope["stripe_roles"]): boolean {
+export function isPhase0Administrator(roles: readonly StripeRole[]): boolean {
   return hasStripeAdministratorRole(roles);
 }
 

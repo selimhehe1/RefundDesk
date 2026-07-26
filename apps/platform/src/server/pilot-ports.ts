@@ -1,4 +1,4 @@
-import type { CanonicalJsonValue, PilotOperation, SignedEnvelope } from "@refunddesk/contracts";
+import type { CanonicalJsonValue, PilotOperation, StripeRole } from "@refunddesk/contracts";
 import type { IneligibilityCode, WorkflowStatus } from "@refunddesk/domain";
 
 export type PilotEnvironment = "sandbox" | "test";
@@ -7,7 +7,8 @@ export type PilotPaymentResourceType = "charge" | "payment_intent";
 export interface PilotSignedIdentity {
   readonly accountId: string;
   readonly environment: PilotEnvironment;
-  readonly roles: SignedEnvelope["stripe_roles"];
+  readonly roles: readonly StripeRole[];
+  readonly rolesAsserted: boolean;
   readonly userId: string;
 }
 
@@ -72,6 +73,7 @@ export interface PilotRequestRecord extends PilotRequestSummary {
 }
 
 export interface PilotActiveRequest {
+  readonly can_cancel: boolean;
   readonly id: string;
   readonly status: WorkflowStatus;
 }
@@ -111,6 +113,7 @@ export interface PilotMutationReceipt {
 
 export interface PilotMutationMetadata {
   readonly actorId: string;
+  readonly assertedStripeRoles: readonly StripeRole[] | null;
   readonly canonicalRequestHash: Uint8Array;
   readonly operation: PilotOperation;
   readonly requestNonce: string;
@@ -213,7 +216,7 @@ export interface PilotAccessPolicy {
     input: {
       readonly operation: PilotOperation;
       readonly mutation: boolean;
-      readonly roles: SignedEnvelope["stripe_roles"];
+      readonly roles: readonly StripeRole[];
     },
   ): void;
 }

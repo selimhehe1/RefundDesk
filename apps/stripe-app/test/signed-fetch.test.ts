@@ -2,7 +2,12 @@ import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
 import { describe, expect, it, vi } from "vitest";
 
 import { canonicalJson } from "../src/api/canonical-json";
-import { isAdministrator, prepareSignedRequest, signedApiRequest } from "../src/api/signed-fetch";
+import {
+  isAdministrator,
+  prepareSignedRequest,
+  signedApiRequest,
+  type SignaturePayload,
+} from "../src/api/signed-fetch";
 
 function createContext(
   overrides: {
@@ -29,7 +34,6 @@ function createContext(
     environment: {
       constants: {
         API_BASE: "http://localhost:3000/api",
-        PHASE0_PROBE_ENABLED: true,
         PILOT_LIVE_ENABLED: false,
       },
       mode: overrides.mode ?? "test",
@@ -101,6 +105,18 @@ describe("prepareSignedRequest", () => {
     );
   });
 
+  it("rejects oversized Stripe role collections", () => {
+    const tooManyRoles = createContext();
+    tooManyRoles.userContext.roles = Array.from({ length: 33 }, (_, index) => ({
+      id: `role_${index}`,
+      type: "custom",
+      name: `Role ${index}`,
+    })) as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
+    expect(() => prepareSignedRequest(tooManyRoles, requestInput)).toThrow(
+      "signed Stripe role context is invalid",
+    );
+  });
+
   it("locks the Stripe-sensitive body field order", () => {
     const prepared = prepareSignedRequest(createContext(), requestInput);
     expect(Object.keys(JSON.parse(prepared.body) as object)).toEqual([
@@ -111,6 +127,7 @@ describe("prepareSignedRequest", () => {
       "resource_type",
       "resource_id",
       "command_json",
+      "roles_asserted",
       "stripe_roles",
       "user_id",
       "account_id",
@@ -122,6 +139,10 @@ describe("prepareSignedRequest", () => {
 
   it("passes authentic Stripe role definitions in the special signed field", () => {
     const prepared = prepareSignedRequest(createContext(), requestInput);
+    expect(prepared.signaturePayload.roles_asserted).toBe(true);
+    if (!prepared.signaturePayload.roles_asserted) {
+      throw new Error("Expected an asserted Administrator payload.");
+    }
     expect(prepared.signaturePayload.stripe_roles).toEqual([
       { id: "super_admin", type: "builtIn", name: "Super Administrator" },
       { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
@@ -155,8 +176,22 @@ describe("prepareSignedRequest", () => {
 });
 
 describe("signedApiRequest", () => {
-  it("uses the same payload for Stripe signing and the ordered body", async () => {
-    const signatureFetcher = vi.fn(() => Promise.resolve("t=1,v1=test"));
+  it("uses the original Stripe role objects for signing and a canonical ordered body", async () => {
+    const context = createContext();
+    const rawRole = {
+      name: "Super Administrator",
+      type: "builtIn",
+      id: "super_admin",
+      permissions: ["charge_read", "charge_write"],
+    } as const;
+    const rawRoles = [rawRole] as unknown as NonNullable<
+      ExtensionContextValue["userContext"]["roles"]
+    >;
+    context.userContext.roles = rawRoles;
+    const signatureFetcher = vi.fn((payload: SignaturePayload) => {
+      void payload;
+      return Promise.resolve("t=1,v1=test");
+    });
     const fetcher = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       void input;
       void init;
@@ -168,20 +203,19 @@ describe("signedApiRequest", () => {
       );
     });
 
-    await signedApiRequest(createContext(), requestInput, {
+    await signedApiRequest(context, requestInput, {
       signatureFetcher,
       fetcher,
     });
 
     expect(signatureFetcher).toHaveBeenCalledOnce();
-    expect(signatureFetcher).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stripe_roles: [
-          { id: "super_admin", type: "builtIn", name: "Super Administrator" },
-          { id: "refund_reviewer", type: "custom", name: "Refund reviewer" },
-        ],
-      }),
-    );
+    const [signaturePayload] = signatureFetcher.mock.calls[0] ?? [];
+    expect(signaturePayload?.roles_asserted).toBe(true);
+    if (signaturePayload === undefined || !signaturePayload.roles_asserted) {
+      throw new Error("Expected an asserted Administrator payload.");
+    }
+    expect(signaturePayload?.stripe_roles).toBe(rawRoles);
+    expect(signaturePayload?.stripe_roles[0]).toBe(rawRole);
     expect(fetcher).toHaveBeenCalledOnce();
     const [, init] = fetcher.mock.calls[0] ?? [];
     expect(init?.credentials).toBe("omit");
@@ -189,6 +223,92 @@ describe("signedApiRequest", () => {
       "Content-Type": "application/json",
       "Stripe-Signature": "t=1,v1=test",
     });
+    if (typeof init?.body !== "string") {
+      throw new Error("Expected a serialized request body.");
+    }
+    const parsedBody = JSON.parse(init.body) as {
+      readonly stripe_roles: Record<string, unknown>[];
+    };
+    expect(parsedBody.stripe_roles).toEqual([
+      { id: "super_admin", type: "builtIn", name: "Super Administrator" },
+    ]);
+    expect(Object.keys(parsedBody.stripe_roles[0] ?? {})).toEqual(["id", "type", "name"]);
+  });
+
+  it("omits the role assertion for a non-admin while preserving identity and command data", async () => {
+    const context = createContext();
+    context.userContext.roles = [
+      { id: "view_only", type: "builtIn", name: "View only" },
+    ] as unknown as NonNullable<ExtensionContextValue["userContext"]["roles"]>;
+    const signatureFetcher = vi.fn((payload: SignaturePayload) => {
+      void payload;
+      return Promise.resolve("t=1,v1=test");
+    });
+    const fetcher = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(
+        new Response('{"ok":true}', {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+
+    await signedApiRequest(context, requestInput, { signatureFetcher, fetcher });
+
+    const [signaturePayload] = signatureFetcher.mock.calls[0] ?? [];
+    expect(signaturePayload?.roles_asserted).toBe(false);
+    expect(signaturePayload).not.toHaveProperty("stripe_roles");
+    expect(signaturePayload).toMatchObject({
+      command_json:
+        '{"amount_minor":"1250","currency":"eur","justification":"Customer requested this refund.","reason":"requested_by_customer"}',
+      operation: "refund_request.create",
+      resource_id: "pi_123",
+    });
+    const [, init] = fetcher.mock.calls[0] ?? [];
+    if (typeof init?.body !== "string") {
+      throw new Error("Expected a serialized request body.");
+    }
+    const parsedBody = JSON.parse(init.body) as Record<string, unknown>;
+    expect(parsedBody["roles_asserted"]).toBe(false);
+    expect(parsedBody).not.toHaveProperty("stripe_roles");
+  });
+
+  it("omits resource_id from account-scoped payloads and bodies", () => {
+    const prepared = prepareSignedRequest(createContext(), {
+      endpoint: "/v1/refund-requests/list",
+      operation: "refund_request.list",
+      resourceType: "account",
+      requestNonce: "1c06e580-8e3d-45ee-a258-ad97ab40a90a",
+      command: { scope: "my_requests", limit: 25 },
+    });
+
+    expect(prepared.signaturePayload).not.toHaveProperty("resource_id");
+    expect(Object.keys(JSON.parse(prepared.body) as object)).toEqual([
+      "operation",
+      "request_nonce",
+      "mode",
+      "is_sandbox",
+      "resource_type",
+      "command_json",
+      "roles_asserted",
+      "stripe_roles",
+      "user_id",
+      "account_id",
+    ]);
+  });
+
+  it("does not call the backend when Stripe signature generation fails", async () => {
+    const fetcher = vi.fn();
+
+    await expect(
+      signedApiRequest(createContext(), requestInput, {
+        signatureFetcher: () => Promise.reject(new Error("Stripe signature unavailable")),
+        fetcher,
+      }),
+    ).rejects.toThrow("Stripe signature unavailable");
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("does not expose a backend message or stack in client errors", async () => {

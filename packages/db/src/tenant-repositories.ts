@@ -58,7 +58,7 @@ export interface BeginCheckpointInput {
 export interface ObserveTenantUserInput {
   readonly stripeUserId: string;
   readonly displayName?: string | null;
-  readonly stripeRoles: Prisma.InputJsonValue;
+  readonly stripeRoles?: Prisma.InputJsonValue;
   readonly verifiedAt: Date;
 }
 
@@ -293,13 +293,17 @@ export class TenantRepositories {
         tenantId: this.tenantId,
         stripeUserId: input.stripeUserId,
         ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        stripeRoles: input.stripeRoles,
+        ...(input.stripeRoles === undefined ? {} : { stripeRoles: input.stripeRoles }),
         lastVerifiedAt: input.verifiedAt,
       },
       update: {
         ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        stripeRoles: input.stripeRoles,
-        lastVerifiedAt: input.verifiedAt,
+        ...(input.stripeRoles === undefined
+          ? {}
+          : {
+              stripeRoles: input.stripeRoles,
+              lastVerifiedAt: input.verifiedAt,
+            }),
       },
     });
   }

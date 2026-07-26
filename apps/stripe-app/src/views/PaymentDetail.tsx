@@ -5,9 +5,7 @@ import {
   Banner,
   Box,
   Button,
-  Checkbox,
   ContextView,
-  Divider,
   Select,
   TextArea,
   TextField,
@@ -27,7 +25,6 @@ import {
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
-import { getPhase0ControlAvailability } from "../phase0-controls";
 import { validateRefundForm, type RefundFormErrors } from "../validation";
 
 function hasErrors(errors: RefundFormErrors): boolean {
@@ -48,15 +45,6 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   const [formErrors, setFormErrors] = useState<RefundFormErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [probeConfirmed, setProbeConfirmed] = useState(false);
-  const [probeResult, setProbeResult] = useState<string | null>(null);
-  const [probeEvidence, setProbeEvidence] = useState<string | null>(null);
-  const phase0Controls = getPhase0ControlAvailability(
-    context,
-    resourceType,
-    resourceId,
-    eligibility !== null,
-  );
 
   const loadEligibility = useCallback(async () => {
     if (liveMode || resourceType === undefined || resourceId === undefined) {
@@ -120,94 +108,6 @@ export default function PaymentDetail(context: ExtensionContextValue) {
     }
   };
 
-  const runPhase0Probe = async () => {
-    if (
-      !phase0Controls.runRefundProbe ||
-      eligibility === null ||
-      resourceType !== "payment_intent" ||
-      resourceId === undefined ||
-      !probeConfirmed
-    ) {
-      return;
-    }
-    const errors = validateRefundForm(
-      {
-        amountMinor,
-        justification: "Phase zero technical refund probe.",
-        reason,
-      },
-      eligibility.remaining_amount_minor,
-    );
-    if (errors.amount !== undefined) {
-      setFormErrors(errors);
-      return;
-    }
-
-    setSubmitting(true);
-    setProbeResult(null);
-    try {
-      const response = await refundDeskApi.runPhase0Probe(
-        context,
-        { resourceType, resourceId },
-        {
-          amount_minor: amountMinor,
-          currency: eligibility.currency,
-          reason,
-        },
-      );
-      setProbeResult(
-        `Test Refund ${response.refund_id} created; correlation: ${response.correlation}.`,
-      );
-      setProbeConfirmed(false);
-      await loadEligibility();
-    } catch (error) {
-      setLoadError(publicRequestError(error));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const refreshPhase0Evidence = async () => {
-    if (
-      !phase0Controls.refreshEvidence ||
-      resourceType !== "payment_intent" ||
-      resourceId === undefined
-    ) {
-      return;
-    }
-    setSubmitting(true);
-    setProbeEvidence(null);
-    try {
-      const report = await refundDeskApi.getPhase0Report(context, { resourceType, resourceId });
-      const latest = report.evidence.at(-1);
-      setProbeEvidence(
-        latest === undefined
-          ? `${report.probe_count} probe(s) registered; no verified Refund webhook observed yet.`
-          : `${report.evidence_count} verified observation(s); latest ${latest.refund_id} is ${latest.correlation}.`,
-      );
-    } catch (error) {
-      setLoadError(publicRequestError(error));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const initializePhase0Tenant = async () => {
-    if (!phase0Controls.initializeTenant || loading) {
-      return;
-    }
-    setSubmitting(true);
-    setLoadError(null);
-    try {
-      await refundDeskApi.syncContext(context);
-      await loadEligibility();
-    } catch (error) {
-      setLoadError(publicRequestError(error));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const reasonChanged = (value: string) => {
     const parsed = refundReasonSchema.safeParse(value);
     if (parsed.success) {
@@ -218,6 +118,33 @@ export default function PaymentDetail(context: ExtensionContextValue) {
   const activeRequest = eligibility?.active_request ?? null;
   const requestDisabled =
     liveMode || loading || submitting || eligibility?.eligible !== true || activeRequest !== null;
+  const cancelActiveRequest = async () => {
+    if (
+      activeRequest === null ||
+      activeRequest.status !== "pending_approval" ||
+      resourceType === undefined ||
+      resourceId === undefined
+    ) {
+      return;
+    }
+
+    setSubmitting(true);
+    setLoadError(null);
+    setSuccessMessage(null);
+    try {
+      await refundDeskApi.cancelRefundRequest(
+        context,
+        { resourceType, resourceId },
+        activeRequest.id,
+      );
+      setSuccessMessage(`Request ${activeRequest.id} was canceled before execution.`);
+      await loadEligibility();
+    } catch (error) {
+      setLoadError(publicRequestError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <ContextView
@@ -240,15 +167,13 @@ export default function PaymentDetail(context: ExtensionContextValue) {
         {loading ? <LoadingState label="Checking refund eligibility…" /> : null}
         {loadError === null ? null : <ErrorState message={loadError} />}
         {successMessage === null ? null : (
-          <Banner title="Request submitted" description={successMessage} />
+          <Banner
+            title={
+              successMessage.includes("was canceled") ? "Request canceled" : "Request submitted"
+            }
+            description={successMessage}
+          />
         )}
-        {probeResult === null ? null : (
-          <Banner title="Technical probe completed" description={probeResult} />
-        )}
-        {probeEvidence === null ? null : (
-          <Banner title="Phase-0 evidence" description={probeEvidence} />
-        )}
-
         {eligibility === null ? null : (
           <>
             {!eligibility.eligible ? (
@@ -262,10 +187,24 @@ export default function PaymentDetail(context: ExtensionContextValue) {
               />
             ) : null}
             {activeRequest === null ? null : (
-              <Banner
-                title="A request is already active"
-                description={`Request ${activeRequest.id} is ${activeRequest.status}. A new request remains blocked while it is non-terminal or its Refund is unresolved.`}
-              />
+              <>
+                <Banner
+                  title="A request is already active"
+                  description={`Request ${activeRequest.id} is ${activeRequest.status}. A new request remains blocked while it is non-terminal or its Refund is unresolved.`}
+                />
+                {activeRequest.can_cancel ? (
+                  <Button
+                    type="secondary"
+                    pending={submitting}
+                    disabled={submitting}
+                    onPress={() => {
+                      void cancelActiveRequest();
+                    }}
+                  >
+                    Cancel my pending request
+                  </Button>
+                ) : null}
+              </>
             )}
 
             <TextField
@@ -331,73 +270,6 @@ export default function PaymentDetail(context: ExtensionContextValue) {
             </Button>
           </>
         )}
-
-        {phase0Controls.refreshEvidence ? (
-          <>
-            <Divider />
-            <Banner
-              title="Phase-0 signed evidence"
-              description="Refreshing evidence sends a non-mutating Stripe-signed report request and creates no Refund. This development-only control is unavailable in the uploaded manifest."
-            />
-            {phase0Controls.initializeTenant ? (
-              <>
-                <Banner
-                  title="Phase-0 local setup"
-                  description="Initializing creates only the local test tenant and signed Stripe-user record. It does not create a Refund or call a live environment."
-                />
-                <Button
-                  pending={submitting}
-                  disabled={submitting || loading}
-                  onPress={() => {
-                    void initializePhase0Tenant();
-                  }}
-                >
-                  Initialize test tenant
-                </Button>
-              </>
-            ) : null}
-            {phase0Controls.runRefundProbe && eligibility !== null ? (
-              <>
-                <Banner
-                  type="caution"
-                  title="Phase-0 technical refund probe"
-                  description="This control creates an immediate Stripe test Refund and bypasses the approval workflow."
-                />
-                <Checkbox
-                  label="I confirm this is an allowlisted synthetic PaymentIntent and understand that a test Refund will be created now."
-                  checked={probeConfirmed}
-                  onChange={(event) => {
-                    setProbeConfirmed(event.target.checked);
-                  }}
-                />
-                <Button
-                  type="destructive"
-                  pending={submitting}
-                  disabled={
-                    submitting ||
-                    requestDisabled ||
-                    !probeConfirmed ||
-                    eligibility.eligible !== true
-                  }
-                  onPress={() => {
-                    void runPhase0Probe();
-                  }}
-                >
-                  Run technical refund probe
-                </Button>
-              </>
-            ) : null}
-            <Button
-              pending={submitting}
-              disabled={submitting}
-              onPress={() => {
-                void refreshPhase0Evidence();
-              }}
-            >
-              Refresh verified webhook evidence
-            </Button>
-          </>
-        ) : null}
       </Box>
     </ContextView>
   );

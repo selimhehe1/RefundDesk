@@ -99,7 +99,7 @@ Verify:
 - PostgreSQL is reachable with the unprivileged runtime role;
 - required migrations are applied;
 - pg-boss schema is ready before worker claims;
-- the App signing secret for the exact Stripe environment is configured without printing it;
+- the signing secret for the exact uploaded Stripe App is configured without printing it;
 - exactly the intended test or sandbox Stripe credential is available;
 - global live switch is false;
 - tenant live switch is false;

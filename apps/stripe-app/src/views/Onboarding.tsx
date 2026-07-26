@@ -79,7 +79,7 @@ export default function Onboarding(context: ExtensionContextValue) {
       status: administrator ? (completed ? "complete" : "in-progress") : "blocked",
     },
     {
-      title: "Run the guided synthetic-payment probe",
+      title: "Complete a two-person synthetic refund workflow",
       status: "not-started",
     },
   ];
@@ -132,7 +132,7 @@ export default function Onboarding(context: ExtensionContextValue) {
 
         <Banner
           title="Guided sandbox test"
-          description="After setup, open an allowlisted synthetic PaymentIntent. The payment view can run the development-only phase-0 probe, then the normal approval workflow."
+          description="After setup, open a synthetic card PaymentIntent, submit a request, and have a different approver decide it through the normal workflow."
         />
 
         <Button

@@ -37,7 +37,13 @@ function assertRoute(request: Request, spec: PilotRouteSpec): void {
   }
 }
 
-function paymentResource(resourceType: string, resourceId: string): PilotPaymentResource | null {
+function paymentResource(
+  resourceType: string,
+  resourceId: string | undefined,
+): PilotPaymentResource | null {
+  if (resourceId === undefined) {
+    return null;
+  }
   if (resourceType === "charge") {
     if (!resourceId.startsWith("ch_")) {
       reject("RESOURCE_MISMATCH", 400, "The resource ID does not match the signed resource type.");
@@ -110,9 +116,9 @@ export async function handlePilotRoute(
       reject("LIVE_MODE_DISABLED", 403, "RefundDesk pilot operations are disabled in live mode.");
     }
 
-    let resource = paymentResource(envelope.resource_type, envelope.resource_id);
+    let resource: PilotPaymentResource | null;
     if (spec.resource === "account") {
-      if (envelope.resource_type !== "account" || envelope.resource_id !== envelope.account_id) {
+      if (envelope.resource_type !== "account") {
         reject(
           "RESOURCE_MISMATCH",
           403,
@@ -120,8 +126,18 @@ export async function handlePilotRoute(
         );
       }
       resource = null;
-    } else if (resource === null) {
-      reject("RESOURCE_MISMATCH", 400, "This route must be signed for a Charge or PaymentIntent.");
+    } else {
+      resource =
+        envelope.resource_type === "account"
+          ? null
+          : paymentResource(envelope.resource_type, envelope.resource_id);
+      if (resource === null) {
+        reject(
+          "RESOURCE_MISMATCH",
+          400,
+          "This route must be signed for a Charge or PaymentIntent.",
+        );
+      }
     }
 
     const command = parseOperationCommand(spec.operation, envelope.command_json);
@@ -135,7 +151,8 @@ export async function handlePilotRoute(
       identity: {
         accountId: envelope.account_id,
         environment: envelope.is_sandbox ? "sandbox" : "test",
-        roles: envelope.stripe_roles,
+        roles: envelope.roles_asserted ? envelope.stripe_roles : [],
+        rolesAsserted: envelope.roles_asserted,
         userId: envelope.user_id,
       },
       mutation: spec.mutation,

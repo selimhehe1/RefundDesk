@@ -1,4 +1,4 @@
-import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
+import type { ExtensionContextValue, RoleDefinition } from "@stripe/ui-extension-sdk/context";
 import { fetchStripeSignature } from "@stripe/ui-extension-sdk/utils";
 
 import { canonicalJson, type JsonValue } from "./canonical-json";
@@ -25,18 +25,26 @@ export type SignedEndpoint =
   | "/v1/refund-requests/get"
   | "/v1/refund-requests/list"
   | "/v1/settings/get"
-  | "/v1/settings/update"
-  | "/internal/phase0/refund-probe"
-  | "/internal/phase0/report";
+  | "/v1/settings/update";
 
-export interface SignedRequestInput {
+interface SignedRequestInputBase {
   readonly endpoint: SignedEndpoint;
   readonly operation: string;
-  readonly resourceType: PilotResourceType;
-  readonly resourceId: string;
   readonly command: JsonValue;
   readonly requestNonce?: string;
 }
+
+export type SignedRequestInput = SignedRequestInputBase &
+  (
+    | {
+        readonly resourceType: "account";
+        readonly resourceId?: never;
+      }
+    | {
+        readonly resourceType: "charge" | "payment_intent";
+        readonly resourceId: string;
+      }
+  );
 
 export interface SignedStripeRole {
   readonly [key: string]: StripeSignatureValue;
@@ -45,17 +53,34 @@ export interface SignedStripeRole {
   readonly type: "builtIn" | "custom";
 }
 
-export interface SignaturePayload {
-  readonly [key: string]: StripeSignatureValue;
+interface SignaturePayloadBase {
   readonly operation: string;
   readonly request_nonce: string;
   readonly mode: "test";
   readonly is_sandbox: boolean;
   readonly resource_type: PilotResourceType;
-  readonly resource_id: string;
   readonly command_json: string;
-  readonly stripe_roles: SignedStripeRole[];
 }
+
+type SignatureResource =
+  | {
+      readonly resource_type: "account";
+    }
+  | {
+      readonly resource_type: "charge" | "payment_intent";
+      readonly resource_id: string;
+    };
+
+type SignatureRoleAssertion =
+  | {
+      readonly roles_asserted: false;
+    }
+  | {
+      readonly roles_asserted: true;
+      readonly stripe_roles: SignedStripeRole[];
+    };
+
+export type SignaturePayload = SignaturePayloadBase & SignatureResource & SignatureRoleAssertion;
 
 export interface PreparedSignedRequest {
   readonly apiUrl: string;
@@ -144,33 +169,59 @@ export function getPilotEnvironment(context: ExtensionContextValue): "sandbox" |
   return context.userContext.account.isSandbox ? "sandbox" : "test";
 }
 
-export function isPhase0ProbeEnabled(context: ExtensionContextValue): boolean {
-  return readConstant(context, "PHASE0_PROBE_ENABLED") === true;
+function isAdministratorRole(role: SignedStripeRole): boolean {
+  if (role.type !== "builtIn") {
+    return false;
+  }
+  return role.id === undefined
+    ? role.name === "Administrator" || role.name === "Super Administrator"
+    : role.id === "admin" || role.id === "super_admin";
 }
 
 export function isAdministrator(context: ExtensionContextValue): boolean {
-  return normalizedStripeRoles(context).some((role) => {
-    if (role.type !== "builtIn") {
-      return false;
-    }
-    return role.id === undefined
-      ? role.name === "Administrator" || role.name === "Super Administrator"
-      : role.id === "admin" || role.id === "super_admin";
-  });
+  return normalizedStripeRoles(context).some((role) => isAdministratorRole(role));
 }
 
-function normalizedStripeRoles(context: ExtensionContextValue): SignedStripeRole[] {
-  return (context.userContext.roles ?? []).map((role) => {
-    const runtimeRole = role as typeof role & { readonly id?: unknown };
+function validatedRawStripeRoles(context: ExtensionContextValue): readonly RoleDefinition[] {
+  const roles = context.userContext.roles ?? [];
+  if (!Array.isArray(roles) || roles.length > 32) {
+    throw new SignedExtensionRequestError(
+      "ROLE_CONTEXT_INVALID",
+      "The signed Stripe role context is invalid.",
+    );
+  }
+
+  for (const role of roles) {
+    if (!isRecord(role)) {
+      throw new SignedExtensionRequestError(
+        "ROLE_CONTEXT_INVALID",
+        "The signed Stripe role context is invalid.",
+      );
+    }
+    const runtimeRole = role as unknown as Record<string, unknown>;
+    const id = runtimeRole["id"];
+    const name = runtimeRole["name"];
+    const type = runtimeRole["type"];
     if (
-      runtimeRole.id !== undefined &&
-      (typeof runtimeRole.id !== "string" || runtimeRole.id.length === 0)
+      (id !== undefined && (typeof id !== "string" || id.length === 0 || id.length > 255)) ||
+      typeof name !== "string" ||
+      name.length === 0 ||
+      name.length > 255 ||
+      (type !== "builtIn" && type !== "custom")
     ) {
       throw new SignedExtensionRequestError(
         "ROLE_CONTEXT_INVALID",
         "The signed Stripe role context is invalid.",
       );
     }
+  }
+
+  return roles;
+}
+
+function normalizedStripeRoles(context: ExtensionContextValue): SignedStripeRole[] {
+  return validatedRawStripeRoles(context).map((role) => {
+    const runtimeRole = role as typeof role & { readonly id?: string };
     return {
       ...(runtimeRole.id === undefined ? {} : { id: runtimeRole.id }),
       type: role.type,
@@ -210,16 +261,31 @@ export function prepareSignedRequest(
 ): PreparedSignedRequest {
   getPilotEnvironment(context);
   const { accountId, userId } = requireIdentity(context);
-  const signaturePayload: SignaturePayload = {
+  const normalizedRoles = normalizedStripeRoles(context);
+  const administrator = normalizedRoles.some((role) => isAdministratorRole(role));
+  const commonPayload = {
     operation: input.operation,
     request_nonce: input.requestNonce ?? createRequestNonce(),
-    mode: "test",
+    mode: "test" as const,
     is_sandbox: context.userContext.account.isSandbox,
-    resource_type: input.resourceType,
-    resource_id: input.resourceId,
+    ...(input.resourceType === "account"
+      ? { resource_type: "account" as const }
+      : {
+          resource_type: input.resourceType,
+          resource_id: input.resourceId,
+        }),
     command_json: canonicalJson(input.command),
-    stripe_roles: normalizedStripeRoles(context),
   };
+  const signaturePayload: SignaturePayload = administrator
+    ? {
+        ...commonPayload,
+        roles_asserted: true,
+        stripe_roles: normalizedRoles,
+      }
+    : {
+        ...commonPayload,
+        roles_asserted: false,
+      };
   const body = JSON.stringify({
     ...signaturePayload,
     user_id: userId,
@@ -273,9 +339,20 @@ export async function signedApiRequest(
 ): Promise<unknown> {
   const prepared = prepareSignedRequest(context, input);
   const signatureFetcher =
-    dependencies.signatureFetcher ?? ((payload: SignaturePayload) => fetchStripeSignature(payload));
+    dependencies.signatureFetcher ??
+    ((payload: SignaturePayload) =>
+      fetchStripeSignature(payload as unknown as Record<string, StripeSignatureValue>));
   const fetcher = dependencies.fetcher ?? globalThis.fetch;
-  const signature = await signatureFetcher(prepared.signaturePayload);
+  // Stripe treats stripe_roles specially. Preserve its original RoleDefinition
+  // objects only when an Administrator role is being asserted. Ordinary workflows
+  // omit the key entirely and sign the exact same fields sent to the backend.
+  const stripeSignaturePayload: SignaturePayload = prepared.signaturePayload.roles_asserted
+    ? {
+        ...prepared.signaturePayload,
+        stripe_roles: validatedRawStripeRoles(context) as SignedStripeRole[],
+      }
+    : prepared.signaturePayload;
+  const signature = await signatureFetcher(stripeSignaturePayload);
   const response = await fetcher(prepared.apiUrl, {
     method: "POST",
     headers: {

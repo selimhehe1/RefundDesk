@@ -5,7 +5,7 @@ import type { JsonValue } from "./canonical-json";
 import {
   SignedExtensionRequestError,
   signedApiRequest,
-  type PilotResourceType,
+  type SignedRequestInput,
 } from "./signed-fetch";
 
 const minorAmountSchema = z
@@ -42,6 +42,7 @@ export type RefundReason = z.infer<typeof refundReasonSchema>;
 
 const activeRequestSchema = z
   .object({
+    can_cancel: z.boolean(),
     id: z.uuid(),
     status: workflowStatusSchema,
   })
@@ -146,43 +147,6 @@ const auditExportResponseSchema = z
   })
   .strict();
 
-const phase0ProbeResponseSchema = z
-  .object({
-    request_id: z.uuid(),
-    refund_id: z.string().regex(/^re_[A-Za-z0-9]+$/u),
-    stripe_request_id: z.string().nullable(),
-    correlation: z.string().min(1).max(64),
-    replay: z.boolean(),
-    status: z.string().min(1).max(64).nullable(),
-  })
-  .strict();
-
-const phase0ReportResponseSchema = z
-  .object({
-    request_id: z.uuid(),
-    environment: z.enum(["test", "sandbox"]),
-    probe_count: z.number().int().nonnegative(),
-    evidence_count: z.number().int().nonnegative(),
-    truncated: z.boolean(),
-    evidence: z.array(
-      z
-        .object({
-          observed_at: z.iso.datetime(),
-          refund_id: z.string().min(1).max(64),
-          correlation: z.enum([
-            "internal",
-            "pending_correlation",
-            "outside_workflow",
-            "invalid_proof",
-            "proof_replay",
-          ]),
-          request_bound: z.boolean(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-
 export type EligibilityResponse = z.infer<typeof eligibilityResponseSchema>;
 export type RefundRequestSummary = z.infer<typeof refundRequestSummarySchema>;
 export type RefundRequestListResponse = z.infer<typeof requestListResponseSchema>;
@@ -194,23 +158,16 @@ type RequestScope = "all_activity" | "awaiting_my_approval" | "my_requests";
 
 function accountResource(context: ExtensionContextValue): {
   readonly resourceType: "account";
-  readonly resourceId: string;
 } {
+  void context;
   return {
     resourceType: "account",
-    resourceId: context.userContext.account.id,
   };
 }
 
 async function requestAndParse<T extends z.ZodType>(
   context: ExtensionContextValue,
-  input: {
-    readonly endpoint: Parameters<typeof signedApiRequest>[1]["endpoint"];
-    readonly operation: string;
-    readonly resourceType: PilotResourceType;
-    readonly resourceId: string;
-    readonly command: JsonValue;
-  },
+  input: SignedRequestInput,
   schema: T,
 ): Promise<z.output<T>> {
   const payload = await signedApiRequest(context, input);
@@ -433,52 +390,6 @@ export const refundDeskApi = {
         command: { format: "csv" },
       },
       auditExportResponseSchema,
-    );
-  },
-
-  runPhase0Probe(
-    context: ExtensionContextValue,
-    resource: PaymentResource,
-    command: {
-      readonly amount_minor: string;
-      readonly currency: string;
-      readonly reason: RefundReason;
-    },
-  ) {
-    if (resource.resourceType !== "payment_intent") {
-      throw new SignedExtensionRequestError(
-        "REQUEST_FAILED",
-        "The phase-0 probe requires a synthetic PaymentIntent.",
-      );
-    }
-    return requestAndParse(
-      context,
-      {
-        endpoint: "/internal/phase0/refund-probe",
-        operation: "phase0.refund_probe",
-        ...resource,
-        command,
-      },
-      phase0ProbeResponseSchema,
-    );
-  },
-
-  getPhase0Report(context: ExtensionContextValue, resource: PaymentResource) {
-    if (resource.resourceType !== "payment_intent") {
-      throw new SignedExtensionRequestError(
-        "REQUEST_FAILED",
-        "The phase-0 report requires a synthetic PaymentIntent.",
-      );
-    }
-    return requestAndParse(
-      context,
-      {
-        endpoint: "/internal/phase0/report",
-        operation: "phase0.report",
-        ...resource,
-        command: {},
-      },
-      phase0ReportResponseSchema,
     );
   },
 } as const;

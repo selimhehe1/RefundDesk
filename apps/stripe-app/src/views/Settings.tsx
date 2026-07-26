@@ -99,7 +99,7 @@ export default function Settings(context: ExtensionContextValue) {
           <Banner
             type="caution"
             title="Read-only settings"
-            description="Only a Stripe Administrator can update settings. The backend verifies the Administrator role in the signed stripe_roles payload."
+            description="Only a Stripe Administrator can update settings. The backend requires an explicit Stripe-signed Administrator role assertion."
           />
         ) : null}
         {error === null ? null : (

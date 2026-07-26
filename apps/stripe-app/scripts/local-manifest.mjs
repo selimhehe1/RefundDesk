@@ -215,7 +215,6 @@ export function createDevelopmentManifest(uploadableManifest, developmentApiBase
     constants: {
       ...constants,
       API_BASE: developmentApiBase.apiBase,
-      PHASE0_PROBE_ENABLED: true,
       PILOT_LIVE_ENABLED: false,
     },
   };

@@ -31,7 +31,6 @@ async function createTemporaryApp() {
     },
     constants: {
       API_BASE: "https://api.refunddesk.example/api",
-      PHASE0_PROBE_ENABLED: false,
       PILOT_LIVE_ENABLED: false,
     },
   };
@@ -69,7 +68,7 @@ describe("local Stripe App manifest", () => {
     expect(() => normalizeDevelopmentApiBase(value)).toThrow(expectedMessage);
   });
 
-  it("derives a development manifest without mutating or trusting uploadable controls", () => {
+  it("derives a development manifest without mutating or trusting uploadable live controls", () => {
     const uploadableManifest = {
       id: "com.refunddesk.workflow",
       ui_extension: {
@@ -80,7 +79,6 @@ describe("local Stripe App manifest", () => {
       },
       constants: {
         API_BASE: "http://localhost:3000/api",
-        PHASE0_PROBE_ENABLED: false,
         PILOT_LIVE_ENABLED: true,
       },
     };
@@ -96,7 +94,6 @@ describe("local Stripe App manifest", () => {
     ]);
     expect(manifest.constants).toEqual({
       API_BASE: "https://refunddesk-tunnel.example.com/api",
-      PHASE0_PROBE_ENABLED: true,
       PILOT_LIVE_ENABLED: false,
     });
   });
@@ -162,7 +159,7 @@ describe("local Stripe App manifest", () => {
     const spawnProcess = vi.fn((command, arguments_, options) => {
       generatedManifest = JSON.parse(readFileSync(localPath, "utf8"));
       mkdirSync(localBuildPath);
-      writeFileSync(join(localBuildPath, "manifest.js"), "PHASE0_PROBE_ENABLED=true\n", "utf8");
+      writeFileSync(join(localBuildPath, "manifest.js"), "local build\n", "utf8");
       expect(command).toBe("stripe-test");
       expect(arguments_).toEqual(["apps", "start", "--manifest", localPath]);
       expect(arguments_).not.toContain("--live");
@@ -188,7 +185,6 @@ describe("local Stripe App manifest", () => {
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(generatedManifest.constants).toMatchObject({
       API_BASE: "https://refunddesk-tunnel.example.com/api",
-      PHASE0_PROBE_ENABLED: true,
       PILOT_LIVE_ENABLED: false,
     });
     expect(existsSync(localPath)).toBe(false);

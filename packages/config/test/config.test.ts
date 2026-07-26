@@ -116,38 +116,6 @@ describe("loadConfig", () => {
     ).toThrow();
   });
 
-  it("allows the technical probe only outside production with an explicit PaymentIntent allowlist", () => {
-    expect(
-      loadConfig({
-        ...validEnvironment(),
-        REFUNDDESK_PHASE0_PROBE_ENABLED: "true",
-        STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS: "pi_synthetic",
-      }).phase0ProbeEnabled,
-    ).toBe(true);
-    expect(() =>
-      loadConfig({
-        ...validEnvironment(),
-        REFUNDDESK_PHASE0_PROBE_ENABLED: "true",
-      }),
-    ).toThrow();
-    expect(() =>
-      loadConfig({
-        ...validEnvironment(),
-        REFUNDDESK_PHASE0_PROBE_ENABLED: "true",
-        STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS: "ch_not_a_payment_intent",
-      }),
-    ).toThrow();
-    expect(() =>
-      loadConfig({
-        ...validEnvironment(),
-        APP_BASE_URL: "https://refunddesk.example",
-        NODE_ENV: "production",
-        REFUNDDESK_PHASE0_PROBE_ENABLED: "true",
-        STRIPE_PHASE0_ALLOWED_PAYMENT_INTENTS: "pi_synthetic",
-      }),
-    ).toThrow();
-  });
-
   it("requires an HTTPS origin for production links", () => {
     expect(() =>
       loadConfig({

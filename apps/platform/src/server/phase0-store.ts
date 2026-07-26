@@ -220,9 +220,3 @@ export class Phase0Store {
     };
   }
 }
-
-const phase0Global = globalThis as typeof globalThis & {
-  __refundDeskPhase0Store?: Phase0Store;
-};
-
-export const phase0Store = (phase0Global.__refundDeskPhase0Store ??= new Phase0Store());

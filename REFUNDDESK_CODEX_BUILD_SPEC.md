@@ -145,18 +145,33 @@ s’applique pas au pilote, dont les receipts, liens, guards et preuves sont per
 
 ### 4.2 Enveloppe signée
 
-L’enveloppe canonique contient, dans cet ordre :
+L’enveloppe canonique contient un préfixe commun, dans cet ordre :
 
 1. `operation`
 2. `request_nonce`
 3. `mode`
 4. `is_sandbox`
 5. `resource_type`
-6. `resource_id`
-7. `command_json`
-8. `stripe_roles`
-9. `user_id`
-10. `account_id`
+
+Pour `payment_intent` ou `charge`, `resource_id` suit immédiatement `resource_type`. Pour une
+opération de compte, `resource_id` est interdit : le scope repose sur le seul `account_id` ajouté et
+signé par Stripe, puis lié à l’installation côté serveur.
+
+Les champs suivants sont ensuite sérialisés :
+
+1. `command_json`
+2. `roles_asserted`
+3. `stripe_roles` uniquement si `roles_asserted=true`
+4. `user_id`
+5. `account_id`
+
+`roles_asserted=false` interdit et omet `stripe_roles`. Cette forme authentifie l’identité Stripe, le
+compte, l’environnement, la ressource éventuelle et la commande, mais ne constitue aucune preuve de
+rôle. Elle suffit aux opérations ordinaires dont l’autorisation ne dépend pas d’un rôle Stripe.
+`roles_asserted=true` exige une liste non vide de rôles Stripe strictement validés. Toute opération
+Administrateur, tout provisioning et toute surface directe de Phase 0 exigent cette seconde forme.
+Une requête sans assertion de rôle ne peut jamais effacer ou remplacer la dernière observation
+durable de rôles.
 
 Le client produit la signature Stripe avec les données additionnelles. Le serveur :
 
@@ -166,7 +181,7 @@ Le client produit la signature Stripe avec les données additionnelles. Le serve
 - vérifie l’ordre et le nom des champs ;
 - impose un âge maximal court ;
 - compare `user_id` et `account_id` signés au contexte demandé ;
-- valide les rôles et le payload avec Zod strict ;
+- valide le discriminant de rôle, les rôles éventuels et le payload avec Zod strict ;
 - lie compte, mode, sandbox et credential serveur.
 
 Une sérialisation reconstruite ne remplace jamais les octets effectivement signés.

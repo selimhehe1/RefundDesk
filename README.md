@@ -27,8 +27,19 @@ outside RefundDesk with empty metadata, was found in under eight minutes by real
 reconciliation and persisted as an open `external` alert under the restricted worker role.
 
 No live Refund, Marketplace publication, live request or production deployment was performed. The
-remaining real Stripe gate needs a distinct `View only` user, a distinct connected test account,
-and managed-sandbox credentials/installation. The connected-webhook, copied-proof replay,
+same distinct real user with Stripe's built-in `View only` role now passes both role-gap cases. The
+user can view a successful synthetic card payment but Stripe exposes no native refund action. The
+exact Stripe user identity then submitted a real Stripe-authenticated RefundDesk request, which was
+persisted as `pending_approval/not_started` and safely canceled by the requester with no approval,
+execution attempt or Stripe Refund.
+
+Stripe did not attest that user's `View only` claim in the request: with the app retaining
+`charge_write`, Stripe rejected the special `stripe_roles` signing input before it reached
+RefundDesk. The request therefore proves authenticated identity and request creation, not signed
+role propagation. RefundDesk now models that boundary explicitly with `roles_asserted=false`, omits
+`stripe_roles`, preserves durable role observations and still requires an asserted Administrator
+role for privileged operations. A distinct connected test account and the remaining independently
+bound test/sandbox topology are still necessary. The connected-webhook, copied-proof replay,
 cross-test/sandbox signature and full environment-isolation cases are not yet complete, so the
 verdict correctly remains `BLOCKED_HUMAN`.
 
