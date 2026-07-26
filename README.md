@@ -19,6 +19,24 @@ pilot surface. Unpublished version `0.1.1` was uploaded from clean commit
 `ec5fc4940092343c9d6bd8b25948ea31272666d4e041a2ff23d36f10e27446be`. No live request,
 production deployment, Stripe review submission or Marketplace publication was performed.
 
+The hardened P1 pilot UI is implemented in unpublished version `0.1.2`. It was uploaded from clean
+commit `e8644c92ada34551f84846a28b4c2528466f4222`; the reproducible Git source archive has SHA-256
+`7da0bff7979cdd4f32e08ce8ed417931b932b824487d104867d52df8a058af42`, and its committed manifest
+has SHA-256 `077b7032d53701201338dcf393902ad5f91e20c8dda895429be81c8610a4a319`. Stripe CLI reports
+`UPLOAD_COMPLETED`; the Dashboard shows the processed version as `Approved` with no distribution
+channel. This does not mean Marketplace approval. No external-test version was selected, no
+installation was claimed, and no deployment, review submission, publication or remote push was
+performed.
+
+The P1 UI makes approval an explicit two-step financial action, preserves mutation nonces across
+ambiguous retries, serializes concurrent mutations, displays exact currency amounts and approval
+context, invalidates stale account and scope state, and hardens onboarding, settings, alerts and
+audit-download attribution. The source snapshot passed 274 workspace tests, 67 exact standalone
+extension tests and 19 PostgreSQL integration tests, plus format, lint, typecheck, build, secret and
+production dependency-audit gates. The upload-safe manifest still uses the placeholder RefundDesk
+API origin, so this proves source provenance, packaging and Stripe processing rather than an
+installed end-to-end `0.1.2` workflow.
+
 The distinct external-account installation evidence remains attributed to installed version
 `0.1.0`. The clean `0.1.1` upload proves reproducible packaging provenance; it does not by itself
 claim that `0.1.1` was reinstalled or rerun in that external account. Likewise,
