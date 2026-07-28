@@ -3,7 +3,7 @@ import { lookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { BlockList, isIP } from "node:net";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 as windowsPath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const APP_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,9 +167,11 @@ export function resolveStripeCliLaunch(options = {}) {
   const fileExists = options.fileExists ?? existsSync;
   const nodeExecutable = options.nodeExecutable ?? process.execPath;
   const pathValue = environment["PATH"] ?? environment["Path"] ?? environment["path"] ?? "";
-  for (const directory of pathValue.split(delimiter).filter((value) => value.length > 0)) {
+  for (const directory of pathValue
+    .split(windowsPath.delimiter)
+    .filter((value) => value.length > 0)) {
     for (const executable of ["stripe.exe", "stripe.com"]) {
-      const candidate = resolve(directory, executable);
+      const candidate = windowsPath.resolve(directory, executable);
       if (fileExists(candidate)) {
         return { command: candidate, arguments: [] };
       }
@@ -178,7 +180,15 @@ export function resolveStripeCliLaunch(options = {}) {
 
   const appData = environment["APPDATA"];
   if (typeof appData === "string" && appData.length > 0) {
-    const npmShim = join(appData, "npm", "node_modules", "@stripe", "cli", "bin", "shim.js");
+    const npmShim = windowsPath.join(
+      appData,
+      "npm",
+      "node_modules",
+      "@stripe",
+      "cli",
+      "bin",
+      "shim.js",
+    );
     if (fileExists(npmShim)) {
       return { command: nodeExecutable, arguments: [npmShim] };
     }
