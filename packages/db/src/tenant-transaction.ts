@@ -1,7 +1,11 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 import { Prisma, type PrismaClient } from "./generated/prisma/client.js";
 import { TenantRepositories } from "./tenant-repositories.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const RETRY_BASE_DELAY_MILLISECONDS = 10;
+const RETRY_MAX_BASE_DELAY_MILLISECONDS = 250;
 
 export interface TenantTransactionContext {
   readonly tenantId: string;
@@ -57,6 +61,23 @@ export function isRetryableTransactionError(error: unknown): boolean {
   return hasRetryableTransactionMarker(error, new WeakSet<object>(), 0);
 }
 
+export function transactionRetryDelayMilliseconds(
+  failedAttempt: number,
+  randomValue = Math.random(),
+): number {
+  if (!Number.isSafeInteger(failedAttempt) || failedAttempt < 1 || failedAttempt > 10) {
+    throw new RangeError("failedAttempt must be between 1 and 10");
+  }
+  if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue >= 1) {
+    throw new RangeError("randomValue must be between 0 (inclusive) and 1 (exclusive)");
+  }
+  const boundedBase = Math.min(
+    RETRY_BASE_DELAY_MILLISECONDS * 2 ** (failedAttempt - 1),
+    RETRY_MAX_BASE_DELAY_MILLISECONDS,
+  );
+  return boundedBase + Math.floor(boundedBase * randomValue);
+}
+
 export async function withTenantTransaction<TResult>(
   client: PrismaClient,
   tenantId: string,
@@ -88,6 +109,9 @@ export async function withTenantTransaction<TResult>(
       lastError = error;
       if (!isRetryableTransactionError(error)) {
         throw error;
+      }
+      if (attempt < maxAttempts) {
+        await delay(transactionRetryDelayMilliseconds(attempt));
       }
     }
   }
