@@ -272,3 +272,19 @@ test("operator source is cryptographically bound to the requested Git revision",
     "release promotion must preserve the source-to-image revision equality",
   );
 });
+
+test("one-shot database jobs cannot build or pull an unverified image", async () => {
+  const [bootstrapDatabase, release] = await Promise.all([
+    read("scripts/bootstrap-database.sh"),
+    read("scripts/release.sh"),
+  ]);
+
+  for (const script of [bootstrapDatabase, release]) {
+    assert.doesNotMatch(script, /\brun\b[^\n]*--no-build/u);
+    assert.match(script, /\brun --rm --no-deps --pull never\b/u);
+  }
+  assert.match(
+    bootstrapDatabase,
+    /pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk/u,
+  );
+});

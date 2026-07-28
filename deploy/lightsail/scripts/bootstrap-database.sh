@@ -40,11 +40,12 @@ refunddesk_compose config --quiet
 refunddesk_compose up --detach --no-build postgres
 
 deadline=$((SECONDS + 120))
-until refunddesk_compose exec --no-TTY postgres pg_isready --quiet; do
+until refunddesk_compose exec --no-TTY postgres \
+  pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk; do
   (( SECONDS < deadline )) || die "PostgreSQL did not become ready within 120 seconds"
   sleep 2
 done
 
-refunddesk_compose --profile release run --rm --no-deps --no-build bootstrap
+refunddesk_compose --profile release run --rm --no-deps --pull never bootstrap
 
 log "PostgreSQL is ready and exactly three restricted runtime logins were repaired"

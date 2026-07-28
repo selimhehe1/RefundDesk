@@ -327,12 +327,12 @@ PROMOTION_STARTED=true
 refunddesk_compose stop --timeout 45 caddy worker web verifier >/dev/null 2>&1 || true
 
 log "repairing the three restricted PostgreSQL runtime logins"
-refunddesk_compose --profile release run --rm --no-deps --no-build bootstrap
+refunddesk_compose --profile release run --rm --no-deps --pull never bootstrap
 
 log "running serialized canonical database preparation (pass 1/2)"
-refunddesk_compose --profile release run --rm --no-deps --no-build migrate
+refunddesk_compose --profile release run --rm --no-deps --pull never migrate
 log "running serialized canonical database preparation (pass 2/2)"
-refunddesk_compose --profile release run --rm --no-deps --no-build migrate
+refunddesk_compose --profile release run --rm --no-deps --pull never migrate
 
 refunddesk_compose up --detach --no-deps --no-build verifier worker web
 wait_for_container_health verifier 90 || die "private verifier proxy is not healthy"
