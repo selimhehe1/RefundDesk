@@ -225,6 +225,10 @@ test("internal PKI provisioning is initial-only and preserves exact TLS identiti
     /\/run must be tmpfs so CA private keys never reach persistent storage/u,
   );
   assert.match(provisionPki, /mktemp --directory \/run\/refunddesk-internal-pki\.XXXXXX/u);
+  assert.match(
+    provisionPki,
+    /find "\$\{PRIVATE_WORK_DIRECTORY\}"[\s\S]+-xdev[\s\S]+-maxdepth 1[\s\S]+-type f[\s\S]+-delete/u,
+  );
   assert.doesNotMatch(provisionPki, /install[\s\S]{0,160}(?:postgres|verifier)-ca\.key/u);
 });
 

@@ -70,21 +70,21 @@ remove_private_work_directory() {
     die "refusing to remove an unexpected private work directory"
   [[ -d "${PRIVATE_WORK_DIRECTORY}" && ! -L "${PRIVATE_WORK_DIRECTORY}" ]] || return 0
 
-  rm -f -- \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-ca.key" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-ca.crt" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-server.key" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-server.csr" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-server.ext" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-key.pub" \
-    "${PRIVATE_WORK_DIRECTORY}/postgres-cert.pub" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-ca.key" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-ca.crt" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-server.key" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-server.csr" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-server.ext" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-key.pub" \
-    "${PRIVATE_WORK_DIRECTORY}/verifier-cert.pub"
+  [[ -z "$(
+    find "${PRIVATE_WORK_DIRECTORY}" \
+      -xdev \
+      -mindepth 1 \
+      -maxdepth 1 \
+      ! -type f \
+      -print \
+      -quit
+  )" ]] || die "private PKI work directory contains an unexpected entry"
+  find "${PRIVATE_WORK_DIRECTORY}" \
+    -xdev \
+    -mindepth 1 \
+    -maxdepth 1 \
+    -type f \
+    -delete
   rmdir -- "${PRIVATE_WORK_DIRECTORY}"
   PRIVATE_WORK_DIRECTORY=""
 }
