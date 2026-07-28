@@ -16,6 +16,7 @@ const requiredDockerfileFragments = [
   "pnpm install --prod --frozen-lockfile --ignore-scripts",
   "ENV COREPACK_HOME=/opt/corepack",
   "ENV COREPACK_ENABLE_NETWORK=0",
+  "RUN chown node:node /workspace",
   'CMD ["node", "apps/platform/server.js"]',
   'CMD ["node", "--enable-source-maps", "dist/apps/worker/src/main.js"]',
   'CMD ["node", "scripts/database-command.mjs", "release-prepare"]',

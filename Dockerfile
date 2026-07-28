@@ -90,6 +90,7 @@ COPY --from=migrate-pruned --chown=node:node /workspace/apps/worker/node_modules
 COPY --from=migrate-pruned --chown=node:node /workspace/apps/migrator/package.json ./apps/migrator/
 COPY --from=migrate-pruned --chown=node:node /workspace/apps/migrator/prisma.config.ts ./apps/migrator/
 COPY --from=migrate-pruned --chown=node:node /workspace/apps/migrator/node_modules ./apps/migrator/node_modules
+RUN chown node:node /workspace
 USER node
 ENTRYPOINT ["/usr/bin/tini", "-g", "--"]
 CMD ["node", "scripts/database-command.mjs", "release-prepare"]
