@@ -335,16 +335,15 @@ jobs:
 
           artifact_prefix="refunddesk-sandbox/releases/$REVISION"
           s3_error="$RUNNER_TEMP/refunddesk-s3-error"
+          s3_listing="$RUNNER_TEMP/refunddesk-s3-listing.json"
           credential_ready=false
           for _ in {1..60}; do
-            if existing_count="$(
-              aws s3api list-objects-v2 \
-                --bucket "$SANDBOX_ARTIFACT_BUCKET" \
-                --prefix "$artifact_prefix/" \
-                --query 'KeyCount' \
-                --output text \
-                2>"$s3_error"
-            )"; then
+            if aws s3api list-objects-v2 \
+              --bucket "$SANDBOX_ARTIFACT_BUCKET" \
+              --prefix "$artifact_prefix/" \
+              --output json \
+              >"$s3_listing" \
+              2>"$s3_error"; then
               credential_ready=true
               break
             fi
@@ -359,7 +358,9 @@ jobs:
             echo "::error::The temporary bucket credential did not propagate within ten minutes."
             exit 1
           fi
+          existing_count="$(jq '[.Contents[]?] | length' "$s3_listing")"
           rm --force "$s3_error"
+          rm --force "$s3_listing"
           if [[ "$existing_count" != "0" ]]; then
             echo "::error::The revision-scoped artifact prefix is not empty."
             exit 1
@@ -412,13 +413,13 @@ jobs:
               --sse AES256
           done
 
-          remote_count="$(
+          remote_listing="$(
             aws s3api list-objects-v2 \
               --bucket "$SANDBOX_ARTIFACT_BUCKET" \
               --prefix "$artifact_prefix/" \
-              --query 'KeyCount' \
-              --output text
+              --output json
           )"
+          remote_count="$(jq '[.Contents[]?] | length' <<<"$remote_listing")"
           if [[ "$remote_count" != "5" ]]; then
             echo "::error::The private bucket does not contain exactly five current objects."
             exit 1

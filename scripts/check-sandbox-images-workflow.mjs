@@ -41,6 +41,8 @@ const requiredFragments = [
   "REFUNDDESK_SANDBOX_ARTIFACT_ACCESS_KEY_ID",
   "REFUNDDESK_SANDBOX_ARTIFACT_SECRET_ACCESS_KEY",
   'artifact_prefix="refunddesk-sandbox/releases/$REVISION"',
+  'existing_count="$(jq \'[.Contents[]?] | length\' "$s3_listing")"',
+  'remote_count="$(jq \'[.Contents[]?] | length\' <<<"$remote_listing")"',
   'if [[ "$existing_count" != "0" ]]',
   'if [[ "$remote_count" != "5" ]]',
   "for _ in {1..60}",
@@ -75,6 +77,7 @@ if (prefixEmptyGuard < 0 || partialCleanupTrap < 0 || partialCleanupTrap < prefi
 const forbiddenPatterns = [
   { name: "scheduled_or_push_trigger", pattern: /^\s{2}(?:push|pull_request|schedule):/mu },
   { name: "invalid_git_ls_tree_option", pattern: /git ls-tree --recursive/u },
+  { name: "lightsail_omitted_key_count", pattern: /--query ['"]KeyCount['"]/u },
   { name: "registry_login", pattern: /docker\/login-action|docker\s+login/iu },
   { name: "registry_push", pattern: /docker\s+(?:image\s+)?push|push-to-registry:\s*true/iu },
   { name: "ghcr_reference", pattern: /ghcr\.io/iu },
