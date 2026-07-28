@@ -273,6 +273,57 @@ test("operator source is cryptographically bound to the requested Git revision",
   );
 });
 
+test("host installs a pinned and authenticated AWS CLI v2", async () => {
+  const bootstrapHost = await read("scripts/bootstrap-host.sh");
+
+  assert.doesNotMatch(bootstrapHost, /^\s+awscli \\$/mu);
+  assert.match(bootstrapHost, /^\s+gnupg \\$/mu);
+  assert.match(bootstrapHost, /^\s+unzip \\$/mu);
+  assert.match(bootstrapHost, /^readonly AWS_CLI_VERSION="2\.36\.9"$/mu);
+  assert.match(
+    bootstrapHost,
+    /^readonly AWS_CLI_X86_64_SHA256="9b92ccb50dfc55479ac14c4ba1bb36f603a1cbfb004b50e4a50b1592ffad3da0"$/mu,
+  );
+  assert.match(
+    bootstrapHost,
+    /https:\/\/awscli\.amazonaws\.com\/awscli-exe-linux-x86_64-\$\{AWS_CLI_VERSION\}\.zip/u,
+  );
+  assert.match(bootstrapHost, /\[\[ "\$\(uname --machine\)" == "x86_64" \]\]/u);
+  assert.match(bootstrapHost, /sha256sum --check --strict --status/u);
+  assert.match(
+    bootstrapHost,
+    /^readonly AWS_CLI_SIGNING_KEY_FINGERPRINT="FB5DB77FD5C118B80511ADA8A6310ACC4672475C"$/mu,
+  );
+  assert.match(bootstrapHost, /--no-auto-key-retrieve[\s\S]+--status-fd 1 --verify/u);
+  assert.match(bootstrapHost, /VALIDSIG \$\{AWS_CLI_SIGNING_KEY_FINGERPRINT\}/u);
+  assert.match(
+    bootstrapHost,
+    /\[\[ "\$\{installed_version\}" == "aws-cli\/\$\{AWS_CLI_VERSION\} ".*\]\]/u,
+  );
+  assert.match(bootstrapHost, /if \[\[ -x \/usr\/local\/bin\/aws \]\]; then[\s\S]+return 0/u);
+  assert.match(
+    bootstrapHost,
+    /if existing_aws="\$\(command -v aws 2>\/dev\/null\)"; then[\s\S]+refusing to replace AWS CLI installation/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /\[\[ -e \/usr\/local\/bin\/aws \|\| -L \/usr\/local\/bin\/aws \|\| -e \/usr\/local\/aws-cli \]\]/u,
+  );
+  assert.doesNotMatch(bootstrapHost, /aws\/install[\s\S]{0,160}--update/u);
+
+  const fastPath = bootstrapHost.indexOf("if [[ -x /usr/local/bin/aws ]]");
+  const download = bootstrapHost.indexOf('download_url="https://awscli.amazonaws.com/');
+  assert.ok(fastPath >= 0 && fastPath < download, "exact-version fast path must precede download");
+
+  const swap = bootstrapHost.indexOf("if [[ ! -e /swapfile ]]");
+  const apt = bootstrapHost.indexOf("apt-get update");
+  const installAws = bootstrapHost.indexOf("\ninstall_aws_cli_v2\n");
+  assert.ok(
+    swap >= 0 && swap < apt && apt < installAws,
+    "swap must be active before APT and the AWS CLI installation",
+  );
+});
+
 test("one-shot database jobs cannot build or pull an unverified image", async () => {
   const [bootstrapDatabase, release] = await Promise.all([
     read("scripts/bootstrap-database.sh"),
