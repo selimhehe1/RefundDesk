@@ -140,6 +140,7 @@ for required_path in \
   deploy/lightsail/compose.yml \
   deploy/lightsail/Caddyfile.public \
   deploy/lightsail/Caddyfile.verifier \
+  deploy/lightsail/pg_hba.conf \
   deploy/lightsail/scripts/release.sh \
   deploy/lightsail/scripts/verify-deployment.sh \
   deploy/lightsail/scripts/backup.sh; do
@@ -149,6 +150,10 @@ done
 bash -n "${TEMP_SOURCE}"/deploy/lightsail/scripts/*.sh
 chown -R root:root "${TEMP_SOURCE}"
 chmod -R go-w "${TEMP_SOURCE}"
+chmod 0444 \
+  "${TEMP_SOURCE}/deploy/lightsail/Caddyfile.public" \
+  "${TEMP_SOURCE}/deploy/lightsail/Caddyfile.verifier" \
+  "${TEMP_SOURCE}/deploy/lightsail/pg_hba.conf"
 printf '%s\n' "${REVISION}" >"${TEMP_SOURCE}/.refunddesk-revision"
 printf '%s\n' "${EXPECTED_SHA256}" >"${TEMP_SOURCE}/.refunddesk-source-sha256"
 chmod 0600 \

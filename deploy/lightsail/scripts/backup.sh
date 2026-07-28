@@ -247,7 +247,7 @@ aws s3 cp \
   "s3://${REFUNDDESK_BACKUP_BUCKET}/${object_key}" \
   --only-show-errors \
   --no-progress \
-  --server-side-encryption AES256 \
+  --sse AES256 \
   --metadata "sha256=${archive_sha256},revision=${revision}"
 UPLOAD_CREATED=true
 
@@ -259,8 +259,11 @@ remote_head="$(
 )"
 remote_length="$(jq --raw-output '.ContentLength' <<<"${remote_head}")"
 remote_sha256="$(jq --raw-output '.Metadata.sha256 // empty' <<<"${remote_head}")"
+remote_sse="$(jq --raw-output '.ServerSideEncryption // empty' <<<"${remote_head}")"
 UPLOADED_VERSION_ID="$(jq --raw-output '.VersionId // empty' <<<"${remote_head}")"
-[[ "${remote_length}" == "${archive_bytes}" && "${remote_sha256}" == "${archive_sha256}" ]] ||
+[[ "${remote_length}" == "${archive_bytes}" &&
+  "${remote_sha256}" == "${archive_sha256}" &&
+  "${remote_sse}" == "AES256" ]] ||
   die "uploaded backup verification failed"
 
 list_versions

@@ -273,6 +273,62 @@ test("operator source is cryptographically bound to the requested Git revision",
   );
 });
 
+test("installed unprivileged-container policies remain readable and read-only", async () => {
+  const [compose, installSource] = await Promise.all([
+    read("compose.yml"),
+    read("scripts/install-source.sh"),
+  ]);
+  const postgres = serviceBlock(compose, "postgres");
+  const publicCaddy = serviceBlock(compose, "caddy");
+  const verifierCaddy = serviceBlock(compose, "verifier");
+
+  for (const requiredPolicy of [
+    "deploy/lightsail/Caddyfile.public",
+    "deploy/lightsail/Caddyfile.verifier",
+    "deploy/lightsail/pg_hba.conf",
+  ]) {
+    assert.ok(
+      installSource.includes(`  ${requiredPolicy} \\`),
+      `source installation must reject an archive without ${requiredPolicy}`,
+    );
+  }
+  const rootOwnership = installSource.indexOf('chown -R root:root "${TEMP_SOURCE}"');
+  const recursiveHardening = installSource.indexOf('chmod -R go-w "${TEMP_SOURCE}"');
+  const containerReadMode = installSource.indexOf("chmod 0444 \\");
+  assert.ok(
+    rootOwnership >= 0 &&
+      rootOwnership < recursiveHardening &&
+      recursiveHardening < containerReadMode,
+    "root-owned policies must be made readable only after recursive source hardening",
+  );
+  const readOnlyPolicyBlock = installSource.slice(
+    containerReadMode,
+    installSource.indexOf("\nprintf ", containerReadMode),
+  );
+  for (const readablePolicy of ["Caddyfile.public", "Caddyfile.verifier", "pg_hba.conf"]) {
+    assert.match(
+      readOnlyPolicyBlock,
+      new RegExp(
+        `\\$\\{TEMP_SOURCE\\}/deploy/lightsail/${readablePolicy.replace(".", "\\.")}`,
+        "u",
+      ),
+      `${readablePolicy} must be installed read-only for its unprivileged container`,
+    );
+  }
+  assert.match(
+    postgres,
+    /source: \.\/pg_hba\.conf\s+target: \/etc\/postgresql\/refunddesk-pg_hba\.conf\s+read_only: true\s+bind:\s+create_host_path: false/u,
+  );
+  assert.match(
+    publicCaddy,
+    /source: \.\/Caddyfile\.public\s+target: \/etc\/caddy\/Caddyfile\s+read_only: true\s+bind:\s+create_host_path: false/u,
+  );
+  assert.match(
+    verifierCaddy,
+    /source: \.\/Caddyfile\.verifier\s+target: \/etc\/caddy\/Caddyfile\s+read_only: true\s+bind:\s+create_host_path: false/u,
+  );
+});
+
 test("host installs a pinned and authenticated AWS CLI v2", async () => {
   const bootstrapHost = await read("scripts/bootstrap-host.sh");
 
@@ -322,6 +378,32 @@ test("host installs a pinned and authenticated AWS CLI v2", async () => {
     swap >= 0 && swap < apt && apt < installAws,
     "swap must be active before APT and the AWS CLI installation",
   );
+});
+
+test("new swapfiles retain two GiB of usable capacity after mkswap", async () => {
+  const [bootstrapHost, verifyDeployment] = await Promise.all([
+    read("scripts/bootstrap-host.sh"),
+    read("scripts/verify-deployment.sh"),
+  ]);
+  const requiredUsableBytes = 2 * 1024 * 1024 * 1024;
+  const swapHeaderBytes = 4096;
+  const newSwapfileBytes = 2304 * 1024 * 1024;
+
+  assert.ok(newSwapfileBytes - swapHeaderBytes >= requiredUsableBytes);
+  assert.ok(requiredUsableBytes - swapHeaderBytes < requiredUsableBytes);
+  assert.match(
+    bootstrapHost,
+    /log "creating the dedicated 2304 MiB swapfile with headroom for 2 GiB usable swap"\s+if ! fallocate --length 2304M \/swapfile; then\s+dd if=\/dev\/zero of=\/swapfile bs=1M count=2304 status=progress\s+fi\s+chmod 0600 \/swapfile\s+mkswap \/swapfile/u,
+  );
+  assert.doesNotMatch(bootstrapHost, /fallocate --length 2G|count=2048/u);
+
+  const existingSwapStart = bootstrapHost.indexOf("else\n  [[ -f /swapfile && ! -L /swapfile ]]");
+  const existingSwapEnd = bootstrapHost.indexOf("\nfi\n\nif ! swapon", existingSwapStart);
+  assert.ok(existingSwapStart >= 0 && existingSwapStart < existingSwapEnd);
+  const existingSwapBranch = bootstrapHost.slice(existingSwapStart, existingSwapEnd);
+  assert.match(existingSwapBranch, /swap_bytes >= 2147483648/u);
+  assert.doesNotMatch(existingSwapBranch, /\b(?:dd|fallocate|mkswap|swapoff|truncate)\b/u);
+  assert.match(verifyDeployment, /bytes >= 2147483648[\s\S]+host swap is below 2 GiB/u);
 });
 
 test("host pins the classic Docker store required by release image IDs", async () => {
@@ -397,4 +479,23 @@ test("one-shot database jobs cannot build or pull an unverified image", async ()
     bootstrapDatabase,
     /pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk/u,
   );
+});
+
+test("backup upload uses the AWS CLI v2 SSE-S3 surface and verifies the result", async () => {
+  const backup = await read("scripts/backup.sh");
+  const uploadStart = backup.indexOf("\naws s3 cp \\");
+  const uploadEnd = backup.indexOf("\nUPLOAD_CREATED=true", uploadStart);
+
+  assert.ok(uploadStart >= 0 && uploadEnd > uploadStart, "missing backup upload command");
+  const upload = backup.slice(uploadStart, uploadEnd);
+  assert.match(upload, /--sse AES256/u);
+  assert.doesNotMatch(upload, /--server-side-encryption/u);
+  assert.match(upload, /--metadata "sha256=\$\{archive_sha256\},revision=\$\{revision\}"/u);
+
+  assert.match(backup, /AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/u);
+  assert.match(backup, /static or preloaded AWS credentials are prohibited/u);
+  assert.match(backup, /rotate_to_count "\$\(\(REFUNDDESK_BACKUP_RETENTION_COUNT - 1\)\)"/u);
+  assert.match(backup, /\.Metadata\.sha256 \/\/ empty/u);
+  assert.match(backup, /\.ServerSideEncryption \/\/ empty/u);
+  assert.match(backup, /"\$\{remote_sse\}" == "AES256"/u);
 });

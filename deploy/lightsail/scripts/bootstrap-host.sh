@@ -200,9 +200,9 @@ EOF
 )
 
 if [[ ! -e /swapfile ]]; then
-  log "creating the dedicated 2 GiB swapfile"
-  if ! fallocate --length 2G /swapfile; then
-    dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+  log "creating the dedicated 2304 MiB swapfile with headroom for 2 GiB usable swap"
+  if ! fallocate --length 2304M /swapfile; then
+    dd if=/dev/zero of=/swapfile bs=1M count=2304 status=progress
   fi
   chmod 0600 /swapfile
   mkswap /swapfile >/dev/null
