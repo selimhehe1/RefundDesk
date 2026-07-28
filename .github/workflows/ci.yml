@@ -122,7 +122,7 @@ jobs:
             fi
             sudo docker run "${caddy_arguments[@]}" \
               caddy:2.11.4-alpine \
-              validate --config /etc/caddy/Caddyfile
+              caddy validate --config /etc/caddy/Caddyfile
           done
           systemd-analyze verify \
             deploy/lightsail/systemd/refunddesk-backup.service \
