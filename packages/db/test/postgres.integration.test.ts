@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { Client } from "pg";
@@ -9,78 +9,171 @@ import { readOrderedMigrationSql } from "./postgres-test-support.js";
 
 const testDatabaseUrl = process.env["REFUNDDESK_TEST_DATABASE_URL"] ?? "";
 const databaseDescribe = testDatabaseUrl.length === 0 ? describe.skip : describe.sequential;
+const databaseName = `refunddesk_security_${randomBytes(8).toString("hex")}`;
+const SAFE_DATABASE_NAME = /^refunddesk_security_[0-9a-f]{16}$/u;
+
+function quotedGeneratedDatabaseName(): string {
+  if (!SAFE_DATABASE_NAME.test(databaseName)) {
+    throw new Error("Generated security database name is unsafe");
+  }
+  return `"${databaseName}"`;
+}
+
+function connectionStringForDatabase(connectionString: string, targetDatabase: string): string {
+  const url = new URL(connectionString);
+  url.pathname = `/${targetDatabase}`;
+  return url.toString();
+}
+
+async function closeQuietly(client: Client): Promise<void> {
+  try {
+    await client.end();
+  } catch {
+    // Cleanup continues so the exact generated database can still be dropped.
+  }
+}
 
 databaseDescribe("PostgreSQL security invariants", () => {
-  const client = new Client({ connectionString: testDatabaseUrl });
+  const ephemeralDatabaseUrl =
+    testDatabaseUrl.length === 0 ? "" : connectionStringForDatabase(testDatabaseUrl, databaseName);
+  const controlClient = new Client({
+    connectionString: testDatabaseUrl,
+    application_name: "refunddesk-postgres-security-control",
+  });
+  const client = new Client({
+    connectionString: ephemeralDatabaseUrl,
+    application_name: "refunddesk-postgres-security-test",
+  });
+  let controlConnected = false;
+  let clientConnected = false;
+  let databaseCreated = false;
   let tenantA = "";
   let tenantB = "";
   let installationA = "";
   let installationB = "";
   let runtimeRolesSql = "";
 
-  beforeAll(async () => {
-    await client.connect();
-    await client.query("BEGIN");
-    const migrations = await readOrderedMigrationSql();
-    runtimeRolesSql = await readFile(
-      new URL("../prisma/runtime-roles.sql", import.meta.url),
-      "utf8",
-    );
-    for (const migration of migrations) {
-      await client.query(migration);
+  const cleanupEphemeralDatabase = async (): Promise<void> => {
+    if (clientConnected) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Cleanup continues even if PostgreSQL already ended the fixture transaction.
+      }
+      try {
+        await client.query("RESET SESSION AUTHORIZATION");
+        await client.query("RESET ROLE");
+      } catch {
+        // Closing the generated-database connection is the remaining safe fallback.
+      }
+      await closeQuietly(client);
+      clientConnected = false;
     }
-    await client.query(runtimeRolesSql);
-    await client.query(
-      `DO $$
-       BEGIN
-         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_web_login') THEN
-           CREATE ROLE refunddesk_web_login
-             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
-         END IF;
-         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_worker_login') THEN
-           CREATE ROLE refunddesk_worker_login
-             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
-         END IF;
-         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_queue_login') THEN
-           CREATE ROLE refunddesk_queue_login
-             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
-         END IF;
-       END
-       $$`,
-    );
-    await client.query("GRANT refunddesk_runtime TO refunddesk_web_login");
-    await client.query(
-      "REVOKE refunddesk_worker, refunddesk_queue, refunddesk_maintenance, refunddesk_attestation_writer FROM refunddesk_web_login",
-    );
-    await client.query("GRANT refunddesk_worker TO refunddesk_worker_login");
-    await client.query("GRANT refunddesk_attestation_writer TO refunddesk_worker_login");
-    await client.query(
-      "REVOKE refunddesk_runtime, refunddesk_queue, refunddesk_maintenance FROM refunddesk_worker_login",
-    );
-    await client.query("GRANT refunddesk_queue TO refunddesk_queue_login");
-    await client.query(
-      "REVOKE refunddesk_runtime, refunddesk_worker, refunddesk_maintenance, refunddesk_attestation_writer FROM refunddesk_queue_login",
-    );
-    await client.query("SET ROLE refunddesk_runtime");
-    const provisionA = await client.query<{ tenant_id: string; installation_id: string }>(
-      "SELECT tenant_id, installation_id FROM refunddesk_provision_installation($1, 'test')",
-      ["acct_IntegrationA"],
-    );
-    const provisionB = await client.query<{ tenant_id: string; installation_id: string }>(
-      "SELECT tenant_id, installation_id FROM refunddesk_provision_installation($1, 'sandbox')",
-      ["acct_IntegrationB"],
-    );
-    tenantA = provisionA.rows[0]?.tenant_id ?? "";
-    tenantB = provisionB.rows[0]?.tenant_id ?? "";
-    installationA = provisionA.rows[0]?.installation_id ?? "";
-    installationB = provisionB.rows[0]?.installation_id ?? "";
+
+    if (databaseCreated) {
+      if (!controlConnected) {
+        await controlClient.connect();
+        controlConnected = true;
+      }
+      await controlClient.query(
+        `SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+         WHERE datname = $1
+           AND pid <> pg_backend_pid()`,
+        [databaseName],
+      );
+      await controlClient.query(`DROP DATABASE IF EXISTS ${quotedGeneratedDatabaseName()}`);
+      databaseCreated = false;
+    }
+
+    if (controlConnected) {
+      await closeQuietly(controlClient);
+      controlConnected = false;
+    }
+  };
+
+  beforeAll(async () => {
+    try {
+      await controlClient.connect();
+      controlConnected = true;
+      const version = await controlClient.query<{ server_version_num: string }>(
+        "SELECT current_setting('server_version_num') AS server_version_num",
+      );
+      const serverVersionNumber = Number.parseInt(version.rows[0]?.server_version_num ?? "", 10);
+      expect(Math.trunc(serverVersionNumber / 10_000)).toBe(18);
+
+      await controlClient.query(
+        `CREATE DATABASE ${quotedGeneratedDatabaseName()} TEMPLATE template0`,
+      );
+      databaseCreated = true;
+      await client.connect();
+      clientConnected = true;
+
+      const migrations = await readOrderedMigrationSql();
+      runtimeRolesSql = await readFile(
+        new URL("../prisma/runtime-roles.sql", import.meta.url),
+        "utf8",
+      );
+      for (const migration of migrations) {
+        await client.query(migration);
+      }
+
+      await client.query("BEGIN");
+      await client.query("SAVEPOINT refunddesk_security_fixture_transaction");
+      await client.query("RELEASE SAVEPOINT refunddesk_security_fixture_transaction");
+      await client.query(runtimeRolesSql);
+      await client.query(
+        `DO $$
+         BEGIN
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_web_login') THEN
+             CREATE ROLE refunddesk_web_login
+               LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_worker_login') THEN
+             CREATE ROLE refunddesk_worker_login
+               LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
+           END IF;
+           IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_queue_login') THEN
+             CREATE ROLE refunddesk_queue_login
+               LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
+           END IF;
+         END
+         $$`,
+      );
+      await client.query("GRANT refunddesk_runtime TO refunddesk_web_login");
+      await client.query(
+        "REVOKE refunddesk_worker, refunddesk_queue, refunddesk_maintenance, refunddesk_attestation_writer FROM refunddesk_web_login",
+      );
+      await client.query("GRANT refunddesk_worker TO refunddesk_worker_login");
+      await client.query("GRANT refunddesk_attestation_writer TO refunddesk_worker_login");
+      await client.query(
+        "REVOKE refunddesk_runtime, refunddesk_queue, refunddesk_maintenance FROM refunddesk_worker_login",
+      );
+      await client.query("GRANT refunddesk_queue TO refunddesk_queue_login");
+      await client.query(
+        "REVOKE refunddesk_runtime, refunddesk_worker, refunddesk_maintenance, refunddesk_attestation_writer FROM refunddesk_queue_login",
+      );
+      await client.query("SET ROLE refunddesk_runtime");
+      const provisionA = await client.query<{ tenant_id: string; installation_id: string }>(
+        "SELECT tenant_id, installation_id FROM refunddesk_provision_installation($1, 'test')",
+        ["acct_IntegrationA"],
+      );
+      const provisionB = await client.query<{ tenant_id: string; installation_id: string }>(
+        "SELECT tenant_id, installation_id FROM refunddesk_provision_installation($1, 'sandbox')",
+        ["acct_IntegrationB"],
+      );
+      tenantA = provisionA.rows[0]?.tenant_id ?? "";
+      tenantB = provisionB.rows[0]?.tenant_id ?? "";
+      installationA = provisionA.rows[0]?.installation_id ?? "";
+      installationB = provisionB.rows[0]?.installation_id ?? "";
+    } catch (error) {
+      await cleanupEphemeralDatabase();
+      throw error;
+    }
   });
 
   afterAll(async () => {
-    await client.query("ROLLBACK");
-    await client.query("RESET SESSION AUTHORIZATION");
-    await client.query("RESET ROLE");
-    await client.end();
+    await cleanupEphemeralDatabase();
   });
 
   it("keeps one readable but immutable hosted database identity marker", async () => {
