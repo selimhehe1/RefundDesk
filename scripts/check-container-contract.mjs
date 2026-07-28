@@ -16,6 +16,7 @@ const requiredDockerfileFragments = [
   "pnpm install --prod --frozen-lockfile --ignore-scripts",
   "ENV COREPACK_HOME=/opt/corepack",
   "ENV COREPACK_ENABLE_NETWORK=0",
+  "ENV pnpm_config_verify_deps_before_run=false",
   "RUN chown node:node /workspace",
   'CMD ["node", "apps/platform/server.js"]',
   'CMD ["node", "--enable-source-maps", "dist/apps/worker/src/main.js"]',
@@ -69,6 +70,7 @@ const migrateStage = dockerStage("migrate");
 if (
   migrateStage === undefined ||
   !migrateStage.includes('ENTRYPOINT ["/usr/bin/tini", "-g", "--"]') ||
+  !migrateStage.includes("ENV pnpm_config_verify_deps_before_run=false") ||
   /COPY\s+--from=[^\r\n]+\s+\/workspace\/?\s+/u.test(migrateStage)
 ) {
   throw new Error("CONTAINER_MIGRATOR_BOUNDARY_INVALID");

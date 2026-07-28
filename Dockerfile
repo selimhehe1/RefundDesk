@@ -70,6 +70,7 @@ RUN mkdir -p /opt/corepack \
     && chmod -R a+rX /opt/corepack \
     && test "$(pnpm --version)" = "11.17.0"
 ENV COREPACK_ENABLE_NETWORK=0
+ENV pnpm_config_verify_deps_before_run=false
 COPY --from=migrate-pruned --chown=node:node /workspace/node_modules ./node_modules
 COPY --from=migrate-pruned --chown=node:node /workspace/package.json ./
 COPY --from=migrate-pruned --chown=node:node /workspace/pnpm-lock.yaml ./
