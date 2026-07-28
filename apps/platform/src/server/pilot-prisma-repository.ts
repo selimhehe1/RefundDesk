@@ -256,6 +256,7 @@ function mapRequest(
     resource_id: resource.resourceId,
     resource_type: resource.resourceType,
     status: detail.workflowStatus,
+    version: detail.version,
   };
 }
 
@@ -808,7 +809,7 @@ export class PilotPrismaRepository implements PilotRepository {
 
     const decisionId = randomUUID();
     const rejection =
-      mutation.decision === "reject" && mutation.justification !== undefined
+      mutation.decision === "reject"
         ? this.options.fieldKeyring.encrypt(mutation.justification, {
             entityId: decisionId,
             field: "rejection",
@@ -817,8 +818,17 @@ export class PilotPrismaRepository implements PilotRepository {
           })
         : null;
     const now = this.now();
+    if (mutation.decision === "approve" && metadata.approvalAttestationId === null) {
+      throw new PilotApiError(
+        "APPROVAL_ATTESTATION_REQUIRED",
+        503,
+        "The approval could not be independently attested.",
+      );
+    }
     const result = await repositories.recordDecision(
       {
+        approvalAttestationId:
+          mutation.decision === "approve" ? metadata.approvalAttestationId : null,
         approverUserId: actor.id,
         decision: mutation.decision,
         id: decisionId,

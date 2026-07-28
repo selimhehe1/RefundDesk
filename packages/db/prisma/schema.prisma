@@ -7,6 +7,16 @@ datasource db {
   provider = "postgresql"
 }
 
+model RefundDeskDatabaseIdentity {
+  singleton             Boolean  @id @default(true)
+  identityId            String   @unique(map: "refunddesk_database_identity_identity_key") @default(dbgenerated("gen_random_uuid()")) @map("identity_id") @db.Uuid
+  releaseNonce          String   @default(dbgenerated("gen_random_uuid()")) @map("release_nonce") @db.Uuid
+  schemaContractVersion Int      @default(1) @map("schema_contract_version")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("refunddesk_database_identity")
+}
+
 enum StripeEnvironment {
   live
   test
@@ -147,6 +157,7 @@ model Tenant {
   policies                  ApprovalPolicy[]
   refundRequests            RefundRequest[]
   decisions                 ApprovalDecision[]
+  approvalAttestations      ApprovalAttestation[]
   executions                RefundExecution[]
   executionAttempts         RefundExecutionAttempt[]
   refundCandidates          RefundCorrelationCandidate[]
@@ -175,6 +186,7 @@ model StripeInstallation {
 
   tenant                   Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   refundRequests           RefundRequest[]
+  approvalAttestations     ApprovalAttestation[]
   refundCandidates         RefundCorrelationCandidate[]
   webhookReceipts          WebhookReceipt[]
   externalRefundAlerts     ExternalRefundAlert[]
@@ -183,6 +195,7 @@ model StripeInstallation {
   @@unique([stripeAccountId, environment], map: "stripe_installations_account_environment_key")
   @@unique([id, tenantId], map: "stripe_installations_identity_tenant_key")
   @@unique([id, tenantId, environment], map: "stripe_installations_identity_tenant_environment_key")
+  @@unique([id, tenantId, stripeAccountId, environment], map: "stripe_installations_attestation_identity_key")
   @@index([tenantId], map: "stripe_installations_tenant_idx")
   @@map("stripe_installations")
 }
@@ -198,10 +211,11 @@ model TenantUser {
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  tenant             Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  requestedRefunds   RefundRequest[]       @relation("RefundRequester")
-  approvalDecisions  ApprovalDecision[]    @relation("DecisionApprover")
-  acknowledgedAlerts ExternalRefundAlert[] @relation("AlertAcknowledger")
+  tenant               Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedRefunds     RefundRequest[]       @relation("RefundRequester")
+  approvalDecisions    ApprovalDecision[]    @relation("DecisionApprover")
+  approvalAttestations ApprovalAttestation[] @relation("AttestationApprover")
+  acknowledgedAlerts   ExternalRefundAlert[] @relation("AlertAcknowledger")
 
   @@unique([tenantId, stripeUserId], map: "tenant_users_tenant_stripe_user_key")
   @@unique([id, tenantId], map: "tenant_users_identity_tenant_key")
@@ -260,11 +274,13 @@ model RefundRequest {
   installation          StripeInstallation           @relation(fields: [installationId, tenantId, environment], references: [id, tenantId, environment], onDelete: Restrict)
   requester             TenantUser                   @relation("RefundRequester", fields: [requesterUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
   decisions             ApprovalDecision[]
+  approvalAttestations  ApprovalAttestation[]
   execution             RefundExecution?
   correlationCandidates RefundCorrelationCandidate[]
   overlappingAlerts     ExternalRefundAlert[]        @relation("ExternalRefundOverlap")
 
   @@unique([id, tenantId], map: "refund_requests_identity_tenant_key")
+  @@unique([id, tenantId, installationId, environment], map: "refund_requests_attestation_identity_key")
   @@index([tenantId, workflowStatus, createdAt(sort: Desc)], map: "refund_requests_tenant_status_created_idx")
   @@index([tenantId, requesterUserId, createdAt(sort: Desc)], map: "refund_requests_tenant_requester_created_idx")
   @@map("refund_requests")
@@ -303,25 +319,60 @@ model RefundCorrelationCandidate {
 }
 
 model ApprovalDecision {
-  id                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId            String       @map("tenant_id") @db.Uuid
-  requestId           String       @map("request_id") @db.Uuid
-  approverUserId      String       @map("approver_user_id") @db.Uuid
-  decision            DecisionKind
-  rejectionCiphertext Bytes?       @map("rejection_ciphertext") @db.ByteA
-  rejectionNonce      Bytes?       @map("rejection_nonce") @db.ByteA
-  rejectionAuthTag    Bytes?       @map("rejection_auth_tag") @db.ByteA
-  rejectionKeyVersion String?      @map("rejection_key_version") @db.VarChar(16)
-  stripeRolesSnapshot Json         @map("stripe_roles_snapshot")
-  decidedAt           DateTime     @default(now()) @map("decided_at") @db.Timestamptz(6)
+  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId              String       @map("tenant_id") @db.Uuid
+  requestId             String       @map("request_id") @db.Uuid
+  approverUserId        String       @map("approver_user_id") @db.Uuid
+  approvalAttestationId String?      @unique(map: "approval_decisions_attestation_id_key") @map("approval_attestation_id") @db.Uuid
+  decision              DecisionKind
+  rejectionCiphertext   Bytes?       @map("rejection_ciphertext") @db.ByteA
+  rejectionNonce        Bytes?       @map("rejection_nonce") @db.ByteA
+  rejectionAuthTag      Bytes?       @map("rejection_auth_tag") @db.ByteA
+  rejectionKeyVersion   String?      @map("rejection_key_version") @db.VarChar(16)
+  stripeRolesSnapshot   Json         @map("stripe_roles_snapshot")
+  decidedAt             DateTime     @default(now()) @map("decided_at") @db.Timestamptz(6)
 
-  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  request  RefundRequest @relation(fields: [requestId, tenantId], references: [id, tenantId], onDelete: Restrict)
-  approver TenantUser    @relation("DecisionApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  request             RefundRequest        @relation(fields: [requestId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  approver            TenantUser           @relation("DecisionApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  approvalAttestation ApprovalAttestation? @relation("DecisionAttestation", fields: [approvalAttestationId, tenantId, requestId, approverUserId], references: [id, tenantId, requestId, approverUserId], onDelete: Restrict)
 
   @@unique([requestId, approverUserId], map: "approval_decisions_request_approver_key")
+  @@unique([approvalAttestationId, tenantId, requestId, approverUserId], map: "approval_decisions_attestation_binding_key")
   @@index([tenantId, decidedAt(sort: Desc)], map: "approval_decisions_tenant_decided_idx")
   @@map("approval_decisions")
+}
+
+model ApprovalAttestation {
+  id                        String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                  String            @map("tenant_id") @db.Uuid
+  installationId            String            @map("installation_id") @db.Uuid
+  requestId                 String            @map("request_id") @db.Uuid
+  approverUserId            String            @map("approver_user_id") @db.Uuid
+  requestNonce              String            @map("request_nonce") @db.Uuid
+  stripeAccountId           String            @map("stripe_account_id") @db.VarChar(255)
+  environment               StripeEnvironment
+  resourceType              String            @map("resource_type") @db.VarChar(64)
+  resourceId                String            @map("resource_id") @db.VarChar(255)
+  requestVersion            Int               @map("request_version")
+  signedEnvelopeHash        Bytes             @map("signed_envelope_hash") @db.ByteA
+  authorizationSnapshotHash Bytes             @map("authorization_snapshot_hash") @db.ByteA
+  verifiedAt                DateTime          @map("verified_at") @db.Timestamptz(6)
+  consumeBefore             DateTime          @map("consume_before") @db.Timestamptz(6)
+  hmacKeyVersion            String            @map("hmac_key_version") @db.VarChar(16)
+  hmac                      Bytes             @db.ByteA
+  createdAt                 DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  installation StripeInstallation @relation(fields: [installationId, tenantId, stripeAccountId, environment], references: [id, tenantId, stripeAccountId, environment], onDelete: Restrict)
+  request      RefundRequest      @relation(fields: [requestId, tenantId, installationId, environment], references: [id, tenantId, installationId, environment], onDelete: Cascade)
+  approver     TenantUser         @relation("AttestationApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  decision     ApprovalDecision?  @relation("DecisionAttestation")
+
+  @@unique([tenantId, requestNonce], map: "approval_attestations_tenant_nonce_key")
+  @@unique([id, tenantId, requestId, approverUserId], map: "approval_attestations_decision_binding_key")
+  @@index([tenantId, requestId, consumeBefore], map: "approval_attestations_request_consume_idx")
+  @@map("approval_attestations")
 }
 
 model RefundExecution {

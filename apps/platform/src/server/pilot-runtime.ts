@@ -1,4 +1,4 @@
-import { loadConfig } from "@refunddesk/config";
+import { loadPlatformConfig } from "@refunddesk/config";
 import { createPrismaClient, type PrismaClient } from "@refunddesk/db";
 import { FieldEncryptionKeyring } from "@refunddesk/domain";
 import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
@@ -7,12 +7,13 @@ import { TestAndSandboxAccessPolicy } from "./pilot-access-policy";
 import { ConnectedStripePaymentReader } from "./pilot-payment-reader";
 import { PilotPrismaRepository } from "./pilot-prisma-repository";
 import { PilotService } from "./pilot-service";
+import { RemoteSignedRequestVerifier, type SignedRequestVerifier } from "./signed-request";
 
 export interface PilotRuntime {
   readonly auditSigningKey: Uint8Array;
   readonly client: PrismaClient;
   readonly service: PilotService;
-  readonly signingSecret: string;
+  readonly signedRequestVerifier: SignedRequestVerifier;
 }
 
 let runtimeInstance: PilotRuntime | undefined;
@@ -21,7 +22,7 @@ export function getPilotRuntime(): PilotRuntime {
   if (runtimeInstance !== undefined) {
     return runtimeInstance;
   }
-  const config = loadConfig();
+  const config = loadPlatformConfig();
   const client = createPrismaClient({
     connectionString: config.databaseUrl,
   });
@@ -39,8 +40,8 @@ export function getPilotRuntime(): PilotRuntime {
   });
   const stripeClient = new ConnectedAccountStripeClient(
     new StripeCredentialResolver({
-      managedSandboxKey: config.stripe.managedSandboxKey,
-      platformTestKey: config.stripe.platformTestKey,
+      managedSandboxKey: config.stripe.managedSandboxReadKey,
+      platformTestKey: config.stripe.platformTestReadKey,
     }),
   );
   runtimeInstance = {
@@ -51,7 +52,10 @@ export function getPilotRuntime(): PilotRuntime {
       new ConnectedStripePaymentReader(stripeClient),
       new TestAndSandboxAccessPolicy(),
     ),
-    signingSecret: config.stripe.appSigningSecret,
+    signedRequestVerifier: new RemoteSignedRequestVerifier(
+      config.signedRequestVerifierUrl,
+      config.signedRequestVerifierToken,
+    ),
   };
   return runtimeInstance;
 }

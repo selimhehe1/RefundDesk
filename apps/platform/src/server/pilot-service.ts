@@ -24,6 +24,7 @@ import type {
 
 export type PilotDispatchRequest = {
   [Operation in PilotOperation]: {
+    readonly approvalAttestationId: string | null;
     readonly canonicalRequestHash: Uint8Array;
     readonly command: OperationCommand<Operation>;
     readonly identity: PilotSignedIdentity;
@@ -142,6 +143,7 @@ function publicRequestSummary(request: PilotRequestRecord): PilotRequestSummary 
     resource_id: request.resource_id,
     resource_type: request.resource_type,
     status: request.status,
+    version: request.version,
   };
 }
 
@@ -160,6 +162,7 @@ function requestSummaryJson(request: PilotRequestSummary) {
     resource_id: request.resource_id,
     resource_type: request.resource_type,
     status: request.status,
+    version: request.version,
   } as const;
 }
 
@@ -251,6 +254,7 @@ export class PilotService {
 
     const metadata: PilotMutationMetadata = {
       actorId: input.identity.userId,
+      approvalAttestationId: input.approvalAttestationId,
       assertedStripeRoles: input.identity.rolesAsserted ? input.identity.roles : null,
       canonicalRequestHash: input.canonicalRequestHash,
       operation: input.operation,
@@ -503,11 +507,32 @@ export class PilotService {
     if (request.status !== "pending_approval") {
       throw new PilotApiError("WORKFLOW_CONFLICT", 409, "Only a pending request can be decided.");
     }
+    if (input.command.decision === "approve") {
+      const snapshot = input.command.approval_snapshot;
+      if (
+        metadata.approvalAttestationId === null ||
+        input.command.expected_request_version !== request.version ||
+        snapshot.amount_minor !== request.amount_minor ||
+        snapshot.currency !== request.currency ||
+        snapshot.reason !== request.reason ||
+        snapshot.requester_user_id !== request.requester_user_id
+      ) {
+        throw new PilotApiError(
+          "WORKFLOW_CONFLICT",
+          409,
+          "The signed approval no longer matches the request snapshot.",
+        );
+      }
+      return this.repository.executeMutation(context, metadata, {
+        decision: "approve",
+        kind: "refund_request_decide",
+        requestId: input.command.request_id,
+        resource,
+      });
+    }
     return this.repository.executeMutation(context, metadata, {
-      decision: input.command.decision,
-      ...(input.command.justification === undefined
-        ? {}
-        : { justification: input.command.justification }),
+      decision: "reject",
+      justification: input.command.justification,
       kind: "refund_request_decide",
       requestId: input.command.request_id,
       resource,

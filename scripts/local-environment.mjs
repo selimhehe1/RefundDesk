@@ -4,9 +4,24 @@ import { loadEnvFile } from "node:process";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const localEnvironmentPath = fileURLToPath(new URL("../.env.local", import.meta.url));
+const forbiddenPostgresQueryParameters = new Set([
+  "database",
+  "dbname",
+  "host",
+  "hostaddr",
+  "options",
+  "passfile",
+  "password",
+  "port",
+  "role",
+  "service",
+  "servicefile",
+  "session_authorization",
+  "user",
+]);
 
 export function loadLocalEnvironment() {
-  if (!existsSync(localEnvironmentPath)) {
+  if (process.env["NODE_ENV"] === "production" || !existsSync(localEnvironmentPath)) {
     return;
   }
 
@@ -36,7 +51,11 @@ export function requirePostgresUrl(name) {
     (url.protocol !== "postgres:" && url.protocol !== "postgresql:") ||
     url.username.length === 0 ||
     url.hostname.length === 0 ||
-    url.pathname.length <= 1
+    url.pathname.length <= 1 ||
+    url.hash.length > 0 ||
+    [...url.searchParams.keys()].some((parameter) =>
+      forbiddenPostgresQueryParameters.has(parameter.toLowerCase()),
+    )
   ) {
     throw new Error(`${name}_INVALID`);
   }
@@ -53,7 +72,7 @@ export function assertRuntimePrincipalsAreSeparated() {
   const queue = databasePrincipal(requirePostgresUrl("PGBOSS_DATABASE_URL"));
   const owner = databasePrincipal(requirePostgresUrl("DATABASE_MIGRATION_URL"));
 
-  if (web === worker || web === queue) {
+  if (web === worker || web === queue || worker === queue) {
     throw new Error("DATABASE_RUNTIME_PRINCIPALS_MUST_BE_DISTINCT");
   }
   if (owner === web || owner === worker || owner === queue) {

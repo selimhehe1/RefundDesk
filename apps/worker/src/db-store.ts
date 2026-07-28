@@ -6,6 +6,8 @@ import {
   listActiveTenantIds,
   listRecoverableWebhookReceipts,
   listScannableInstallations as listDbScannableInstallations,
+  resolveInstallation,
+  type ExecutionWorkItem,
   type NormalizedConnectedWebhookPayload,
   type PrismaClient,
   type TenantRepositories,
@@ -16,31 +18,37 @@ import {
   classifyRefundEvidence,
   normalizeCurrency,
   refundIdempotencyKey,
+  type ApprovalAttestationKeyring,
+  type ApprovalAttestationPayload,
   type RefundProofKeyring,
 } from "@refunddesk/domain";
 
-import type {
-  ApprovedRefundExecution,
-  AttemptFailureInput,
-  CommitCheckpointInput,
-  EffectBoundaryDecision,
-  IdentifiedRefundInput,
-  InstallationLifecycleInput,
-  LinkedRefundReconciliationTarget,
-  ObserveLinkedRefundInput,
-  ObserveRefundInput,
-  PersistEffectBoundaryInput,
-  ReconciliationCheckpoint,
-  ReconciliationRequiredInput,
-  RefundExecutionRecord,
-  ScannableWorkerInstallation,
-  TerminalWithoutEffectInput,
-  WorkerStore,
+import {
+  ApprovalAttestationStoreError,
+  type PersistApprovalAttestationInput,
+  type PersistedApprovalAttestation,
+  type ApprovedRefundExecution,
+  type AttemptFailureInput,
+  type CommitCheckpointInput,
+  type EffectBoundaryDecision,
+  type IdentifiedRefundInput,
+  type InstallationLifecycleInput,
+  type LinkedRefundReconciliationTarget,
+  type ObserveLinkedRefundInput,
+  type ObserveRefundInput,
+  type PersistEffectBoundaryInput,
+  type ReconciliationCheckpoint,
+  type ReconciliationRequiredInput,
+  type RefundExecutionRecord,
+  type ScannableWorkerInstallation,
+  type TerminalWithoutEffectInput,
+  type WorkerStore,
 } from "./ports.js";
 import { processWebhookJobSchema, type ProcessWebhookJob } from "./jobs.js";
 
 const DATABASE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const TENANT_PURGE_DELAY_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
+const APPROVAL_ATTESTATION_LIFETIME_MILLISECONDS = 5 * 60 * 1_000;
 
 function canonicalExecutionHash(record: {
   readonly tenantId: string;
@@ -77,6 +85,255 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return (
     left.byteLength === right.byteLength && timingSafeEqual(Buffer.from(left), Buffer.from(right))
   );
+}
+
+export function approvalAuthorizationSnapshotHash(payload: ApprovalAttestationPayload): Buffer {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        payload.tenantId,
+        payload.installationId,
+        payload.stripeAccountId,
+        payload.environment,
+        payload.resourceType,
+        payload.resourceId,
+        payload.requestId,
+        payload.requestVersion,
+        payload.approverUserId,
+        payload.requesterUserId,
+        payload.approverStripeUserId,
+        payload.requesterStripeUserId,
+        payload.paymentKey,
+        payload.paymentIntentId,
+        payload.chargeId,
+        payload.amountMinor.toString(),
+        payload.currency,
+        payload.reason,
+        payload.policyVersion,
+        payload.requiredApprovals,
+        payload.expiresAt,
+      ]),
+      "utf8",
+    )
+    .digest();
+}
+
+/**
+ * `refund_requests.version` is a lifecycle revision, while an approval
+ * attestation is signed against the still-pending request revision. The
+ * attestation therefore cannot require equality forever: approval, claim and
+ * each safe retry/reconciliation transition increment the request exactly
+ * once.
+ *
+ * Count only transitions that have durable evidence. This rejects an
+ * otherwise invisible request update even when every signed financial field
+ * still matches, while preserving the legitimate:
+ *
+ * pending -> approved -> executing -> possible -> reconciliation_required
+ *         -> absence_proven -> executing
+ *
+ * cycle. A retryable attempt contributes two revisions (possible, then
+ * absence); an ambiguous/orphaned attempt contributes four (possible,
+ * reconciliation, absence, resume).
+ */
+export function approvalAttestationRequestVersionIsCompatible(
+  item: Pick<
+    ExecutionWorkItem,
+    "effectState" | "execution" | "id" | "tenantId" | "version" | "workflowStatus"
+  >,
+  attestedRequestVersion: number,
+): boolean {
+  if (
+    !Number.isSafeInteger(attestedRequestVersion) ||
+    attestedRequestVersion < 0 ||
+    !Number.isSafeInteger(item.version) ||
+    item.version <= attestedRequestVersion
+  ) {
+    return false;
+  }
+
+  const revisionDelta = item.version - attestedRequestVersion;
+  if (item.execution === null) {
+    return (
+      (item.workflowStatus === "approved" &&
+        item.effectState === "not_started" &&
+        revisionDelta === 1) ||
+      (item.workflowStatus === "executing" &&
+        item.effectState === "not_started" &&
+        revisionDelta === 2)
+    );
+  }
+
+  if (
+    item.execution.requestId !== item.id ||
+    item.execution.tenantId !== item.tenantId ||
+    item.execution.stripeRefundId !== null ||
+    item.execution.attempts.length === 0
+  ) {
+    return false;
+  }
+
+  const attempts = item.execution.attempts;
+  for (const [index, attempt] of attempts.entries()) {
+    if (
+      attempt.executionId !== item.execution.id ||
+      attempt.tenantId !== item.tenantId ||
+      attempt.attemptNumber !== index + 1 ||
+      attempt.state === "completed" ||
+      attempt.state === "terminal_failure"
+    ) {
+      return false;
+    }
+  }
+
+  const latest = attempts.at(-1);
+  if (latest === undefined) {
+    return false;
+  }
+
+  const resolvedRevisionCost = (attempt: (typeof attempts)[number]): number | null => {
+    if (attempt.state === "retryable_failure") {
+      return 2;
+    }
+    if (attempt.state === "ambiguous_failure" || attempt.state === "started") {
+      return 4;
+    }
+    return null;
+  };
+
+  if (item.workflowStatus === "executing" && item.effectState === "absence_proven") {
+    let expectedDelta = 2;
+    for (const attempt of attempts) {
+      const cost = resolvedRevisionCost(attempt);
+      if (cost === null) {
+        return false;
+      }
+      expectedDelta += cost;
+    }
+    return revisionDelta === expectedDelta;
+  }
+
+  const priorAttempts = attempts.slice(0, -1);
+  let priorRevisionCost = 0;
+  for (const attempt of priorAttempts) {
+    const cost = resolvedRevisionCost(attempt);
+    if (cost === null) {
+      return false;
+    }
+    priorRevisionCost += cost;
+  }
+
+  if (
+    item.workflowStatus === "executing" &&
+    item.effectState === "possible" &&
+    latest.state === "started"
+  ) {
+    return revisionDelta === 3 + priorRevisionCost;
+  }
+
+  if (
+    item.workflowStatus === "reconciliation_required" &&
+    item.effectState === "possible" &&
+    (latest.state === "started" || latest.state === "ambiguous_failure")
+  ) {
+    return revisionDelta === 4 + priorRevisionCost;
+  }
+
+  if (
+    item.workflowStatus === "reconciliation_required" &&
+    item.effectState === "absence_proven" &&
+    (latest.state === "started" || latest.state === "ambiguous_failure")
+  ) {
+    return revisionDelta === 5 + priorRevisionCost;
+  }
+
+  return false;
+}
+
+function approvalPayloadFromExecutionItem(
+  item: ExecutionWorkItem,
+): ApprovalAttestationPayload | null {
+  const decision = item.approvalDecision;
+  if (decision === null) {
+    return null;
+  }
+  const attestation = decision.approvalAttestation;
+  if (
+    attestation === null ||
+    decision.decision !== "approve" ||
+    decision.approvalAttestationId !== attestation.id ||
+    attestation.requestId !== item.id ||
+    attestation.tenantId !== item.tenantId ||
+    attestation.installationId !== item.installationId ||
+    attestation.approverUserId !== decision.approverUserId ||
+    attestation.stripeAccountId !== item.installation.stripeAccountId ||
+    attestation.environment !== item.environment ||
+    item.chargeId === null ||
+    item.environment === "live" ||
+    item.requiredApprovals !== 1 ||
+    !decision.approver.approverEnabled ||
+    decision.approver.id === item.requester.id ||
+    decision.approver.stripeUserId === item.requester.stripeUserId ||
+    !approvalAttestationRequestVersionIsCompatible(item, attestation.requestVersion) ||
+    decision.decidedAt.getTime() < attestation.verifiedAt.getTime() ||
+    decision.decidedAt.getTime() >= attestation.consumeBefore.getTime()
+  ) {
+    return null;
+  }
+  const resourceType = item.paymentIntentId === null ? "charge" : "payment_intent";
+  const resourceId = item.paymentIntentId ?? item.chargeId;
+  if (attestation.resourceType !== resourceType || attestation.resourceId !== resourceId) {
+    return null;
+  }
+  return {
+    amountMinor: item.amountMinor,
+    approverStripeUserId: decision.approver.stripeUserId,
+    approverUserId: decision.approverUserId,
+    canonicalRequestHash: attestation.signedEnvelopeHash,
+    chargeId: item.chargeId,
+    consumeBefore: attestation.consumeBefore.toISOString(),
+    currency: normalizeCurrency(item.currency),
+    environment: item.environment,
+    expiresAt: item.expiresAt.toISOString(),
+    installationId: item.installationId,
+    paymentIntentId: item.paymentIntentId,
+    paymentKey: item.paymentKey,
+    policyVersion: item.policyVersion,
+    reason: item.reason,
+    requestId: item.id,
+    requesterStripeUserId: item.requester.stripeUserId,
+    requesterUserId: item.requesterUserId,
+    requestNonce: attestation.requestNonce,
+    requestVersion: attestation.requestVersion,
+    requiredApprovals: item.requiredApprovals,
+    resourceId,
+    resourceType,
+    stripeAccountId: item.installation.stripeAccountId,
+    tenantId: item.tenantId,
+    verifiedAt: attestation.verifiedAt.toISOString(),
+  };
+}
+
+function approvalAttestationIsValid(
+  item: ExecutionWorkItem,
+  keyring: ApprovalAttestationKeyring,
+): boolean {
+  const payload = approvalPayloadFromExecutionItem(item);
+  const attestation = item.approvalDecision?.approvalAttestation;
+  if (payload === null || attestation == null) {
+    return false;
+  }
+  if (
+    !equalBytes(attestation.authorizationSnapshotHash, approvalAuthorizationSnapshotHash(payload))
+  ) {
+    return false;
+  }
+  const token = `${attestation.hmacKeyVersion}.${Buffer.from(attestation.hmac).toString("base64url")}`;
+  try {
+    return keyring.verify(payload, token);
+  } catch {
+    return false;
+  }
 }
 
 function paymentKeyOf(input: Pick<ObserveRefundInput, "refund">): string {
@@ -192,10 +449,183 @@ export class PrismaWorkerStore implements WorkerStore {
   constructor(
     private readonly client: PrismaClient,
     private readonly proofs: RefundProofKeyring,
+    private readonly approvalAttestations: ApprovalAttestationKeyring,
   ) {}
 
   async close(): Promise<void> {
     await this.client.$disconnect();
+  }
+
+  async persistApprovalAttestation(
+    input: PersistApprovalAttestationInput,
+  ): Promise<PersistedApprovalAttestation> {
+    const installation = await resolveInstallation(
+      this.client,
+      input.stripeAccountId,
+      input.environment,
+    );
+    if (installation === null || installation.status !== "active") {
+      throw new ApprovalAttestationStoreError("invalid");
+    }
+
+    const operation = async (): Promise<PersistedApprovalAttestation> =>
+      withTenantTransaction(this.client, installation.tenantId, async ({ repositories, tx }) => {
+        const request = await repositories.getRefundRequest(input.requestId);
+        if (request === null) {
+          throw new ApprovalAttestationStoreError("invalid");
+        }
+        const tenant = await tx.tenant.findFirst({
+          where: { id: installation.tenantId },
+        });
+        const installationRecord = await tx.stripeInstallation.findFirst({
+          where: { id: installation.installationId, tenantId: installation.tenantId },
+        });
+        const requester = await tx.tenantUser.findFirst({
+          where: { id: request.requesterUserId, tenantId: installation.tenantId },
+        });
+        const approver = await tx.tenantUser.findFirst({
+          where: {
+            stripeUserId: input.approverStripeUserId,
+            tenantId: installation.tenantId,
+          },
+        });
+        const policy = await tx.approvalPolicy.findFirst({
+          where: {
+            tenantId: installation.tenantId,
+            version: request.policyVersion,
+          },
+        });
+        const existing = await repositories.getApprovalAttestationByNonce(input.requestNonce);
+        if (existing !== null) {
+          if (!equalBytes(existing.signedEnvelopeHash, input.signedEnvelopeHash)) {
+            throw new ApprovalAttestationStoreError("conflict");
+          }
+          return {
+            id: existing.id,
+            signedEnvelopeHash: existing.signedEnvelopeHash,
+          };
+        }
+        if (
+          tenant === null ||
+          installationRecord === null ||
+          requester === null ||
+          approver === null ||
+          policy === null ||
+          tenant.status !== "active" ||
+          tenant.liveEnabled ||
+          installationRecord.status !== "active" ||
+          installationRecord.id !== request.installationId ||
+          installationRecord.environment !== input.environment ||
+          installationRecord.stripeAccountId !== input.stripeAccountId ||
+          request.environment !== input.environment ||
+          request.version !== input.expectedRequestVersion ||
+          request.amountMinor !== input.amountMinor ||
+          normalizeCurrency(request.currency) !== normalizeCurrency(input.currency) ||
+          request.reason !== input.reason ||
+          requester.stripeUserId !== input.requesterStripeUserId ||
+          approver.stripeUserId !== input.approverStripeUserId ||
+          !approver.approverEnabled ||
+          approver.id === requester.id ||
+          approver.stripeUserId === requester.stripeUserId ||
+          request.chargeId === null ||
+          request.paymentGuardReleasedAt !== null ||
+          request.effectState !== "not_started" ||
+          request.requiredApprovals !== 1 ||
+          policy.requiredApprovals !== request.requiredApprovals
+        ) {
+          throw new ApprovalAttestationStoreError("invalid");
+        }
+        const resourceType = request.paymentIntentId === null ? "charge" : "payment_intent";
+        const resourceId = request.paymentIntentId ?? request.chargeId;
+        if (resourceType !== input.resourceType || resourceId !== input.resourceId) {
+          throw new ApprovalAttestationStoreError("invalid");
+        }
+
+        if (
+          request.workflowStatus !== "pending_approval" ||
+          input.verifiedAt.getTime() < request.createdAt.getTime() ||
+          input.verifiedAt.getTime() >= request.expiresAt.getTime()
+        ) {
+          throw new ApprovalAttestationStoreError("invalid");
+        }
+        const consumeBefore = new Date(
+          Math.min(
+            input.verifiedAt.getTime() + APPROVAL_ATTESTATION_LIFETIME_MILLISECONDS,
+            request.expiresAt.getTime(),
+          ),
+        );
+        if (consumeBefore.getTime() <= input.verifiedAt.getTime()) {
+          throw new ApprovalAttestationStoreError("invalid");
+        }
+        const payload: ApprovalAttestationPayload = {
+          amountMinor: request.amountMinor,
+          approverStripeUserId: approver.stripeUserId,
+          approverUserId: approver.id,
+          canonicalRequestHash: input.signedEnvelopeHash,
+          chargeId: request.chargeId,
+          consumeBefore: consumeBefore.toISOString(),
+          currency: normalizeCurrency(request.currency),
+          environment: input.environment,
+          expiresAt: request.expiresAt.toISOString(),
+          installationId: installation.installationId,
+          paymentIntentId: request.paymentIntentId,
+          paymentKey: request.paymentKey,
+          policyVersion: request.policyVersion,
+          reason: request.reason,
+          requestId: request.id,
+          requesterStripeUserId: requester.stripeUserId,
+          requesterUserId: requester.id,
+          requestNonce: input.requestNonce,
+          requestVersion: request.version,
+          requiredApprovals: request.requiredApprovals,
+          resourceId,
+          resourceType,
+          stripeAccountId: input.stripeAccountId,
+          tenantId: installation.tenantId,
+          verifiedAt: input.verifiedAt.toISOString(),
+        };
+        const token = this.approvalAttestations.sign(payload);
+        const separator = token.indexOf(".");
+        const hmacKeyVersion = token.slice(0, separator);
+        const hmac = Buffer.from(token.slice(separator + 1), "base64url");
+        const persisted = await repositories.persistApprovalAttestation({
+          approverUserId: approver.id,
+          authorizationSnapshotHash: Uint8Array.from(approvalAuthorizationSnapshotHash(payload)),
+          consumeBefore,
+          createdAt: input.verifiedAt,
+          environment: input.environment,
+          hmac: Uint8Array.from(hmac),
+          hmacKeyVersion,
+          id: randomUUID(),
+          installationId: installation.installationId,
+          requestId: request.id,
+          requestNonce: input.requestNonce,
+          requestVersion: request.version,
+          resourceId,
+          resourceType,
+          signedEnvelopeHash: Uint8Array.from(input.signedEnvelopeHash),
+          stripeAccountId: input.stripeAccountId,
+          verifiedAt: input.verifiedAt,
+        });
+        return {
+          id: persisted.id,
+          signedEnvelopeHash: persisted.signedEnvelopeHash,
+        };
+      });
+
+    try {
+      return await operation();
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "P2002"
+      ) {
+        return operation();
+      }
+      throw error;
+    }
   }
 
   async loadRefundExecution(
@@ -218,12 +648,19 @@ export class PrismaWorkerStore implements WorkerStore {
       if (item === null || !hasActivePilotExecutionContext(item)) {
         return null;
       }
+      if (!approvalAttestationIsValid(item, this.approvalAttestations)) {
+        if (item.effectState === "possible") {
+          await requireExecutionReconciliation(repositories, item.id);
+        }
+        return null;
+      }
       if (item.workflowStatus === "approved" && item.effectState === "not_started") {
         item = await repositories.claimExecutionWorkItem(requestId, new Date());
       }
       if (
         item === null ||
         !hasActivePilotExecutionContext(item) ||
+        !approvalAttestationIsValid(item, this.approvalAttestations) ||
         item.workflowStatus !== "executing" ||
         (item.effectState !== "not_started" &&
           item.effectState !== "possible" &&
@@ -297,6 +734,13 @@ export class PrismaWorkerStore implements WorkerStore {
         return item?.workflowStatus === "reconciliation_required"
           ? { kind: "reconciliation_required" }
           : { kind: "not_executable" };
+      }
+      if (!approvalAttestationIsValid(item, this.approvalAttestations)) {
+        if (item.effectState === "possible") {
+          await requireExecutionReconciliation(repositories, item.id);
+          return { kind: "reconciliation_required" };
+        }
+        return { kind: "not_executable" };
       }
       if (item.execution?.stripeRefundId !== null && item.execution !== null) {
         return {

@@ -1,5 +1,7 @@
 import Stripe from "stripe";
 
+export * from "./signed-extension-request.js";
+
 export type StripeEnvironment = "test" | "sandbox" | "live";
 
 export interface StripeInstallation {

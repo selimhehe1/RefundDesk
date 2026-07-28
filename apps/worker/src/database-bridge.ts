@@ -1,6 +1,6 @@
-import type { RefundDeskConfig } from "@refunddesk/config";
+import type { WorkerConfig } from "@refunddesk/config";
 import { createPrismaClient } from "@refunddesk/db";
-import { RefundProofKeyring } from "@refunddesk/domain";
+import { ApprovalAttestationKeyring, RefundProofKeyring } from "@refunddesk/domain";
 
 import { PrismaWorkerStore } from "./db-store.js";
 import type { WorkerStore } from "./ports.js";
@@ -10,7 +10,7 @@ import type { WorkerStore } from "./ports.js";
  * transactions and global worker-only listing functions remain inside
  * @refunddesk/db.
  */
-export function loadWorkerStore(config: RefundDeskConfig): Promise<WorkerStore> {
+export function loadWorkerStore(config: WorkerConfig): Promise<WorkerStore> {
   const client = createPrismaClient({
     connectionString: config.workerDatabaseUrl,
   });
@@ -21,6 +21,12 @@ export function loadWorkerStore(config: RefundDeskConfig): Promise<WorkerStore> 
         active: {
           version: config.keys.activeProofVersion,
           key: config.keys.proofV1,
+        },
+      }),
+      new ApprovalAttestationKeyring({
+        active: {
+          version: config.keys.activeApprovalAttestationVersion,
+          key: config.keys.approvalAttestationV1,
         },
       }),
     ),

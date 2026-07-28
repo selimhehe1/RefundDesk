@@ -29,7 +29,7 @@ jobs:
       DATABASE_URL: postgresql://refunddesk_web_login:refunddesk_web_local@localhost:5432/refunddesk
       WORKER_DATABASE_URL: postgresql://refunddesk_worker_login:refunddesk_worker_local@localhost:5432/refunddesk
       DATABASE_MIGRATION_URL: postgresql://refunddesk_owner:refunddesk_owner_local@localhost:5432/refunddesk
-      PGBOSS_DATABASE_URL: postgresql://refunddesk_worker_login:refunddesk_worker_local@localhost:5432/refunddesk
+      PGBOSS_DATABASE_URL: postgresql://refunddesk_queue_login:refunddesk_queue_local@localhost:5432/refunddesk
       REFUNDDESK_TEST_DATABASE_URL: postgresql://refunddesk_owner:refunddesk_owner_local@localhost:5432/refunddesk
       REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
       REFUNDDESK_PROOF_HMAC_KEY_V1: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
@@ -49,11 +49,190 @@ jobs:
       - run: pnpm db:local:roles
       - run: pnpm db:generate
       - run: pnpm test:integration
-      - run: pnpm db:migrate:deploy
-      - run: pnpm db:pgboss:migrate
-      - run: pnpm db:access:check
       - run: pnpm verify
       - run: pnpm audit:prod
+      - name: Build provider-neutral OCI targets
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker build --target web --tag refunddesk-web:ci .
+          docker build --target worker --tag refunddesk-worker:ci .
+          docker build --target migrate --tag refunddesk-migrate:ci .
+      - name: Inspect OCI security contracts
+        run: |
+          set -euo pipefail
+          for image in refunddesk-web:ci refunddesk-worker:ci refunddesk-migrate:ci; do
+            test "$(docker inspect --format '{{.Config.User}}' "$image")" = "node"
+          done
+          docker run --rm --entrypoint node refunddesk-migrate:ci -e "
+            const fs = require('node:fs');
+            const forbidden = [
+              '/workspace/apps/platform',
+              '/workspace/apps/stripe-app',
+              '/workspace/docs',
+              '/workspace/docker',
+              '/workspace/packages/db/test'
+            ];
+            if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
+          "
+          docker run --rm --entrypoint node refunddesk-worker:ci -e "
+            const fs = require('node:fs');
+            if (
+              fs.existsSync('/app/node_modules/.bin/prisma') ||
+              fs.existsSync('/app/node_modules/prisma')
+            ) process.exit(1);
+          "
+          test "$(
+            docker run --rm --network none --entrypoint pnpm \
+              refunddesk-migrate:ci --version
+          )" = "11.17.0"
+      - name: Smoke scoped OCI runtimes
+        env:
+          APP_BASE_URL: https://sandbox.refunddesk.invalid
+          REFUNDDESK_GLOBAL_LIVE_ENABLED: "false"
+          STRIPE_API_VERSION: 2026-06-24.dahlia
+          STRIPE_APP_ID: ca_ciSynthetic
+          STRIPE_APP_SIGNING_SECRET: absec_ci_synthetic
+          STRIPE_PLATFORM_TEST_READ_KEY: rk_test_ci_platform_read
+          STRIPE_MANAGED_SANDBOX_READ_KEY: rk_test_ci_sandbox_read
+          STRIPE_PLATFORM_TEST_EFFECT_KEY: rk_test_ci_platform_effect
+          STRIPE_MANAGED_SANDBOX_EFFECT_KEY: rk_test_ci_sandbox_effect
+          STRIPE_CONNECTED_TEST_WEBHOOK_SECRET: whsec_ci_test
+          STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: whsec_ci_sandbox
+          STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: disabled
+          REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=
+          REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: v1
+          REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=
+          REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL: https://worker.refunddesk.invalid/internal/v1/signed-requests/verify
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker stop --time 40 refunddesk-worker-ci refunddesk-web-ci >/dev/null 2>&1 || true
+            docker rm refunddesk-worker-ci refunddesk-web-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --rm --network host \
+            -e DATABASE_URL \
+            -e WORKER_DATABASE_URL \
+            -e DATABASE_MIGRATION_URL \
+            -e PGBOSS_DATABASE_URL \
+            refunddesk-migrate:ci
+
+          docker run -d --network host --name refunddesk-web-ci \
+            --health-interval 1s \
+            --health-start-period 1s \
+            --health-timeout 2s \
+            --health-retries 10 \
+            -e NODE_ENV=production \
+            -e LOG_LEVEL=error \
+            -e PORT=3200 \
+            -e APP_BASE_URL \
+            -e DATABASE_URL \
+            -e STRIPE_API_VERSION \
+            -e STRIPE_APP_ID \
+            -e STRIPE_PLATFORM_TEST_READ_KEY \
+            -e STRIPE_MANAGED_SANDBOX_READ_KEY \
+            -e STRIPE_CONNECTED_TEST_WEBHOOK_SECRET \
+            -e STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET \
+            -e STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET \
+            -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
+            -e REFUNDDESK_FIELD_ENCRYPTION_KEY_V1 \
+            -e REFUNDDESK_EXPORT_SIGNING_KEY_V1 \
+            -e REFUNDDESK_ACTIVE_FIELD_KEY_VERSION \
+            -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN \
+            -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL \
+            refunddesk-web:ci
+
+          docker run -d --network host --name refunddesk-worker-ci \
+            --health-interval 1s \
+            --health-start-period 1s \
+            --health-timeout 2s \
+            --health-retries 10 \
+            -e NODE_ENV=production \
+            -e LOG_LEVEL=error \
+            -e WORKER_DATABASE_URL \
+            -e PGBOSS_DATABASE_URL \
+            -e STRIPE_API_VERSION \
+            -e STRIPE_APP_SIGNING_SECRET \
+            -e STRIPE_PLATFORM_TEST_EFFECT_KEY \
+            -e STRIPE_MANAGED_SANDBOX_EFFECT_KEY \
+            -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
+            -e REFUNDDESK_PROOF_HMAC_KEY_V1 \
+            -e REFUNDDESK_ACTIVE_PROOF_KEY_VERSION \
+            -e REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1 \
+            -e REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION \
+            -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN \
+            -e WORKER_HEALTH_HOST=0.0.0.0 \
+            -e WORKER_HEALTH_PORT=3201 \
+            refunddesk-worker:ci
+
+          for attempt in $(seq 1 80); do
+            curl --fail --silent http://127.0.0.1:3200/api/ready >/dev/null && break
+            test "$attempt" -lt 80
+            sleep 0.25
+          done
+          for attempt in $(seq 1 80); do
+            curl --fail --silent http://127.0.0.1:3201/ready >/dev/null && break
+            test "$attempt" -lt 80
+            sleep 0.25
+          done
+          docker exec refunddesk-web-ci node -e "
+            const forbidden = [
+              'STRIPE_APP_SIGNING_SECRET',
+              'STRIPE_PLATFORM_TEST_EFFECT_KEY',
+              'STRIPE_MANAGED_SANDBOX_EFFECT_KEY',
+              'REFUNDDESK_PROOF_HMAC_KEY_V1',
+              'REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1',
+              'WORKER_DATABASE_URL',
+              'PGBOSS_DATABASE_URL',
+              'DATABASE_MIGRATION_URL'
+            ];
+            if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(1);
+          "
+          docker exec refunddesk-worker-ci node -e "
+            const forbidden = [
+              'STRIPE_PLATFORM_TEST_READ_KEY',
+              'STRIPE_MANAGED_SANDBOX_READ_KEY',
+              'STRIPE_CONNECTED_TEST_WEBHOOK_SECRET',
+              'STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET',
+              'REFUNDDESK_FIELD_ENCRYPTION_KEY_V1',
+              'REFUNDDESK_EXPORT_SIGNING_KEY_V1',
+              'DATABASE_URL',
+              'DATABASE_MIGRATION_URL'
+            ];
+            if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(1);
+          "
+          curl --fail --silent http://127.0.0.1:3200/ >/dev/null
+          test "$(
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              --request POST \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              http://127.0.0.1:3200/api/v1/context/sync
+          )" = "401"
+          test "$(
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              --request POST \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              http://127.0.0.1:3201/internal/v1/signed-requests/verify
+          )" = "401"
+
+          for container in refunddesk-web-ci refunddesk-worker-ci; do
+            for attempt in $(seq 1 40); do
+              test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = "healthy" && break
+              test "$attempt" -lt 40
+              sleep 0.25
+            done
+          done
+
+          started_at="$(date +%s)"
+          docker stop --time 40 refunddesk-worker-ci >/dev/null
+          stopped_at="$(date +%s)"
+          test "$((stopped_at - started_at))" -lt 40
+          test "$(docker inspect --format '{{.State.ExitCode}}' refunddesk-worker-ci)" = "0"
+          docker stop --time 40 refunddesk-web-ci >/dev/null
       - name: Verify standalone Stripe App package
         working-directory: apps/stripe-app
         run: |

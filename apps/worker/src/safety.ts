@@ -1,5 +1,3 @@
-import type { RefundDeskConfig } from "@refunddesk/config";
-
 import type { WorkerInstallation } from "./ports.js";
 
 export class LiveModeRejectedError extends Error {
@@ -11,7 +9,7 @@ export class LiveModeRejectedError extends Error {
   }
 }
 
-export function assertPilotConfiguration(config: RefundDeskConfig): void {
+export function assertPilotConfiguration(config: { readonly liveEnabled: boolean }): void {
   if (config.liveEnabled) {
     throw new LiveModeRejectedError();
   }

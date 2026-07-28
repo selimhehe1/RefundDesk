@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
 
+import { loadMigrationConfig } from "../packages/config/src/index.ts";
+
+import { assertDatabaseMutationAllowed } from "./database-command-policy.mjs";
 import {
   assertRuntimePrincipalsAreSeparated,
   loadLocalEnvironment,
@@ -8,6 +11,11 @@ import {
 } from "./local-environment.mjs";
 
 loadLocalEnvironment();
+let canonicalReleaseActive = false;
+
+function assertMutationAllowed() {
+  assertDatabaseMutationAllowed(process.env["NODE_ENV"], canonicalReleaseActive);
+}
 
 function runPnpm(arguments_) {
   return new Promise((resolve, reject) => {
@@ -42,14 +50,26 @@ async function generate() {
 }
 
 async function applyRuntimeAccess() {
+  assertMutationAllowed();
   assertRuntimePrincipalsAreSeparated();
   await runPnpm(["--filter", "@refunddesk/db", "exec", "node", "scripts/apply-runtime-access.mjs"]);
 }
 
 async function migratePrisma(kind) {
+  assertMutationAllowed();
   assertRuntimePrincipalsAreSeparated();
   const prismaCommand = kind === "dev" ? "dev" : "deploy";
-  await runPnpm(["--filter", "@refunddesk/db", "exec", "prisma", "migrate", prismaCommand]);
+  const prismaPackage = kind === "dev" ? "@refunddesk/db" : "@refunddesk/migrator-toolchain";
+  const configArguments = kind === "dev" ? [] : ["--config", "prisma.config.ts"];
+  await runPnpm([
+    "--filter",
+    prismaPackage,
+    "exec",
+    "prisma",
+    "migrate",
+    prismaCommand,
+    ...configArguments,
+  ]);
   await applyRuntimeAccess();
 }
 
@@ -65,14 +85,44 @@ async function bootstrapLocalRoles() {
 }
 
 async function migratePgBoss() {
+  assertMutationAllowed();
   assertRuntimePrincipalsAreSeparated();
   await runPnpm(["--filter", "@refunddesk/worker", "exec", "node", "scripts/migrate-pgboss.mjs"]);
   await runPnpm(["--filter", "@refunddesk/db", "exec", "node", "scripts/grant-pgboss-runtime.mjs"]);
 }
 
+async function checkDatabaseTargets(mode) {
+  await runPnpm([
+    "--filter",
+    "@refunddesk/db",
+    "exec",
+    "node",
+    "scripts/check-database-targets.mjs",
+    mode,
+  ]);
+}
+
 async function checkAccess() {
+  assertMutationAllowed();
   assertRuntimePrincipalsAreSeparated();
+  await checkDatabaseTargets("postflight");
   await runPnpm(["--filter", "@refunddesk/db", "exec", "node", "scripts/check-runtime-access.mjs"]);
+}
+
+async function prepareRelease() {
+  const config = loadMigrationConfig(process.env);
+  if (config.nodeEnv !== "production") {
+    throw new Error("PRODUCTION_MIGRATION_CONFIGURATION_REQUIRED");
+  }
+  await checkDatabaseTargets("preflight");
+  canonicalReleaseActive = true;
+  try {
+    await migratePrisma("deploy");
+    await migratePgBoss();
+    await checkAccess();
+  } finally {
+    canonicalReleaseActive = false;
+  }
 }
 
 async function main() {
@@ -98,6 +148,9 @@ async function main() {
       break;
     case "check-access":
       await checkAccess();
+      break;
+    case "release-prepare":
+      await prepareRelease();
       break;
     case "setup-local":
       await bootstrapLocalRoles();

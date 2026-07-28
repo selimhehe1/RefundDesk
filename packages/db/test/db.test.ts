@@ -268,6 +268,36 @@ describe("tenant transaction safety", () => {
 });
 
 describe("migration hardening", () => {
+  it("requires independently persisted approval evidence at the database boundary", async () => {
+    const [sql, runtimeRoles] = await Promise.all([
+      readFile(
+        new URL(
+          "../prisma/migrations/20260727230000_approval_attestation_boundary/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(new URL("../prisma/runtime-roles.sql", import.meta.url), "utf8"),
+    ]);
+
+    expect(sql).toContain('CREATE TABLE "approval_attestations"');
+    expect(sql).toContain('ALTER TABLE "approval_attestations" FORCE ROW LEVEL SECURITY');
+    expect(sql).toContain('"approval_attestations_append_only"');
+    expect(sql).toContain('"approval_decisions_attestation_binding_fkey"');
+    expect(sql).toContain('NEW."decided_at" >= attestation."consume_before"');
+    expect(sql).toContain('attestation."request_version" <> current_request_version');
+    expect(sql).toContain('"refunddesk_enforce_tenant_user_identity_immutable"');
+    expect(sql).toContain('"refunddesk_count_purged_approval_attestation"');
+    expect(sql).toContain("'approval_attestations'");
+    expect(sql).toContain("NEW.\"process_version\" := 'db-purge-v2'");
+    expect(runtimeRoles).toContain(
+      "GRANT SELECT, INSERT ON approval_attestations\n  TO refunddesk_attestation_writer",
+    );
+    expect(runtimeRoles).not.toMatch(
+      /GRANT [^;]+ ON approval_attestations\s+TO refunddesk_runtime/u,
+    );
+  });
+
   it("separates web decisions from worker-owned execution state", async () => {
     const [sql, runtimeRoles] = await Promise.all([
       readFile(
@@ -286,10 +316,9 @@ describe("migration hardening", () => {
     expect(sql).toContain('session_role."oid" = relation."relowner"');
     expect(sql).toContain("FOR SHARE");
     expect(sql).toContain('NEW."decided_at" > clock_timestamp()');
-    expect(runtimeRoles).toContain(
-      "REVOKE ALL PRIVILEGES ON\n  refund_executions,\n  refund_execution_attempts,\n  refund_correlation_candidates",
-    );
+    expect(runtimeRoles).toContain("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public");
     expect(runtimeRoles).toContain("GRANT SELECT ON refund_executions, refund_execution_attempts");
+    expect(runtimeRoles).not.toMatch(/GRANT [^;]+ TO refunddesk_queue;/u);
     const webBroadGrant = /GRANT SELECT, INSERT, UPDATE ON([\s\S]*?)TO refunddesk_runtime;/u.exec(
       runtimeRoles,
     )?.[1];
@@ -388,8 +417,8 @@ describe("migration hardening", () => {
     expect(certificateTable).toBeDefined();
     expect(certificateTable).not.toContain("tenant_id");
     expect(certificateTable).not.toContain("stripe_");
-    expect(runtimeRoles).toContain(
-      "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM refunddesk_maintenance",
+    expect(runtimeRoles).toMatch(
+      /REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public\s+FROM PUBLIC,[^;]*refunddesk_maintenance/u,
     );
     expect(runtimeRoles).toContain(
       "GRANT EXECUTE ON FUNCTION refunddesk_purge_tenant(UUID, VARCHAR)",

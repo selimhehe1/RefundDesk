@@ -1,4 +1,4 @@
-import type { RefundDeskConfig } from "@refunddesk/config";
+import type { WorkerConfig } from "@refunddesk/config";
 import { RefundProofKeyring } from "@refunddesk/domain";
 import { createLogger } from "@refunddesk/observability";
 import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
@@ -18,15 +18,15 @@ export interface WorkerDependencies {
 }
 
 export function createWorkerDependencies(
-  config: RefundDeskConfig,
+  config: WorkerConfig,
   store: WorkerStore,
 ): WorkerDependencies {
   return {
     store,
     stripe: new ConnectedAccountStripeClient(
       new StripeCredentialResolver({
-        platformTestKey: config.stripe.platformTestKey,
-        managedSandboxKey: config.stripe.managedSandboxKey,
+        platformTestKey: config.stripe.platformTestEffectKey,
+        managedSandboxKey: config.stripe.managedSandboxEffectKey,
       }),
     ),
     proofs: new RefundProofKeyring({

@@ -51,6 +51,7 @@ function context(): PilotTenantContext {
 function metadata(hashByte: number, responseRequestId: string): PilotMutationMetadata {
   return {
     actorId: "usr_approver",
+    approvalAttestationId: null,
     assertedStripeRoles: null,
     canonicalRequestHash: Uint8Array.from([hashByte]),
     operation: "refund_request.create",
@@ -302,6 +303,7 @@ describe("Stripe role persistence", () => {
       context(),
       {
         ...metadata(3, "6d201081-2da7-4f8f-8a4d-583515011d47"),
+        approvalAttestationId: "f874c90b-25b8-4628-90f7-9643cc206799",
         assertedStripeRoles,
         operation: "refund_request.decide",
       },

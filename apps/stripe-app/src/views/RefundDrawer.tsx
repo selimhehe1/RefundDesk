@@ -392,16 +392,25 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
     setBusyId(item.id);
     setError(null);
     try {
-      await refundDeskApi.decideRefundRequest(
-        context,
-        itemResource(item),
-        {
-          request_id: item.id,
-          decision,
-          ...(decision === "reject" && note !== undefined ? { justification: note } : {}),
-        },
-        requestNonce,
-      );
+      const command =
+        decision === "approve"
+          ? {
+              request_id: item.id,
+              decision: "approve" as const,
+              expected_request_version: item.version,
+              approval_snapshot: {
+                amount_minor: item.amount_minor,
+                currency: item.currency,
+                reason: item.reason,
+                requester_user_id: item.requester_user_id,
+              },
+            }
+          : {
+              request_id: item.id,
+              decision: "reject" as const,
+              justification: note ?? "",
+            };
+      await refundDeskApi.decideRefundRequest(context, itemResource(item), command, requestNonce);
       mutationIntents.complete(intentKey);
       if (decision === "approve") {
         setApprovalReviewId(null);

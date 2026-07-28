@@ -13,13 +13,17 @@ import { asSafePilotError, PilotApiError } from "./pilot-errors";
 import type { PilotPaymentResource } from "./pilot-ports";
 import type { PilotRouteSpec } from "./pilot-routes";
 import type { PilotDispatchRequest, PilotService } from "./pilot-service";
-import { SignedRequestError, verifySignedExtensionRequest } from "./signed-request";
+import {
+  SignedRequestError,
+  SignedRequestVerifierUnavailableError,
+  type SignedRequestVerifier,
+} from "./signed-request";
 
 const MAX_SIGNED_BODY_BYTES = 32 * 1_024;
 
 export interface PilotHttpDependencies {
   readonly service: PilotService;
-  readonly signingSecret: string;
+  readonly signedRequestVerifier: SignedRequestVerifier;
 }
 
 function reject(
@@ -94,10 +98,9 @@ export async function handlePilotRoute(
       reject("REQUEST_TOO_LARGE", 413, "The signed request body is too large.");
     }
 
-    const verified = verifySignedExtensionRequest(
+    const verified = await dependencies.signedRequestVerifier.verify(
       rawText,
       request.headers.get("stripe-signature"),
-      dependencies.signingSecret,
     );
     const { envelope } = verified;
 
@@ -146,6 +149,7 @@ export async function handlePilotRoute(
     }
 
     const dispatchRequest = {
+      approvalAttestationId: verified.approvalAttestationId,
       canonicalRequestHash: createHash("sha256").update(verified.rawBody).digest(),
       command,
       identity: {
@@ -166,6 +170,15 @@ export async function handlePilotRoute(
   } catch (error) {
     if (error instanceof SignedRequestError) {
       return safeSignedRequestError(error, requestId);
+    }
+    if (error instanceof SignedRequestVerifierUnavailableError) {
+      return apiError(
+        "SIGNATURE_VERIFIER_UNAVAILABLE",
+        "Signed requests cannot be verified right now.",
+        503,
+        requestId,
+        true,
+      );
     }
     if (error instanceof z.ZodError || error instanceof SyntaxError) {
       return apiError("COMMAND_INVALID", "The signed command is invalid.", 400, requestId, true);

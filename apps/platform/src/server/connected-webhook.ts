@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 
-import { loadConfig } from "@refunddesk/config";
+import { loadPlatformConfig } from "@refunddesk/config";
 import {
   findWebhookReceipt,
   normalizedConnectedWebhookPayloadSchema,
@@ -181,15 +181,15 @@ function environmentFor(endpoint: Exclude<WebhookEndpoint, "live">): ConnectedWe
 function defaultDependencies(
   endpoint: Exclude<WebhookEndpoint, "live">,
 ): ConnectedWebhookDependencies {
-  const config = loadConfig();
+  const config = loadPlatformConfig();
   const signingSecret =
     endpoint === "test"
       ? config.stripe.connectedTestWebhookSecret
       : config.stripe.connectedSandboxWebhookSecret;
   const stripe = new ConnectedAccountStripeClient(
     new StripeCredentialResolver({
-      platformTestKey: config.stripe.platformTestKey,
-      managedSandboxKey: config.stripe.managedSandboxKey,
+      platformTestKey: config.stripe.platformTestReadKey,
+      managedSandboxKey: config.stripe.managedSandboxReadKey,
     }),
   );
   return {

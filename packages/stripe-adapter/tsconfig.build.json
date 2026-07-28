@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "paths": {
+      "@refunddesk/contracts": ["../contracts/dist/index.d.ts"]
+    }
+  }
+}

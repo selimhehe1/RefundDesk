@@ -77,6 +77,7 @@ const refundRequestSummarySchema = z
     requester_user_id: z.string().min(1).max(255),
     justification: z.string().min(10).max(2_000).nullable(),
     created_at: z.iso.datetime(),
+    version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     can_decide: z.boolean(),
     can_cancel: z.boolean(),
     is_requester: z.boolean(),
@@ -156,6 +157,23 @@ export type ExternalAlertListResponse = z.infer<typeof externalAlertListResponse
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
 
 type RequestScope = "all_activity" | "awaiting_my_approval" | "my_requests";
+type RefundDecisionCommand =
+  | {
+      readonly request_id: string;
+      readonly decision: "approve";
+      readonly expected_request_version: number;
+      readonly approval_snapshot: {
+        readonly amount_minor: string;
+        readonly currency: string;
+        readonly reason: RefundReason;
+        readonly requester_user_id: string;
+      };
+    }
+  | {
+      readonly request_id: string;
+      readonly decision: "reject";
+      readonly justification: string;
+    };
 
 function accountResource(context: ExtensionContextValue): {
   readonly resourceType: "account";
@@ -281,18 +299,22 @@ export const refundDeskApi = {
   decideRefundRequest(
     context: ExtensionContextValue,
     resource: PaymentResource,
-    command: {
-      readonly request_id: string;
-      readonly decision: "approve" | "reject";
-      readonly justification?: string;
-    },
+    command: RefundDecisionCommand,
     requestNonce: string,
   ) {
-    const canonicalCommand: JsonValue = {
-      request_id: command.request_id,
-      decision: command.decision,
-      ...(command.justification === undefined ? {} : { justification: command.justification }),
-    };
+    const canonicalCommand: JsonValue =
+      command.decision === "approve"
+        ? {
+            request_id: command.request_id,
+            decision: command.decision,
+            expected_request_version: command.expected_request_version,
+            approval_snapshot: command.approval_snapshot,
+          }
+        : {
+            request_id: command.request_id,
+            decision: command.decision,
+            justification: command.justification,
+          };
     return requestAndParse(
       context,
       {

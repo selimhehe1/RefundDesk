@@ -40,8 +40,13 @@ import type {
 } from "../src/server/pilot-ports.js";
 import { PILOT_ROUTE_SPECS, type PilotRouteSpec } from "../src/server/pilot-routes.js";
 import { PilotService } from "../src/server/pilot-service.js";
+import {
+  verifySignedExtensionRequest,
+  type SignedRequestVerifier,
+} from "../src/server/signed-request.js";
 
 const SIGNING_SECRET = "absec_pilot_test";
+const APPROVAL_ATTESTATION_ID = "f874c90b-25b8-4628-90f7-9643cc206799";
 const ACCOUNT_ID = "acct_pilot";
 const USER_ID = "usr_approver";
 const REQUEST_ID = "4c7080f7-4401-4c67-b96f-c9e80e8249d3";
@@ -80,6 +85,7 @@ function defaultRequest(): PilotRequestRecord {
     resource_id: "pi_pilot",
     resource_type: "payment_intent",
     status: "pending_approval",
+    version: 0,
   };
 }
 
@@ -373,13 +379,29 @@ describe("signed pilot API boundary", () => {
     service = new PilotService(repository, paymentReader, new TestAndSandboxAccessPolicy());
   });
 
+  const signedRequestVerifier: SignedRequestVerifier = {
+    verify(rawText, signature) {
+      const verified = verifySignedExtensionRequest(rawText, signature, SIGNING_SECRET);
+      const command = JSON.parse(verified.envelope.command_json) as {
+        readonly decision?: unknown;
+      };
+      return Promise.resolve({
+        ...verified,
+        approvalAttestationId:
+          verified.envelope.operation === "refund_request.decide" && command.decision === "approve"
+            ? APPROVAL_ATTESTATION_ID
+            : null,
+      });
+    },
+  };
+
   async function invoke(
     spec: PilotRouteSpec,
     options: SignedRequestOptions = {},
   ): Promise<Response> {
     return handlePilotRoute(signedRequest(spec, options), spec, {
       service,
-      signingSecret: SIGNING_SECRET,
+      signedRequestVerifier,
     });
   }
 
@@ -404,7 +426,7 @@ describe("signed pilot API boundary", () => {
         method: "POST",
       }),
       PILOT_ROUTE_SPECS.contextSync,
-      { service, signingSecret: SIGNING_SECRET },
+      { service, signedRequestVerifier },
     );
     expect(response.status).toBe(401);
     expect(await errorBody(response)).toMatchObject({
@@ -655,7 +677,14 @@ describe("signed pilot API boundary", () => {
     };
     const response = await invoke(PILOT_ROUTE_SPECS.refundRequestDecide, {
       command: {
+        approval_snapshot: {
+          amount_minor: "500",
+          currency: "eur",
+          reason: "requested_by_customer",
+          requester_user_id: USER_ID,
+        },
         decision: "approve",
+        expected_request_version: 0,
         request_id: REQUEST_ID,
       },
     });
@@ -676,6 +705,7 @@ describe("signed pilot API boundary", () => {
       justification: "Customer requested a partial refund.",
       reason: "requested_by_customer",
       requester_user_id: "usr_requester",
+      version: 0,
     });
   });
 

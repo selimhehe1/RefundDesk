@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { PgBoss, type Job } from "pg-boss";
 
-import type { RefundDeskConfig } from "@refunddesk/config";
+import type { WorkerConfig } from "@refunddesk/config";
 
 import type { WorkerDependencies } from "./dependencies.js";
 import { handleApprovedExecutionRecoveryJob } from "./execution-recovery.js";
@@ -19,6 +19,11 @@ import {
   type ProcessWebhookJob,
 } from "./jobs.js";
 import { handleReconciliationScanJob } from "./reconciliation-scanner.js";
+import {
+  createPgBossRuntimeReadinessSource,
+  createWorkerReadinessProbe,
+  type WorkerReadinessProbe,
+} from "./readiness.js";
 import { handleRefundExecutionJob } from "./refund-execution.js";
 import { assertPilotConfiguration } from "./safety.js";
 import { handleWebhookJob } from "./webhook-processing.js";
@@ -130,11 +135,30 @@ export class WorkerQueuePublisher {
 
 export interface RunningWorker {
   readonly publisher: WorkerQueuePublisher;
+  readonly readiness: WorkerReadinessProbe;
   stop(): Promise<void>;
 }
 
+export interface PgBossLifecycle {
+  start(): Promise<unknown>;
+  stop(options: { readonly graceful: boolean; readonly timeout: number }): Promise<unknown>;
+}
+
+export async function startPgBossWithCleanup(
+  boss: PgBossLifecycle,
+  initialize: () => Promise<void>,
+): Promise<void> {
+  try {
+    await boss.start();
+    await initialize();
+  } catch (error) {
+    await boss.stop({ graceful: false, timeout: 5_000 }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function startPgBossWorker(
-  config: RefundDeskConfig,
+  config: WorkerConfig,
   dependencies: WorkerDependencies,
 ): Promise<RunningWorker> {
   assertPilotConfiguration(config);
@@ -155,80 +179,102 @@ export async function startPgBossWorker(
     dependencies.logger.warn({ code: "PGBOSS_WARNING" }, "pg-boss emitted an operational warning");
   });
 
-  await boss.start();
-
-  for (const queue of Object.values(QUEUES)) {
-    await boss.createQueue(queue, queueOptions[queue]);
-  }
-
   const publisher = new WorkerQueuePublisher(boss);
 
-  await boss.schedule(
-    QUEUES.recoverWebhooks,
-    "* * * * *",
-    recoverWebhooksJobSchema.parse({ scope: "recoverable" }),
-    { key: "pilot_webhook_recovery_v1" },
-  );
-  await boss.schedule(
-    QUEUES.recoverApproved,
-    "* * * * *",
-    recoverApprovedJobSchema.parse({ scope: "approved" }),
-    { key: "pilot_approved_recovery_v1" },
-  );
-  await boss.schedule(
-    QUEUES.scanRefunds,
-    "*/15 * * * *",
-    scanRefundsJobSchema.parse({ scope: "all" }),
-    { key: "pilot_refund_scan_v1" },
-  );
-  await boss.schedule(
-    QUEUES.expireRequests,
-    "*/5 * * * *",
-    expireRequestsJobSchema.parse({ scope: "due" }),
-    { key: "pilot_request_expire_v1" },
-  );
-  await boss.send(QUEUES.recoverWebhooks, recoverWebhooksJobSchema.parse({ scope: "recoverable" }));
-  await boss.send(QUEUES.recoverApproved, recoverApprovedJobSchema.parse({ scope: "approved" }));
+  await startPgBossWithCleanup(boss, async () => {
+    for (const queue of Object.values(QUEUES)) {
+      await boss.createQueue(queue, queueOptions[queue]);
+    }
 
-  await boss.work<unknown>(QUEUES.executeRefund, { batchSize: 1, localConcurrency: 4 }, (jobs) =>
-    handleOne(jobs, (data) => handleRefundExecutionJob(data, dependencies)),
-  );
-  await boss.work<unknown>(QUEUES.processWebhook, { batchSize: 1, localConcurrency: 8 }, (jobs) =>
-    handleOne(jobs, (data) => handleWebhookJob(data, dependencies)),
-  );
-  await boss.work<unknown>(QUEUES.recoverWebhooks, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-    handleOne(jobs, (data) =>
-      handleWebhookRecoveryJob(data, {
-        store: dependencies.store,
-        queue: publisher,
-        logger: dependencies.logger,
-      }),
-    ),
-  );
-  await boss.work<unknown>(QUEUES.recoverApproved, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-    handleOne(jobs, (data) =>
-      handleApprovedExecutionRecoveryJob(data, {
-        store: dependencies.store,
-        queue: publisher,
-        logger: dependencies.logger,
-      }),
-    ),
-  );
-  await boss.work<unknown>(QUEUES.scanRefunds, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-    handleOne(jobs, (data) => handleReconciliationScanJob(data, dependencies)),
-  );
-  await boss.work<unknown>(QUEUES.expireRequests, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-    handleOne(jobs, (data) => handleExpirationJob(data, dependencies)),
-  );
+    await boss.schedule(
+      QUEUES.recoverWebhooks,
+      "* * * * *",
+      recoverWebhooksJobSchema.parse({ scope: "recoverable" }),
+      { key: "pilot_webhook_recovery_v1" },
+    );
+    await boss.schedule(
+      QUEUES.recoverApproved,
+      "* * * * *",
+      recoverApprovedJobSchema.parse({ scope: "approved" }),
+      { key: "pilot_approved_recovery_v1" },
+    );
+    await boss.schedule(
+      QUEUES.scanRefunds,
+      "*/15 * * * *",
+      scanRefundsJobSchema.parse({ scope: "all" }),
+      { key: "pilot_refund_scan_v1" },
+    );
+    await boss.schedule(
+      QUEUES.expireRequests,
+      "*/5 * * * *",
+      expireRequestsJobSchema.parse({ scope: "due" }),
+      { key: "pilot_request_expire_v1" },
+    );
+    await boss.send(
+      QUEUES.recoverWebhooks,
+      recoverWebhooksJobSchema.parse({ scope: "recoverable" }),
+    );
+    await boss.send(QUEUES.recoverApproved, recoverApprovedJobSchema.parse({ scope: "approved" }));
+
+    await boss.work<unknown>(QUEUES.executeRefund, { batchSize: 1, localConcurrency: 4 }, (jobs) =>
+      handleOne(jobs, (data) => handleRefundExecutionJob(data, dependencies)),
+    );
+    await boss.work<unknown>(QUEUES.processWebhook, { batchSize: 1, localConcurrency: 8 }, (jobs) =>
+      handleOne(jobs, (data) => handleWebhookJob(data, dependencies)),
+    );
+    await boss.work<unknown>(
+      QUEUES.recoverWebhooks,
+      { batchSize: 1, localConcurrency: 1 },
+      (jobs) =>
+        handleOne(jobs, (data) =>
+          handleWebhookRecoveryJob(data, {
+            store: dependencies.store,
+            queue: publisher,
+            logger: dependencies.logger,
+          }),
+        ),
+    );
+    await boss.work<unknown>(
+      QUEUES.recoverApproved,
+      { batchSize: 1, localConcurrency: 1 },
+      (jobs) =>
+        handleOne(jobs, (data) =>
+          handleApprovedExecutionRecoveryJob(data, {
+            store: dependencies.store,
+            queue: publisher,
+            logger: dependencies.logger,
+          }),
+        ),
+    );
+    await boss.work<unknown>(QUEUES.scanRefunds, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
+      handleOne(jobs, (data) => handleReconciliationScanJob(data, dependencies)),
+    );
+    await boss.work<unknown>(QUEUES.expireRequests, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
+      handleOne(jobs, (data) => handleExpirationJob(data, dependencies)),
+    );
+  });
 
   dependencies.logger.info(
     { queueCount: Object.keys(QUEUES).length },
     "RefundDesk pilot worker started",
   );
 
+  let stopping = false;
+  const readiness = createWorkerReadinessProbe({
+    runtime: createPgBossRuntimeReadinessSource({
+      boss,
+      isStopping: () => stopping,
+      isGlobalLiveEnabled: () => config.liveEnabled,
+    }),
+    store: dependencies.store,
+    clock: dependencies.clock,
+  });
+
   return {
     publisher,
+    readiness,
     async stop(): Promise<void> {
+      stopping = true;
       await boss.stop({ graceful: true, timeout: 30_000 });
     },
   };

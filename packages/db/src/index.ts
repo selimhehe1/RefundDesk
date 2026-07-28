@@ -9,6 +9,7 @@ export * from "./webhooks.js";
 export {
   Prisma,
   type ApiMutationReceipt,
+  type ApprovalAttestation,
   type ApprovalDecision,
   type AuditEvent,
   type PrismaClient,

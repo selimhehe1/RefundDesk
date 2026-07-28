@@ -74,22 +74,36 @@ export const refundRequestCommandSchema = z
   })
   .strict();
 
-export const decisionCommandSchema = z
+export const approvalSnapshotSchema = z
+  .object({
+    amount_minor: moneyMinorSchema.refine((value) => BigInt(value) > 0n, "Amount must be positive"),
+    currency: currencySchema,
+    reason: refundReasonSchema,
+    requester_user_id: stripeUserIdSchema,
+  })
+  .strict();
+
+const approveDecisionCommandSchema = z
   .object({
     request_id: uuidSchema,
-    decision: z.enum(["approve", "reject"]),
-    justification: z.string().trim().min(10).max(2_000).optional(),
+    decision: z.literal("approve"),
+    expected_request_version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    approval_snapshot: approvalSnapshotSchema,
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.decision === "reject" && value.justification === undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["justification"],
-        message: "A rejection justification is required",
-      });
-    }
-  });
+  .strict();
+
+const rejectDecisionCommandSchema = z
+  .object({
+    request_id: uuidSchema,
+    decision: z.literal("reject"),
+    justification: z.string().trim().min(10).max(2_000),
+  })
+  .strict();
+
+export const decisionCommandSchema = z.discriminatedUnion("decision", [
+  approveDecisionCommandSchema,
+  rejectDecisionCommandSchema,
+]);
 
 export const requestIdCommandSchema = z
   .object({
@@ -153,5 +167,6 @@ export const apiErrorSchema = z
 export type SignedEnvelope = z.infer<typeof signedEnvelopeSchema>;
 export type StripeRole = z.infer<typeof stripeRoleSchema>;
 export type RefundRequestCommand = z.infer<typeof refundRequestCommandSchema>;
+export type ApprovalSnapshot = z.infer<typeof approvalSnapshotSchema>;
 export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 export type Environment = z.infer<typeof environmentSchema>;

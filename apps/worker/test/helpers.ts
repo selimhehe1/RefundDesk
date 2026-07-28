@@ -18,7 +18,9 @@ import type {
   LinkedRefundReconciliationTarget,
   ObserveLinkedRefundInput,
   ObserveRefundInput,
+  PersistApprovalAttestationInput,
   PersistEffectBoundaryInput,
+  PersistedApprovalAttestation,
   ReconciliationCheckpoint,
   ReconciliationRequiredInput,
   RefundExecutionRecord,
@@ -135,6 +137,16 @@ export class FakeStore implements WorkerStore {
   idempotencyKey: string | null = null;
   refundId: string | null = null;
   attemptNumber = 0;
+
+  persistApprovalAttestation(
+    input: PersistApprovalAttestationInput,
+  ): Promise<PersistedApprovalAttestation> {
+    this.trace.push("store.attestation");
+    return Promise.resolve({
+      id: "0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b",
+      signedEnvelopeHash: input.signedEnvelopeHash,
+    });
+  }
 
   loadRefundExecution(tenantId: string, requestId: string): Promise<RefundExecutionRecord | null> {
     this.trace.push("store.load");

@@ -1,34 +1,38 @@
-import { Pool } from "pg";
-
-import { loadConfig } from "@refunddesk/config";
+import { loadPlatformConfig } from "@refunddesk/config";
 
 import {
-  isPlatformReady,
-  PLATFORM_READINESS_SQL,
-  type PlatformReadinessRow,
-} from "../../../src/server/readiness";
+  createPostgresPlatformReadinessProbe,
+  type PlatformReadinessProbe,
+} from "../../../src/server/readiness-runtime";
 
 export const runtime = "nodejs";
 
+let readinessProbe: PlatformReadinessProbe | undefined;
+let readinessDatabaseUrl: string | undefined;
+
+function getReadinessProbe(databaseUrl: string): PlatformReadinessProbe {
+  if (readinessDatabaseUrl !== undefined && readinessDatabaseUrl !== databaseUrl) {
+    throw new Error("PLATFORM_READINESS_DATABASE_CHANGED");
+  }
+  readinessDatabaseUrl = databaseUrl;
+  readinessProbe ??= createPostgresPlatformReadinessProbe(databaseUrl);
+  return readinessProbe;
+}
+
 export async function GET(): Promise<Response> {
-  let pool: Pool | undefined;
   try {
-    const config = loadConfig();
-    pool = new Pool({ connectionString: config.databaseUrl, max: 1 });
-    const result = await pool.query<PlatformReadinessRow>(PLATFORM_READINESS_SQL);
-    if (!isPlatformReady(result.rows[0])) {
+    const config = loadPlatformConfig();
+    if (!(await getReadinessProbe(config.databaseUrl).check())) {
       throw new Error("PLATFORM_DEPENDENCIES_NOT_READY");
     }
     return Response.json(
-      { status: "ready", database: "ok", schema: "ok", isolation: "forced" },
+      { status: "ready", service: "platform" },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch {
     return Response.json(
-      { status: "not_ready", database: "unavailable" },
+      { status: "not_ready", service: "platform" },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
-  } finally {
-    await pool?.end();
   }
 }

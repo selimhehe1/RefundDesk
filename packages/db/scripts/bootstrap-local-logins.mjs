@@ -30,6 +30,7 @@ const sql = await readFile(
 const client = new Client({
   connectionString: migrationUrl.toString(),
   application_name: "refunddesk-local-role-bootstrap",
+  options: "-c search_path=pg_catalog,public",
 });
 
 try {

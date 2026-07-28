@@ -136,6 +136,7 @@ const pendingRequest = {
   resource_id: "pi_Test",
   resource_type: "payment_intent",
   status: "pending_approval",
+  version: 3,
 } as const;
 
 describe("Stripe pilot views", () => {
@@ -314,6 +315,13 @@ describe("Stripe pilot views", () => {
       {
         decision: "approve",
         request_id: pendingRequest.id,
+        expected_request_version: pendingRequest.version,
+        approval_snapshot: {
+          amount_minor: pendingRequest.amount_minor,
+          currency: pendingRequest.currency,
+          reason: pendingRequest.reason,
+          requester_user_id: pendingRequest.requester_user_id,
+        },
       },
       expect.stringMatching(/^[0-9a-f-]{36}$/u),
     );

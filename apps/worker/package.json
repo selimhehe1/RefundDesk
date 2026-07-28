@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/apps/worker/src/index.d.ts",
@@ -10,11 +14,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm clean && tsc -p tsconfig.build.json",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "pnpm build && node --watch --enable-source-maps dist/apps/worker/src/main.js",
     "start": "node --enable-source-maps dist/apps/worker/src/main.js",
-    "pgboss:migrate": "pnpm build && node --enable-source-maps dist/apps/worker/src/migrate-pgboss.js",
     "lint": "eslint src test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
@@ -31,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "stripe": "22.3.2",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

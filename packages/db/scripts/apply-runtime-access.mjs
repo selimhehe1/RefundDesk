@@ -14,10 +14,9 @@ assertRuntimePrincipalsAreSeparated();
 
 const migrationUrl = requirePostgresUrl("DATABASE_MIGRATION_URL");
 const webPrincipal = databasePrincipal(requirePostgresUrl("DATABASE_URL"));
-const workerPrincipals = new Set([
-  databasePrincipal(requirePostgresUrl("WORKER_DATABASE_URL")),
-  databasePrincipal(requirePostgresUrl("PGBOSS_DATABASE_URL")),
-]);
+const workerPrincipal = databasePrincipal(requirePostgresUrl("WORKER_DATABASE_URL"));
+const queuePrincipal = databasePrincipal(requirePostgresUrl("PGBOSS_DATABASE_URL"));
+const runtimeLoginPrincipals = new Set([webPrincipal, workerPrincipal, queuePrincipal]);
 const runtimeRolesSql = await readFile(
   new URL("../prisma/runtime-roles.sql", import.meta.url),
   "utf8",
@@ -30,6 +29,7 @@ function quoteIdentifier(value) {
 const client = new Client({
   connectionString: migrationUrl.toString(),
   application_name: "refunddesk-runtime-access-migration",
+  options: "-c search_path=pg_catalog,public",
 });
 
 try {
@@ -41,11 +41,59 @@ try {
 
   await client.query("BEGIN");
   await client.query(runtimeRolesSql);
+  const collectiveMemberships = await client.query(
+    `SELECT
+       parent.rolname AS collective_role,
+       member.rolname AS member_role
+     FROM pg_auth_members AS membership
+     INNER JOIN pg_roles AS parent ON parent.oid = membership.roleid
+     INNER JOIN pg_roles AS member ON member.oid = membership.member
+     WHERE parent.rolname = ANY($1::text[])
+     ORDER BY parent.rolname, member.rolname`,
+    [
+      [
+        "refunddesk_runtime",
+        "refunddesk_worker",
+        "refunddesk_queue",
+        "refunddesk_maintenance",
+        "refunddesk_attestation_writer",
+      ],
+    ],
+  );
+  for (const membership of collectiveMemberships.rows) {
+    await client.query(
+      `REVOKE ${quoteIdentifier(membership.collective_role)}
+         FROM ${quoteIdentifier(membership.member_role)}`,
+    );
+  }
+  for (const runtimePrincipal of runtimeLoginPrincipals) {
+    const quotedRuntimePrincipal = quoteIdentifier(runtimePrincipal);
+    await client.query(`REVOKE ALL PRIVILEGES ON SCHEMA public FROM ${quotedRuntimePrincipal}`);
+    await client.query(
+      `REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM ${quotedRuntimePrincipal}`,
+    );
+    await client.query(
+      `REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM ${quotedRuntimePrincipal}`,
+    );
+    await client.query(
+      `REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA public FROM ${quotedRuntimePrincipal}`,
+    );
+  }
   await client.query(
     `GRANT ${quoteIdentifier("refunddesk_runtime")} TO ${quoteIdentifier(webPrincipal)}`,
   );
   await client.query(
     `REVOKE ${quoteIdentifier("refunddesk_worker")} FROM ${quoteIdentifier(webPrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_maintenance")} FROM ${quoteIdentifier(webPrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_queue")} FROM ${quoteIdentifier(webPrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_attestation_writer")}
+       FROM ${quoteIdentifier(webPrincipal)}`,
   );
   for (const relation of [
     "refund_executions",
@@ -77,18 +125,41 @@ try {
       );
     }
   }
-  for (const workerPrincipal of workerPrincipals) {
-    await client.query(
-      `GRANT ${quoteIdentifier("refunddesk_worker")} TO ${quoteIdentifier(workerPrincipal)}`,
-    );
-    await client.query(
-      `REVOKE ${quoteIdentifier("refunddesk_runtime")} FROM ${quoteIdentifier(workerPrincipal)}`,
-    );
-  }
+  await client.query(
+    `GRANT ${quoteIdentifier("refunddesk_worker")} TO ${quoteIdentifier(workerPrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_runtime")},
+            ${quoteIdentifier("refunddesk_queue")},
+            ${quoteIdentifier("refunddesk_maintenance")}
+       FROM ${quoteIdentifier(workerPrincipal)}`,
+  );
+  await client.query(
+    `GRANT ${quoteIdentifier("refunddesk_attestation_writer")}
+       TO ${quoteIdentifier(workerPrincipal)}`,
+  );
+  await client.query(
+    `GRANT ${quoteIdentifier("refunddesk_queue")} TO ${quoteIdentifier(queuePrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_runtime")},
+            ${quoteIdentifier("refunddesk_worker")},
+            ${quoteIdentifier("refunddesk_maintenance")},
+            ${quoteIdentifier("refunddesk_attestation_writer")}
+       FROM ${quoteIdentifier(queuePrincipal)}`,
+  );
 
-  const loginPrincipals = [webPrincipal, ...workerPrincipals];
+  const loginPrincipals = [...runtimeLoginPrincipals];
   const roleResult = await client.query(
-    `SELECT rolname, rolcanlogin, rolsuper, rolbypassrls, rolinherit
+    `SELECT
+       rolname,
+       rolcanlogin,
+       rolsuper,
+       rolcreatedb,
+       rolcreaterole,
+       rolbypassrls,
+       rolinherit,
+       rolreplication
        FROM pg_roles
       WHERE rolname = ANY($1::text[])`,
     [loginPrincipals],
@@ -100,8 +171,11 @@ try {
     if (
       role.rolcanlogin !== true ||
       role.rolsuper !== false ||
+      role.rolcreatedb !== false ||
+      role.rolcreaterole !== false ||
       role.rolbypassrls !== false ||
-      role.rolinherit !== true
+      role.rolinherit !== true ||
+      role.rolreplication !== false
     ) {
       throw new Error("DATABASE_RUNTIME_LOGIN_ROLE_IS_PRIVILEGED");
     }

@@ -1,0 +1,9 @@
+{
+  "name": "@refunddesk/migrator-toolchain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "prisma": "7.9.0"
+  }
+}

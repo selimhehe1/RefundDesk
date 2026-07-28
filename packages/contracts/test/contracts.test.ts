@@ -232,6 +232,126 @@ describe("signed envelope serialization", () => {
 });
 
 describe("operation contracts", () => {
+  const requestId = "0e8e087d-5cf0-4c15-bb0d-020aa6e027c9";
+  const approvalSnapshot = {
+    amount_minor: "1250",
+    currency: "eur",
+    reason: "requested_by_customer",
+    requester_user_id: "usr_Requester",
+  } as const;
+
+  it("requires an exact financial snapshot for approval", () => {
+    expect(
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "approve",
+          expected_request_version: 3,
+          approval_snapshot: approvalSnapshot,
+        }),
+      ),
+    ).toEqual({
+      request_id: requestId,
+      decision: "approve",
+      expected_request_version: 3,
+      approval_snapshot: approvalSnapshot,
+    });
+
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "approve",
+          expected_request_version: 3,
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "approve",
+          approval_snapshot: approvalSnapshot,
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "approve",
+          expected_request_version: 3,
+          approval_snapshot: approvalSnapshot,
+          justification: "Approval must not carry a rejection reason.",
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "approve",
+          expected_request_version: -1,
+          approval_snapshot: approvalSnapshot,
+        }),
+      ),
+    ).toThrow();
+  });
+
+  it("requires a rejection justification and forbids an approval snapshot", () => {
+    expect(
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "reject",
+          justification: "The amount does not match the support ticket.",
+        }),
+      ),
+    ).toEqual({
+      request_id: requestId,
+      decision: "reject",
+      justification: "The amount does not match the support ticket.",
+    });
+
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "reject",
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "reject",
+          justification: "The amount does not match the support ticket.",
+          approval_snapshot: approvalSnapshot,
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      parseOperationCommand(
+        "refund_request.decide",
+        JSON.stringify({
+          request_id: requestId,
+          decision: "reject",
+          justification: "The amount does not match the support ticket.",
+          expected_request_version: 3,
+        }),
+      ),
+    ).toThrow();
+  });
+
   it("rejects additional mutation fields", () => {
     expect(() =>
       parseOperationCommand(

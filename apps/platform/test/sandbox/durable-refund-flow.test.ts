@@ -9,9 +9,10 @@ import { Client } from "pg";
 import Stripe from "stripe";
 import { afterAll, describe, expect, it } from "vitest";
 
-import type { RefundDeskConfig } from "@refunddesk/config";
+import type { WorkerConfig } from "@refunddesk/config";
 import { createPrismaClient } from "@refunddesk/db";
 import {
+  ApprovalAttestationKeyring,
   FieldEncryptionKeyring,
   RefundProofKeyring,
   refundIdempotencyKey,
@@ -24,6 +25,7 @@ import {
   PrismaWorkerStore,
   QUEUES,
   startPgBossWorker,
+  WorkerQueuePublisher,
   type RunningWorker,
   type WorkerDependencies,
   type WorkerLogger,
@@ -39,11 +41,16 @@ import type {
   PilotStoredResponse,
 } from "../../src/server/pilot-ports.js";
 import { PilotService, type PilotDispatchRequest } from "../../src/server/pilot-service.js";
+import {
+  assertDedicatedPostgresClusterPreflight,
+  assertDisposablePostgresCluster,
+  assertExclusiveSingletonEnqueue,
+} from "../sandbox-harness-guards.js";
 
 const API_VERSION = "2026-06-24.dahlia" as const;
 const CONSENT = "I_ACKNOWLEDGE_SYNTHETIC_TEST_ONLY";
 const DATABASE_NAME_PATTERN = /^refunddesk_e2e_[0-9a-f]{16}$/u;
-const ROLE_NAME_PATTERN = /^refunddesk_e2e_(?:web|worker)_[0-9a-f]{12}$/u;
+const ROLE_NAME_PATTERN = /^refunddesk_e2e_(?:web|worker|queue)_[0-9a-f]{12}$/u;
 const TEST_KEY_PATTERN = /^(?:sk|rk)_test_[A-Za-z0-9_]+$/u;
 const ACCOUNT_ID_PATTERN = /^acct_[A-Za-z0-9]+$/u;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
@@ -98,6 +105,7 @@ let ownerDatabaseClient: Client | undefined;
 let webDatabase: ReturnType<typeof createPrismaClient> | undefined;
 let workerStore: PrismaWorkerStore | undefined;
 let runningWorker: RunningWorker | undefined;
+let singletonProbeBoss: PgBoss | undefined;
 let databaseCreated = false;
 let financialExecutionStarted = false;
 let fullyConverged = false;
@@ -118,6 +126,7 @@ function readHarnessEnvironment(): HarnessEnvironment {
   if (requiredEnvironment("REFUNDDESK_RUN_SANDBOX_E2E") !== CONSENT) {
     throw new Error("SANDBOX_E2E_EXPLICIT_CONSENT_REQUIRED");
   }
+  assertDisposablePostgresCluster(process.env);
   if (requiredEnvironment("REFUNDDESK_GLOBAL_LIVE_ENABLED") !== "false") {
     throw new Error("SANDBOX_E2E_LIVE_MODE_MUST_BE_FALSE");
   }
@@ -232,25 +241,26 @@ async function migratePgBoss(ownerDatabaseUrl: string): Promise<void> {
 async function grantPgBossRuntime(client: Client): Promise<void> {
   await client.query("BEGIN");
   try {
-    await client.query("REVOKE ALL ON SCHEMA pgboss FROM PUBLIC, refunddesk_runtime");
-    await client.query("REVOKE CREATE ON SCHEMA pgboss FROM refunddesk_worker");
-    await client.query("GRANT USAGE ON SCHEMA pgboss TO refunddesk_worker");
     await client.query(
-      "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime",
+      "REVOKE ALL ON SCHEMA pgboss FROM PUBLIC, refunddesk_runtime, refunddesk_worker, refunddesk_queue",
+    );
+    await client.query("GRANT USAGE ON SCHEMA pgboss TO refunddesk_queue");
+    await client.query(
+      "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime, refunddesk_worker, refunddesk_queue",
     );
     await client.query(
-      "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss TO refunddesk_worker",
+      "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss TO refunddesk_queue",
     );
     await client.query(
-      "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime",
+      "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime, refunddesk_worker, refunddesk_queue",
     );
     await client.query(
-      "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA pgboss TO refunddesk_worker",
+      "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA pgboss TO refunddesk_queue",
     );
     await client.query(
-      "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime",
+      "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA pgboss FROM PUBLIC, refunddesk_runtime, refunddesk_worker, refunddesk_queue",
     );
-    await client.query("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pgboss TO refunddesk_worker");
+    await client.query("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pgboss TO refunddesk_queue");
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -266,23 +276,29 @@ async function dispatchMutation(
     readonly operation:
       "context.sync" | "settings.update" | "refund_request.create" | "refund_request.decide";
     readonly resource: PilotPaymentResource | null;
+    readonly approvalAttestationId?: string | null;
+    readonly canonicalRequestHash?: Uint8Array;
+    readonly requestNonce?: string;
   },
 ): Promise<PilotStoredResponse> {
-  const requestNonce = randomUUID();
-  const canonicalRequestHash = createHash("sha256")
-    .update(
-      JSON.stringify([
-        input.operation,
-        requestNonce,
-        input.identity.accountId,
-        input.identity.userId,
-        input.command,
-        input.resource,
-      ]),
-      "utf8",
-    )
-    .digest();
+  const requestNonce = input.requestNonce ?? randomUUID();
+  const canonicalRequestHash =
+    input.canonicalRequestHash ??
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.operation,
+          requestNonce,
+          input.identity.accountId,
+          input.identity.userId,
+          input.command,
+          input.resource,
+        ]),
+        "utf8",
+      )
+      .digest();
   return service.dispatch({
+    approvalAttestationId: input.approvalAttestationId ?? null,
     canonicalRequestHash,
     command: input.command,
     identity: input.identity,
@@ -447,6 +463,22 @@ async function cleanupHarness(): Promise<void> {
   }
 
   let cleanupFailed = false;
+  if (singletonProbeBoss !== undefined) {
+    const probe = singletonProbeBoss;
+    try {
+      await probe.stop({ graceful: true, timeout: 10_000 });
+      singletonProbeBoss = undefined;
+    } catch {
+      cleanupFailed = true;
+      cleanupMustPreserve = true;
+      try {
+        await probe.stop({ graceful: false, timeout: 5_000 });
+        singletonProbeBoss = undefined;
+      } catch {
+        // Preserve the database and let the failing hook expose the leaked runtime.
+      }
+    }
+  }
   if (runningWorker !== undefined) {
     try {
       await runningWorker.stop();
@@ -550,8 +582,10 @@ describe.sequential("durable real Stripe refund flow", () => {
     databaseName = `refunddesk_e2e_${randomBytes(8).toString("hex")}`;
     const webRole = `refunddesk_e2e_web_${randomBytes(6).toString("hex")}`;
     const workerRole = `refunddesk_e2e_worker_${randomBytes(6).toString("hex")}`;
+    const queueRole = `refunddesk_e2e_queue_${randomBytes(6).toString("hex")}`;
     const webPassword = randomBytes(24).toString("hex");
     const workerPassword = randomBytes(24).toString("hex");
+    const queuePassword = randomBytes(24).toString("hex");
     const adminDatabaseUrl = new URL(environment.adminDatabaseUrl);
     const controlDatabaseName = decodeURIComponent(adminDatabaseUrl.pathname.slice(1));
     if (controlDatabaseName.length === 0 || controlDatabaseName === databaseName) {
@@ -564,13 +598,25 @@ describe.sequential("durable real Stripe refund flow", () => {
     });
     await controlClient.connect();
     const preflight = await controlClient.query<{
+      readonly current_database: string;
       readonly current_user: string;
+      readonly harness_lock_acquired: boolean;
+      readonly other_connectable_database_count: number;
       readonly rolcreatedb: boolean;
       readonly rolcreaterole: boolean;
       readonly server_version_num: string;
     }>(
       `SELECT
+         current_database(),
          current_user,
+         pg_try_advisory_lock(1380336964, 1161970226) AS harness_lock_acquired,
+         (
+           SELECT COUNT(*)::INTEGER
+           FROM pg_database
+           WHERE datallowconn
+             AND NOT datistemplate
+             AND datname <> current_database()
+         ) AS other_connectable_database_count,
          role.rolcreatedb,
          role.rolcreaterole,
          current_setting('server_version_num') AS server_version_num
@@ -587,6 +633,12 @@ describe.sequential("durable real Stripe refund flow", () => {
     ) {
       throw new Error("SANDBOX_E2E_POSTGRES_ADMIN_PREFLIGHT_FAILED");
     }
+    assertDedicatedPostgresClusterPreflight({
+      connectedDatabase: databaseRole.current_database,
+      expectedControlDatabase: controlDatabaseName,
+      harnessLockAcquired: databaseRole.harness_lock_acquired,
+      otherConnectableDatabaseCount: databaseRole.other_connectable_database_count,
+    });
 
     await controlClient.query(
       `CREATE DATABASE ${quoteIdentifier(databaseName, DATABASE_NAME_PATTERN)} TEMPLATE template0`,
@@ -614,6 +666,7 @@ describe.sequential("durable real Stripe refund flow", () => {
     for (const login of [
       { role: webRole, password: webPassword, capability: "refunddesk_runtime" },
       { role: workerRole, password: workerPassword, capability: "refunddesk_worker" },
+      { role: queueRole, password: queuePassword, capability: "refunddesk_queue" },
     ] as const) {
       await controlClient.query(
         `CREATE ROLE ${quoteIdentifier(login.role, ROLE_NAME_PATTERN)}
@@ -625,6 +678,9 @@ describe.sequential("durable real Stripe refund flow", () => {
         `GRANT ${login.capability} TO ${quoteIdentifier(login.role, ROLE_NAME_PATTERN)}`,
       );
     }
+    await controlClient.query(
+      `GRANT refunddesk_attestation_writer TO ${quoteIdentifier(workerRole, ROLE_NAME_PATTERN)}`,
+    );
 
     await migratePgBoss(ownerEphemeralUrl);
     await grantPgBossRuntime(ownerDatabaseClient);
@@ -637,12 +693,20 @@ describe.sequential("durable real Stripe refund flow", () => {
       username: workerRole,
       password: workerPassword,
     });
+    const queueDatabaseUrl = databaseUrlFor(ownerEphemeralUrl, databaseName, {
+      username: queueRole,
+      password: queuePassword,
+    });
 
     const fieldKey = randomBytes(32);
     const proofKey = randomBytes(32);
+    const approvalAttestationKey = randomBytes(32);
     const exportKey = randomBytes(32);
     const proofs = new RefundProofKeyring({
       active: { key: proofKey, version: "v1" },
+    });
+    const approvalAttestations = new ApprovalAttestationKeyring({
+      active: { key: approvalAttestationKey, version: "v1" },
     });
     const stripeGateway = new ConnectedAccountStripeClient(
       new StripeCredentialResolver({
@@ -850,13 +914,59 @@ describe.sequential("durable real Stripe refund flow", () => {
     const requestId = responseString(created, "request_id");
     expect(responseString(created, "status")).toBe("pending_approval");
 
-    const decided = await dispatchMutation(service, {
-      command: {
-        decision: "approve",
-        request_id: requestId,
+    const workerDatabase = createPrismaClient({
+      connectionString: workerDatabaseUrl,
+      maxConnections: 4,
+    });
+    workerStore = new PrismaWorkerStore(workerDatabase, proofs, approvalAttestations);
+    const approvalCommand = {
+      approval_snapshot: {
+        amount_minor: String(REFUND_AMOUNT_MINOR),
+        currency: "eur",
+        reason: "requested_by_customer",
+        requester_user_id: requesterIdentity.userId,
       },
+      decision: "approve",
+      expected_request_version: 0,
+      request_id: requestId,
+    } as const;
+    const approvalNonce = randomUUID();
+    const approvalRequestHash = createHash("sha256")
+      .update(
+        JSON.stringify([
+          "refund_request.decide",
+          approvalNonce,
+          adminIdentity.accountId,
+          adminIdentity.userId,
+          approvalCommand,
+          resource,
+        ]),
+        "utf8",
+      )
+      .digest();
+    const approvalAttestation = await workerStore.persistApprovalAttestation({
+      amountMinor: BigInt(REFUND_AMOUNT_MINOR),
+      approverStripeUserId: adminIdentity.userId,
+      currency: "eur",
+      environment: environment.environment,
+      expectedRequestVersion: 0,
+      reason: "requested_by_customer",
+      requestId,
+      requestNonce: approvalNonce,
+      requesterStripeUserId: requesterIdentity.userId,
+      resourceId: resource.id,
+      resourceType: resource.type,
+      signedEnvelopeHash: approvalRequestHash,
+      stripeAccountId: environment.accountId,
+      verifiedAt: new Date(),
+    });
+    const decided = await dispatchMutation(service, {
+      approvalAttestationId: approvalAttestation.id,
+      canonicalRequestHash: approvalRequestHash,
+      command: approvalCommand,
       identity: adminIdentity,
       operation: "refund_request.decide",
+      requestNonce: approvalNonce,
       resource,
     });
     expect(decided.status).toBe(200);
@@ -906,11 +1016,6 @@ describe.sequential("durable real Stripe refund flow", () => {
       workflow_status: "approved",
     });
 
-    const workerDatabase = createPrismaClient({
-      connectionString: workerDatabaseUrl,
-      maxConnections: 4,
-    });
-    workerStore = new PrismaWorkerStore(workerDatabase, proofs);
     const workerDependencies: WorkerDependencies = {
       clock: { now: () => new Date() },
       logger: quietLogger,
@@ -918,30 +1023,27 @@ describe.sequential("durable real Stripe refund flow", () => {
       store: workerStore,
       stripe: stripeGateway,
     };
-    const workerConfig: RefundDeskConfig = {
-      appBaseUrl: "http://127.0.0.1:3000",
-      databaseUrl: webDatabaseUrl,
+    const workerConfig: WorkerConfig = {
+      health: {
+        host: "127.0.0.1",
+        port: 3101,
+      },
       keys: {
-        activeFieldVersion: "v1",
+        activeApprovalAttestationVersion: "v1",
         activeProofVersion: "v1",
-        exportV1: exportKey,
-        fieldV1: fieldKey,
+        approvalAttestationV1: approvalAttestationKey,
         proofV1: proofKey,
       },
       liveEnabled: false,
       logLevel: "error",
-      migrationDatabaseUrl: ownerEphemeralUrl,
       nodeEnv: "test",
-      pgBossDatabaseUrl: workerDatabaseUrl,
+      pgBossDatabaseUrl: queueDatabaseUrl,
+      signedRequestVerifierToken: randomBytes(32).toString("base64"),
       stripe: {
         apiVersion: API_VERSION,
-        appId: "ca_RefundDeskE2E",
-        appSigningSecret: "absec_refunddesk_e2e",
-        connectedLiveWebhookSecret: "disabled",
-        connectedSandboxWebhookSecret: "whsec_refunddesk_e2e_sandbox",
-        connectedTestWebhookSecret: "whsec_refunddesk_e2e_test",
-        managedSandboxKey: environment.managedSandboxKey,
-        platformTestKey: environment.platformTestKey,
+        appSigningSecret: "absec_sandbox_e2e",
+        managedSandboxEffectKey: environment.managedSandboxKey,
+        platformTestEffectKey: environment.platformTestKey,
       },
       workerDatabaseUrl,
     };
@@ -1006,24 +1108,41 @@ describe.sequential("durable real Stripe refund flow", () => {
       throw new Error("SANDBOX_E2E_LINKED_REFUND_PROOF_INVALID");
     }
 
-    const firstReplayJobId = await runningWorker.publisher.enqueueRefundExecution({
-      request_id: requestId,
-      tenant_id: installationIdentity.tenant_id,
+    await runningWorker.stop();
+    runningWorker = undefined;
+
+    singletonProbeBoss = new PgBoss({
+      connectionString: queueDatabaseUrl,
+      application_name: "refunddesk-sandbox-e2e-singleton-probe",
+      createSchema: false,
+      migrate: false,
+      schedule: false,
+      supervise: false,
+      useListenNotify: false,
     });
-    const secondReplayJobId = await runningWorker.publisher.enqueueRefundExecution({
-      request_id: requestId,
-      tenant_id: installationIdentity.tenant_id,
-    });
-    const acceptedReplayCount = [firstReplayJobId, secondReplayJobId].filter(
-      (jobId) => jobId !== null,
-    ).length;
-    if (acceptedReplayCount < 1 || acceptedReplayCount > 2) {
-      throw new Error("SANDBOX_E2E_QUEUE_SINGLETON_REPLAY_INVALID");
+    singletonProbeBoss.on("error", () => undefined);
+    try {
+      await singletonProbeBoss.start();
+      const probePublisher = new WorkerQueuePublisher(singletonProbeBoss);
+      const firstReplayJobId = await probePublisher.enqueueRefundExecution({
+        request_id: requestId,
+        tenant_id: installationIdentity.tenant_id,
+      });
+      const secondReplayJobId = await probePublisher.enqueueRefundExecution({
+        request_id: requestId,
+        tenant_id: installationIdentity.tenant_id,
+      });
+      assertExclusiveSingletonEnqueue(firstReplayJobId, secondReplayJobId);
+    } finally {
+      await singletonProbeBoss.stop({ graceful: true, timeout: 10_000 });
+      singletonProbeBoss = undefined;
     }
+
+    runningWorker = await startPgBossWorker(workerConfig, workerDependencies);
     const replayQueueState = await waitForExecutionQueueIdle(
       ownerDatabaseClient,
       requestId,
-      initialQueueState.completed_count + acceptedReplayCount,
+      initialQueueState.completed_count + 1,
     );
     await handleRefundExecutionJob(
       {
@@ -1238,7 +1357,8 @@ describe.sequential("durable real Stripe refund flow", () => {
         distinct_approver_count: beforeWorker.rows[0]?.distinct_actor_count ?? 0,
         mutation_receipt_count: reconciliationState.mutation_receipt_count,
         execution_queue_initial_completed_count: initialQueueState.completed_count,
-        execution_queue_replay_accepted_count: acceptedReplayCount,
+        execution_queue_replay_accepted_count: 1,
+        execution_queue_singleton_duplicate_rejected: true,
         execution_queue_final_completed_count: replayQueueState.completed_count,
       },
       reconciliation: {

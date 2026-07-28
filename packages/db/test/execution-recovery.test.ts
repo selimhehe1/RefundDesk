@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { TenantRepositories, type Prisma } from "../src/index.js";
+import { TenantRepositories, type ExecutionWorkItem, type Prisma } from "../src/index.js";
 
 const tenantId = "5c66ba36-d4c2-444e-9186-582c8e6b0671";
 const installationId = "0f12622c-eb99-49b5-9940-d194098446af";
@@ -27,21 +27,31 @@ describe("execution recovery preparation", () => {
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const tenant = { id: tenantId, status: "active", liveEnabled: false };
     const installation = { id: installationId, tenantId, status: "active", environment: "test" };
-    const tenantFindFirst = vi.fn().mockResolvedValue(tenant);
-    const installationFindMany = vi.fn().mockResolvedValue([installation]);
-    const executionFindMany = vi.fn().mockResolvedValue([]);
     const tx = {
       refundRequest: { findMany, updateMany },
-      tenant: { findFirst: tenantFindFirst },
-      stripeInstallation: { findMany: installationFindMany },
-      refundExecution: { findMany: executionFindMany },
     } as unknown as Prisma.TransactionClient;
     const repositories = new TenantRepositories(tx, tenantId);
+    const requester = { id: "requester", tenantId };
+    const complete = (value: ReturnType<typeof candidate>): ExecutionWorkItem =>
+      ({
+        ...value,
+        tenant,
+        installation,
+        execution: null,
+        requester,
+        approvalDecision: null,
+      }) as unknown as ExecutionWorkItem;
+    const workById = new Map(
+      [approved, executingNotStarted, executingAbsent].map((value) => [value.id, complete(value)]),
+    );
+    const getExecutionWorkItem = vi
+      .spyOn(repositories, "getExecutionWorkItem")
+      .mockImplementation((id) => Promise.resolve(workById.get(id) ?? null));
 
     await expect(repositories.prepareExecutionRecoveryWork(25)).resolves.toEqual([
-      { ...approved, tenant, installation, execution: null },
-      { ...executingNotStarted, tenant, installation, execution: null },
-      { ...executingAbsent, tenant, installation, execution: null },
+      complete(approved),
+      complete(executingNotStarted),
+      complete(executingAbsent),
     ]);
     expect(findMany).toHaveBeenCalledWith({
       where: {
@@ -82,25 +92,11 @@ describe("execution recovery preparation", () => {
         version: { increment: 1 },
       },
     });
-    expect(tenantFindFirst).toHaveBeenCalledWith({ where: { id: tenantId } });
-    expect(installationFindMany).toHaveBeenCalledWith({
-      where: {
-        tenantId,
-        id: { in: [installationId] },
-      },
-    });
-    expect(executionFindMany).toHaveBeenCalledWith({
-      where: {
-        tenantId,
-        requestId: { in: ["approved", "executing-new", "executing-absent"] },
-      },
-    });
-    expect(tenantFindFirst.mock.invocationCallOrder[0]).toBeLessThan(
-      installationFindMany.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
-    expect(installationFindMany.mock.invocationCallOrder[0]).toBeLessThan(
-      executionFindMany.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
-    );
+    expect(getExecutionWorkItem.mock.calls).toEqual([
+      ["approved"],
+      ["executing-new"],
+      ["executing-absent"],
+    ]);
   });
 
   it("never emits a possible candidate when its reconciliation CAS has already drifted", async () => {

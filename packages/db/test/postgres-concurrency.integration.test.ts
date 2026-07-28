@@ -206,17 +206,94 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
     });
   };
 
+  const persistApprovalAttestation = async (
+    client: Client,
+    requestId: string,
+    approverUserId: string,
+  ): Promise<string> => {
+    const attestation = await client.query<{ id: string }>(
+      `INSERT INTO approval_attestations (
+        tenant_id,
+        installation_id,
+        request_id,
+        approver_user_id,
+        request_nonce,
+        stripe_account_id,
+        environment,
+        resource_type,
+        resource_id,
+        request_version,
+        signed_envelope_hash,
+        authorization_snapshot_hash,
+        verified_at,
+        consume_before,
+        hmac_key_version,
+        hmac,
+        created_at
+      )
+      SELECT
+        request.tenant_id,
+        request.installation_id,
+        request.id,
+        $2::UUID,
+        $3::UUID,
+        installation.stripe_account_id,
+        request.environment,
+        'payment_intent',
+        request.payment_intent_id,
+        request.version,
+        $4::BYTEA,
+        $5::BYTEA,
+        statement_timestamp(),
+        LEAST(
+          statement_timestamp() + INTERVAL '5 minutes',
+          request.expires_at
+        ),
+        'v1',
+        $6::BYTEA,
+        statement_timestamp()
+      FROM refund_requests AS request
+      INNER JOIN stripe_installations AS installation
+        ON installation.id = request.installation_id
+       AND installation.tenant_id = request.tenant_id
+       AND installation.environment = request.environment
+      WHERE request.id = $1::UUID
+        AND request.tenant_id = $7::UUID
+      RETURNING id`,
+      [
+        requestId,
+        approverUserId,
+        randomUUID(),
+        Buffer.alloc(32, 1),
+        Buffer.alloc(32, 2),
+        Buffer.alloc(32, 3),
+        tenantId,
+      ],
+    );
+    const attestationId = attestation.rows[0]?.id;
+    if (attestationId === undefined) {
+      throw new Error("Approval attestation fixture was not created");
+    }
+    return attestationId;
+  };
+
   const approveRefundRequest = async (client: Client, requestId: string): Promise<void> => {
+    const approvalAttestationId = await persistApprovalAttestation(
+      client,
+      requestId,
+      approverAUserId,
+    );
     await client.query(
       `INSERT INTO approval_decisions (
         tenant_id,
         request_id,
         approver_user_id,
+        approval_attestation_id,
         decision,
         stripe_roles_snapshot,
         decided_at
-      ) VALUES ($1, $2, $3, 'approve', '[]'::JSONB, clock_timestamp())`,
-      [tenantId, requestId, approverAUserId],
+      ) VALUES ($1, $2, $3, $4, 'approve', '[]'::JSONB, clock_timestamp())`,
+      [tenantId, requestId, approverAUserId, approvalAttestationId],
     );
     await client.query(
       `UPDATE refund_requests
@@ -430,6 +507,28 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
     await cleanupEphemeralDatabase();
   });
 
+  it("loads an execution work item without overlapping transaction client queries", async () => {
+    const database = prismaClient;
+    if (database === undefined) {
+      throw new Error("PostgreSQL concurrency client is not initialized");
+    }
+    const requestId = await createRefundRequest("pi_SequentialExecutionWorkItem");
+
+    const workItem = await withTenantTransaction(database, tenantId, ({ repositories }) =>
+      repositories.getExecutionWorkItem(requestId),
+    );
+
+    expect(workItem).not.toBeNull();
+    expect(workItem).toMatchObject({
+      id: requestId,
+      tenantId,
+      installationId,
+      tenant: { id: tenantId },
+      installation: { id: installationId, tenantId },
+      execution: null,
+    });
+  });
+
   it("allows only one active financial guard for concurrent request creation", async () => {
     const barrier = createBarrier(2);
     const paymentKey = "pi_ConcurrentGuard";
@@ -516,6 +615,13 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
 
   it("commits only one concurrent decision and one workflow transition", async () => {
     const requestId = await createRefundRequest("pi_ConcurrentDecision");
+    const client = fixtureClient;
+    if (client === undefined) {
+      throw new Error("PostgreSQL fixture client is not initialized");
+    }
+    const approvalAttestationId = await inTenantTransaction(client, () =>
+      persistApprovalAttestation(client, requestId, approverAUserId),
+    );
     const barrier = createBarrier(2);
 
     const attempt = async (
@@ -534,6 +640,7 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
             tenant_id,
             request_id,
             approver_user_id,
+            approval_attestation_id,
             decision,
             rejection_ciphertext,
             rejection_nonce,
@@ -542,7 +649,9 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
             stripe_roles_snapshot,
             decided_at
           ) VALUES (
-            $1, $2, $3, $4::decision_kind,
+            $1, $2, $3,
+            CASE WHEN $4::decision_kind = 'approve' THEN $9::UUID ELSE NULL END,
+            $4::decision_kind,
             CASE WHEN $4::decision_kind = 'reject' THEN $5::BYTEA ELSE NULL END,
             CASE WHEN $4::decision_kind = 'reject' THEN $6::BYTEA ELSE NULL END,
             CASE WHEN $4::decision_kind = 'reject' THEN $7::BYTEA ELSE NULL END,
@@ -559,6 +668,7 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
             Buffer.alloc(12),
             Buffer.alloc(16),
             now,
+            approvalAttestationId,
           ],
         );
         const transitioned =
@@ -609,10 +719,6 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
       { committed: false, code: "23514" },
     ]);
 
-    const client = fixtureClient;
-    if (client === undefined) {
-      throw new Error("PostgreSQL fixture client is not initialized");
-    }
     const committed = await inTenantTransaction(client, async () => {
       const request = await client.query<{
         version: number;

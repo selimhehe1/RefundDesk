@@ -25,7 +25,7 @@ export function createPrismaClient(options: DatabaseClientOptions): PrismaClient
     // @prisma/adapter-pg currently receives PostgreSQL temporal values through
     // the session representation. Force UTC so a database configured with a
     // regional timezone cannot shift TIMESTAMPTZ values during deserialization.
-    options: "-c timezone=UTC",
+    options: "-c timezone=UTC -c search_path=pg_catalog,public",
   });
   return new PrismaClient({ adapter });
 }

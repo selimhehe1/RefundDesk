@@ -66,6 +66,7 @@ export interface PilotRequestSummary {
   readonly resource_id: string;
   readonly resource_type: PilotPaymentResourceType;
   readonly status: WorkflowStatus;
+  readonly version: number;
 }
 
 export interface PilotRequestRecord extends PilotRequestSummary {
@@ -114,6 +115,7 @@ export interface PilotMutationReceipt {
 
 export interface PilotMutationMetadata {
   readonly actorId: string;
+  readonly approvalAttestationId: string | null;
   readonly assertedStripeRoles: readonly StripeRole[] | null;
   readonly canonicalRequestHash: Uint8Array;
   readonly operation: PilotOperation;
@@ -135,8 +137,14 @@ export type PilotMutation =
       readonly resource: PilotPaymentResource;
     }
   | {
-      readonly decision: "approve" | "reject";
-      readonly justification?: string;
+      readonly decision: "approve";
+      readonly kind: "refund_request_decide";
+      readonly requestId: string;
+      readonly resource: PilotPaymentResource;
+    }
+  | {
+      readonly decision: "reject";
+      readonly justification: string;
       readonly kind: "refund_request_decide";
       readonly requestId: string;
       readonly resource: PilotPaymentResource;

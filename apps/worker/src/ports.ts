@@ -51,6 +51,35 @@ export interface ApprovedRefundExecution {
   readonly installation: WorkerInstallation;
 }
 
+export interface PersistApprovalAttestationInput {
+  readonly signedEnvelopeHash: Uint8Array;
+  readonly requestNonce: string;
+  readonly stripeAccountId: string;
+  readonly environment: "test" | "sandbox";
+  readonly resourceType: "payment_intent" | "charge";
+  readonly resourceId: string;
+  readonly requestId: string;
+  readonly expectedRequestVersion: number;
+  readonly approverStripeUserId: string;
+  readonly requesterStripeUserId: string;
+  readonly amountMinor: bigint;
+  readonly currency: string;
+  readonly reason: RefundReason;
+  readonly verifiedAt: Date;
+}
+
+export interface PersistedApprovalAttestation {
+  readonly id: string;
+  readonly signedEnvelopeHash: Uint8Array;
+}
+
+export class ApprovalAttestationStoreError extends Error {
+  constructor(readonly code: "conflict" | "invalid" | "unavailable") {
+    super("Approval attestation persistence failed");
+    this.name = "ApprovalAttestationStoreError";
+  }
+}
+
 export type EffectBoundaryDecision =
   | {
       readonly kind: "execute";
@@ -195,6 +224,9 @@ export interface CommitCheckpointInput {
  */
 export interface WorkerStore {
   close?(): Promise<void>;
+  persistApprovalAttestation(
+    input: PersistApprovalAttestationInput,
+  ): Promise<PersistedApprovalAttestation>;
   loadRefundExecution(tenantId: string, requestId: string): Promise<RefundExecutionRecord | null>;
   persistEffectBoundary(input: PersistEffectBoundaryInput): Promise<EffectBoundaryDecision>;
   recordIdentifiedRefund(input: IdentifiedRefundInput): Promise<void>;

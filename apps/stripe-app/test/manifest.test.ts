@@ -40,7 +40,7 @@ describe("Stripe App manifests", () => {
       distribution_type: "public",
       stripe_api_access_type: "platform",
       sandbox_install_compatible: true,
-      version: "0.1.2",
+      version: "0.1.3",
     });
     expect(manifest).not.toHaveProperty("extensions");
     expect(manifest.version).toBe(packageManifest.version);

@@ -1,4 +1,5 @@
 export * from "./access-policy.js";
+export * from "./approval-attestation.js";
 export * from "./effect.js";
 export * from "./eligibility.js";
 export * from "./encryption.js";

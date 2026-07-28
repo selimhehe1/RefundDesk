@@ -6,6 +6,7 @@ import {
 
 import type {
   ApiMutationReceipt,
+  ApprovalAttestation,
   ApprovalPolicy,
   ApprovalDecision,
   AuditEvent,
@@ -19,6 +20,7 @@ import type {
   StripeEnvironment,
   StripeInstallation,
   StripeRefundStatus,
+  Tenant,
   TenantUser,
   WebhookReceipt,
 } from "./generated/prisma/client.js";
@@ -163,9 +165,22 @@ interface DeauthorizationLockedRequest {
   readonly payment_guard_released_at: Date | null;
 }
 
-export type ExecutionWorkItem = Prisma.RefundRequestGetPayload<{
-  include: { installation: true; tenant: true; execution: true };
-}>;
+export type ExecutionApprovalEvidence = ApprovalDecision & {
+  readonly approver: TenantUser;
+  readonly approvalAttestation: ApprovalAttestation | null;
+};
+
+export type ExecutionWithAttempts = RefundExecution & {
+  readonly attempts: readonly RefundExecutionAttempt[];
+};
+
+export type ExecutionWorkItem = RefundRequest & {
+  readonly installation: StripeInstallation;
+  readonly tenant: Tenant;
+  readonly execution: ExecutionWithAttempts | null;
+  readonly requester: TenantUser;
+  readonly approvalDecision: ExecutionApprovalEvidence | null;
+};
 
 export interface LinkedRefundReconciliationTarget {
   readonly requestId: string;
@@ -730,6 +745,31 @@ export class TenantRepositories {
     };
   }
 
+  persistApprovalAttestation(
+    data: Omit<Prisma.ApprovalAttestationUncheckedCreateInput, "tenantId">,
+  ): Promise<ApprovalAttestation> {
+    return this.tx.approvalAttestation.create({
+      data: { ...data, tenantId: this.tenantId },
+    });
+  }
+
+  getApprovalAttestation(attestationId: string): Promise<ApprovalAttestation | null> {
+    return this.tx.approvalAttestation.findFirst({
+      where: { id: attestationId, tenantId: this.tenantId },
+    });
+  }
+
+  getApprovalAttestationByNonce(requestNonce: string): Promise<ApprovalAttestation | null> {
+    return this.tx.approvalAttestation.findUnique({
+      where: {
+        tenantId_requestNonce: {
+          requestNonce,
+          tenantId: this.tenantId,
+        },
+      },
+    });
+  }
+
   async cancelPendingRequest(
     requestId: string,
     requesterUserId: string,
@@ -780,11 +820,105 @@ export class TenantRepositories {
     return claimed.count === 1 ? this.getRefundRequest(requestId) : null;
   }
 
-  getExecutionWorkItem(requestId: string): Promise<ExecutionWorkItem | null> {
-    return this.tx.refundRequest.findFirst({
+  async getExecutionWorkItem(requestId: string): Promise<ExecutionWorkItem | null> {
+    const request = await this.tx.refundRequest.findFirst({
       where: { id: requestId, tenantId: this.tenantId },
-      include: { installation: true, tenant: true, execution: true },
     });
+    if (request === null) {
+      return null;
+    }
+
+    // Prisma's sibling relation includes may issue overlapping query() calls
+    // through the single pg Client backing an interactive transaction. Keep
+    // these financial-boundary reads explicit and sequential.
+    const tenant = await this.tx.tenant.findFirst({
+      where: { id: this.tenantId },
+    });
+    if (tenant === null) {
+      throw new Error("EXECUTION_WORK_ITEM_TENANT_NOT_FOUND");
+    }
+    const installation = await this.tx.stripeInstallation.findFirst({
+      where: {
+        id: request.installationId,
+        tenantId: this.tenantId,
+      },
+    });
+    if (installation === null) {
+      throw new Error("EXECUTION_WORK_ITEM_INSTALLATION_NOT_FOUND");
+    }
+    const executionRecord = await this.tx.refundExecution.findFirst({
+      where: {
+        requestId: request.id,
+        tenantId: this.tenantId,
+      },
+    });
+    const execution =
+      executionRecord === null
+        ? null
+        : {
+            ...executionRecord,
+            attempts: await this.tx.refundExecutionAttempt.findMany({
+              where: {
+                executionId: executionRecord.id,
+                tenantId: this.tenantId,
+              },
+              orderBy: { attemptNumber: "asc" },
+            }),
+          };
+    const requester = await this.tx.tenantUser.findFirst({
+      where: {
+        id: request.requesterUserId,
+        tenantId: this.tenantId,
+      },
+    });
+    if (requester === null) {
+      throw new Error("EXECUTION_WORK_ITEM_REQUESTER_NOT_FOUND");
+    }
+    const approvalDecisionRecord = await this.tx.approvalDecision.findFirst({
+      where: {
+        decision: "approve",
+        requestId: request.id,
+        tenantId: this.tenantId,
+      },
+      orderBy: [{ decidedAt: "asc" }, { id: "asc" }],
+    });
+    let approvalDecision: ExecutionApprovalEvidence | null = null;
+    if (approvalDecisionRecord !== null) {
+      const approver = await this.tx.tenantUser.findFirst({
+        where: {
+          id: approvalDecisionRecord.approverUserId,
+          tenantId: this.tenantId,
+        },
+      });
+      if (approver === null) {
+        throw new Error("EXECUTION_WORK_ITEM_APPROVER_NOT_FOUND");
+      }
+      const approvalAttestation =
+        approvalDecisionRecord.approvalAttestationId === null
+          ? null
+          : await this.tx.approvalAttestation.findFirst({
+              where: {
+                approverUserId: approvalDecisionRecord.approverUserId,
+                id: approvalDecisionRecord.approvalAttestationId,
+                requestId: request.id,
+                tenantId: this.tenantId,
+              },
+            });
+      approvalDecision = {
+        ...approvalDecisionRecord,
+        approver,
+        approvalAttestation,
+      };
+    }
+
+    return {
+      ...request,
+      tenant,
+      installation,
+      execution,
+      requester,
+      approvalDecision,
+    };
   }
 
   async lockExecutionAuthorization(requestId: string, installationId: string): Promise<boolean> {
@@ -1904,26 +2038,34 @@ export class TenantRepositories {
       : null;
   }
 
-  listExecutionWork(limit = 100): Promise<readonly ExecutionWorkItem[]> {
+  async listExecutionWork(limit = 100): Promise<readonly ExecutionWorkItem[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new RangeError("Execution work limit must be between 1 and 1000");
     }
-    return this.tx.refundRequest.findMany({
+    const candidates = await this.tx.refundRequest.findMany({
       where: {
         tenantId: this.tenantId,
         workflowStatus: { in: ["approved", "executing", "reconciliation_required"] },
       },
       take: limit,
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      include: { installation: true, tenant: true, execution: true },
     });
+    const work: ExecutionWorkItem[] = [];
+    for (const candidate of candidates) {
+      const item = await this.getExecutionWorkItem(candidate.id);
+      if (item === null) {
+        throw new Error("EXECUTION_WORK_ITEM_DISAPPEARED");
+      }
+      work.push(item);
+    }
+    return work;
   }
 
-  listApprovedExecutionWork(limit = 100): Promise<readonly ExecutionWorkItem[]> {
+  async listApprovedExecutionWork(limit = 100): Promise<readonly ExecutionWorkItem[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new RangeError("Approved execution work limit must be between 1 and 1000");
     }
-    return this.tx.refundRequest.findMany({
+    const candidates = await this.tx.refundRequest.findMany({
       where: {
         tenantId: this.tenantId,
         environment: { in: ["test", "sandbox"] },
@@ -1933,8 +2075,16 @@ export class TenantRepositories {
       },
       take: limit,
       orderBy: [{ approvedAt: "asc" }, { id: "asc" }],
-      include: { installation: true, tenant: true, execution: true },
     });
+    const work: ExecutionWorkItem[] = [];
+    for (const candidate of candidates) {
+      const item = await this.getExecutionWorkItem(candidate.id);
+      if (item === null) {
+        throw new Error("APPROVED_EXECUTION_WORK_ITEM_DISAPPEARED");
+      }
+      work.push(item);
+    }
+    return work;
   }
 
   async prepareExecutionRecoveryWork(limit = 100): Promise<readonly ExecutionWorkItem[]> {
@@ -1983,49 +2133,15 @@ export class TenantRepositories {
       return [];
     }
 
-    // Prisma's relation include plan fans out sibling reads. With an
-    // interactive adapter-pg transaction, that sends overlapping query() calls
-    // through one pg Client. Load the same relations in explicit sequence.
-    const tenant = await this.tx.tenant.findFirst({
-      where: { id: this.tenantId },
-    });
-    const installationIds = [
-      ...new Set(recoverableRequests.map((request) => request.installationId)),
-    ];
-    const installations = await this.tx.stripeInstallation.findMany({
-      where: {
-        tenantId: this.tenantId,
-        id: { in: installationIds },
-      },
-    });
-    const executions = await this.tx.refundExecution.findMany({
-      where: {
-        tenantId: this.tenantId,
-        requestId: { in: recoverableRequests.map((request) => request.id) },
-      },
-    });
-    if (tenant === null) {
-      throw new Error("EXECUTION_RECOVERY_TENANT_NOT_FOUND");
-    }
-    const installationById = new Map(
-      installations.map((installation) => [installation.id, installation]),
-    );
-    const executionByRequestId = new Map(
-      executions.map((execution) => [execution.requestId, execution]),
-    );
-
-    return recoverableRequests.map((request) => {
-      const installation = installationById.get(request.installationId);
-      if (installation === undefined) {
-        throw new Error("EXECUTION_RECOVERY_INSTALLATION_NOT_FOUND");
+    const work: ExecutionWorkItem[] = [];
+    for (const request of recoverableRequests) {
+      const item = await this.getExecutionWorkItem(request.id);
+      if (item === null) {
+        throw new Error("EXECUTION_RECOVERY_WORK_ITEM_DISAPPEARED");
       }
-      return {
-        ...request,
-        tenant,
-        installation,
-        execution: executionByRequestId.get(request.id) ?? null,
-      };
-    });
+      work.push(item);
+    }
+    return work;
   }
 
   async listLinkedRefundReconciliationTargets(
