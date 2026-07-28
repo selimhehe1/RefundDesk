@@ -9,10 +9,17 @@ notifications are deliberately disabled. An AWS sandbox deployment is authorized
 
 ## Current pilot status
 
+As of 28 July 2026, RefundDesk is a hosted test/sandbox pilot ready for controlled evaluation. It
+is not commercially ready: live mode, Stripe review submission and Marketplace publication remain
+disabled and unapproved. A coordinated rotation of the current Stripe-facing sandbox credentials
+remains the final operator handoff; the broader versioned application-key drill remains an open
+hardening gate. Evidence artifacts named below are redacted and retained locally under the ignored
+`sandbox-evidence.local/` directory; they are not committed to the repository.
+
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
-backend Refund permission, Stripe idempotency, historical connected-webhook deduplication and ordering,
-external-Refund detection, copied-proof classification and minimal permission set.
+backend Refund permission, Stripe idempotency, historical connected-webhook deduplication and
+ordering, external-Refund detection, copied-proof classification and minimal permission set.
 
 Every Phase-0 runtime route, client call, UI control and manifest switch has been removed from the
 pilot surface. Unpublished version `0.1.1` was uploaded from clean commit
@@ -27,15 +34,13 @@ has SHA-256 `077b7032d53701201338dcf393902ad5f91e20c8dda895429be81c8610a4a319`. 
 `UPLOAD_COMPLETED`; the Dashboard shows the processed version as `Approved` with no distribution
 channel. The exact version was subsequently observed installed in the managed sandbox, and its UI
 was exercised through a temporary local API overlay whose Stripe App source tree was identical to
-the uploaded commit. This does not mean Marketplace approval. No deployment, review submission,
-publication or remote push was performed.
+the uploaded commit. This historical `0.1.2` evidence does not transfer to the current backend
+trust boundary or to `0.1.3`. It does not mean Marketplace approval.
 
 The P1 UI makes approval an explicit two-step financial action, preserves mutation nonces across
 ambiguous retries, serializes concurrent mutations, displays exact currency amounts and approval
 context, invalidates stale account and scope state, and hardens onboarding, settings, alerts and
-audit-download attribution. The source snapshot passed 274 workspace tests, 67 exact standalone
-extension tests and 19 PostgreSQL integration tests, plus format, lint, typecheck, build, secret and
-production dependency-audit gates.
+audit-download attribution.
 
 On 27 July 2026, two distinct authenticated users completed the managed-sandbox happy path through
 the signed Stripe UI: one created the synthetic card-refund request, the other approved it, and one
@@ -46,17 +51,23 @@ backlog or executable queue item, and the temporary restricted test key was revo
 
 This financial run used the local API overlay, not the immutable uploaded runtime. The upload-safe
 manifest still uses the fail-closed placeholder RefundDesk API origin, so the evidence does not
-claim that Stripe's uploaded artifact can execute the workflow by itself. The redacted local
+claim that the `0.1.2` uploaded artifact can execute the workflow by itself. The redacted local
 evidence is split between
 `p1-manual-stripe-app-financial-flow-2026-07-27T19-11-59-907Z.json` and
 `p1-stripe-app-0.1.2-financial-preview-provenance-2026-07-27.json`.
+
+Separately, on 26 July 2026, the opt-in durable test gate created a synthetic card PaymentIntent,
+routed a partial refund through a distinct requester and approver, executed exactly one real test
+Refund through pg-boss, replayed the execution without a second Refund or attempt, reconciled the
+immutable Refund link, and removed its ephemeral database and login roles. That result remains
+test-mode engineering evidence, not live authorization or production readiness.
 
 The distinct external-account installation evidence remains attributed to installed version
 `0.1.0`. The clean `0.1.1` upload proves reproducible packaging provenance; it does not by itself
 claim that `0.1.1` was reinstalled or rerun in that external account. Likewise,
 `P0-PUBLISH-001` means that no currently observed distribution constraint makes the pilot
 impossible, not that Stripe has approved the App for Marketplace distribution. External-test link
-access was closed after verification.
+access for that Phase-0 evidence window was closed after verification.
 
 The repository foundations and durable pilot path are implemented and locally verified. The pinned
 workspace, strict contracts, PostgreSQL role separation, ordered migrations, forced-RLS checks,
@@ -64,48 +75,84 @@ PostgreSQL integration suites, build, secret scanning and dependency audits pass
 
 The current local hardening revision also replaces a Prisma sibling-relation load at the financial
 execution boundary with explicit sequential reads on the transaction client. Its full suite now
-passes 396 workspace tests and 21 PostgreSQL 18 integration tests; the latter cover the real
+passes 423 workspace tests and 21 PostgreSQL 18 integration tests; the latter cover the real
 adapter-pg boundary and the isolated queue capability, so neither an overlapping
 `pg.Client.query()` warning nor a worker-capable pg-boss login can be silently accepted. The exact
 standalone Stripe App graph separately passes 69 tests under its pinned pnpm 10.30.3 lockfile.
+Formatting, lint, typecheck, build, secret scanning and production dependency audits also pass.
+The PostgreSQL gate now creates and removes exact allowlisted ephemeral databases, applies
+transaction-owning migrations before opening its rollback-only fixture transaction, and fails
+closed instead of reporting skipped tests when its PostgreSQL URL is absent. The full 21-case gate
+passed twice consecutively with no generated database or probe role left behind.
 
-The hosted sandbox now runs on one hardened AWS Lightsail instance with five isolated containers,
-PostgreSQL 18, a stable HTTPS origin, a private versioned backup bucket and live mode disabled.
+The hosted sandbox runs immutable backend commit
+`42a1e4e65cf6e9144261a077c6956e77b368fffc` on one hardened AWS Lightsail instance. Its five
+isolated PostgreSQL, verifier, worker, web and Caddy containers are healthy, PostgreSQL 18 is in
+use, the HTTPS origin is stable and live mode remains false. Public health returns `200`, while
+public readiness, the private verifier and the live webhook route remain absent from ingress.
+
 Web, worker and migration have separate configuration and database authority. Four distinct
 restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the
 web read keys were proved unable to create Refunds. The Stripe App signing secret exists only in
-the worker. Web forwards the exact signed body to a private worker verifier, and an approval can
+the worker. Web forwards exact signed bodies to a private worker verifier, and an approval can
 advance only when PostgreSQL binds it to a worker-created, append-only HMAC attestation of the
-exact financial and identity snapshot.
+exact financial and identity snapshot. A provider-neutral multi-target Dockerfile produces a
+minimal Next.js server, a portable worker and a one-shot migrator. Web and worker have independent
+readiness probes for their exact database, queue, schedule and scanner responsibilities.
 
-A provider-neutral multi-target Dockerfile produces a minimal Next.js server, a portable worker and
-a one-shot migrator. Web readiness verifies PostgreSQL/schema/RLS authority, while the worker has
-independent generic probes for its exact pg-boss consumers, schedules and scanner coverage.
+The direct-account webhook gate is `passed_real` on that hosted revision in both Stripe test mode
+and a managed sandbox. In each environment, a real signed `refund.created` delivery was persisted
+and processed once into one external-refund alert. A Stripe Workbench manual replay received a
+second `2xx` response while the durable receipt and alert snapshot remained unchanged. No live or
+Connect request was used. The obsolete test endpoint targeting a blocked legacy connected route
+was then deleted; both direct endpoints remained enabled and unchanged. Redacted evidence is in
+`stripe-hosted-direct-webhooks-2026-07-28.json` with SHA-256
+`b0d85e964aa440dcda32dd601b48be11f3826fcc750f90b56a0c8ac2eabc737e` and the
+legacy-cleanup artifact has SHA-256
+`5c33976bae39318417a5282542a09c2f546c9eacc838952cb620bce4943f8952`.
 
-The deployed immutable backend artifact passed its probes and a real encrypted PostgreSQL backup
-was restored on a disposable PostgreSQL 18 verifier. The approval command and trust boundary
-changed after `0.1.2`, so that upload cannot carry the current source or installation evidence.
-Version `0.1.3` is reserved in the local manifest but has not been uploaded.
+The active revision also passed a real encrypted backup and restore drill. Its canonical scheduled
+backup produced an `age`-encrypted archive stored with AES-256 server-side encryption in the
+private versioned bucket. The archive hash, PostgreSQL checksums, migrations and separated runtime
+roles were verified on a disposable PostgreSQL 18 verifier with the restore container isolated
+from the network. The private identity, remote archive, temporary instance, volume, network and
+access resources were removed afterward, while the hosted five-container stack remained healthy
+and live-disabled. The redacted evidence file
+`active-revision-backup-restore-2026-07-28.json` has SHA-256
+`9221974966fc2a62bbfa19ca883354b9d2098cdb19392f29a6f19ef18a77d939`. This is a
+test/sandbox recovery proof, not a production disaster-recovery or RPO/RTO claim.
 
-Real Stripe calls then exposed a topology mismatch: the pilot credentials are direct-account
-credentials, while the first hosted client/webhook code used Connect semantics. The current source
-removes every `Stripe-Account` request option, binds each credential to an expected account ID and
-adds `/api/webhooks/stripe-account/test` plus `/sandbox`. It rejects any webhook carrying
-`Event.account`, an unexpected API version or live mode. Historical `connected_*` receipts remain
-recovery-only and Event deduplication is account-global. The hosted direct-account delivery gate
-must be rerun in both environments before the product is called commercially ready.
+Unpublished Stripe App `0.1.3` binds the UI to the stable hosted sandbox origin and was uploaded in
+test mode from clean commit `c241a097fc5f4b8e8eaa2f057f9c7db40d9dffa3`. The backend trees are
+unchanged from deployed commit `42a1e4e65cf6e9144261a077c6956e77b368fffc`. Stripe CLI reports
+`UPLOAD_COMPLETED`; neither `--live` nor `--force` was used, and no review or publication was
+requested. The reproducible Git source archive has SHA-256
+`f8b792876ce8d1fe969a5d24e8ab3c5a37d13eb89755ed223caa3f7a61471611`, the committed manifest
+has SHA-256 `89e44a68b5e82ed35234f80673db805047b01f499f9bfed5a4b2e4df222ceb9d`,
+and the Stripe App source tree is `e0fdb14690a6302bfc42786ee574184c1b16a71d`. These hashes
+describe the clean Git source; they are not presented as Stripe's internal upload ZIP.
+
+The exact `0.1.3` version was then observed selected and installed in a distinct Stripe test
+sandbox, and the hosted-origin permissions were reauthorized without a pending update. Separately,
+the exact commit source rendered in Stripe developer preview and generated a real Stripe UI
+signature. A test harness relayed the exact generated request bytes and signature unchanged to the
+hosted AWS eligibility endpoint, which verified them and returned HTTP `200` with the expected
+schema. No financial effect was performed. The raw capture and temporary harness were intentionally
+destroyed, so the installation and relay observations are not reproducible from the redacted
+artifact alone.
+
+The controlled browser profile blocked the direct cross-origin request with
+`ERR_BLOCKED_BY_CLIENT` before a normal response could be observed. Native direct-browser
+end-to-end execution is therefore `BLOCKED_TOOLING` and is not claimed. The evidence result is
+`PASS_WITH_TOOLING_LIMITATION`, recorded in
+`stripe-app-0.1.3-install-signed-runtime-2026-07-28.json` with SHA-256
+`33c5ceac81ede68a3469fcd4f472ecd9944fda62f1ec64686308572bdb463c0c`.
 
 The production-shape offline configuration preflight also passes with four distinct database
 principals, separately scoped Stripe credentials, four distinct application keys and a dedicated
 verifier token. Synthetic temporary configuration files used for that check were removed
-immediately afterward.
-
-On 26 July 2026, the opt-in durable gate also passed against the selected Stripe test account. It
-created a synthetic card PaymentIntent, routed a partial refund through a distinct requester and
-approver, executed exactly one real test Refund through pg-boss, replayed the execution without a
-second Refund or attempt, reconciled the immutable Refund link, and removed its ephemeral database
-and login roles before writing redacted `PASS` evidence. This is test-mode engineering evidence,
-not live authorization or production readiness.
+immediately afterward. RefundDesk remains limited to synthetic test/sandbox evaluation: it has no
+live authorization, Stripe review, Marketplace publication or commercial-readiness claim.
 
 ## Prerequisites
 
@@ -116,7 +163,8 @@ not live authorization or production readiness.
 
 The workspace uses pnpm 11.17.0. Stripe's CLI packages the UI extension independently, so
 `apps/stripe-app` intentionally has a standalone pnpm 10.30.3 lockfile with the same explicitly
-pinned direct dependency versions; CI verifies both installation graphs.
+pinned direct dependency versions; repository verification treats both installation graphs
+separately.
 
 ## Local setup
 
