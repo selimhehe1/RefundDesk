@@ -24,7 +24,7 @@
       }
     ],
     "content_security_policy": {
-      "connect-src": ["https://api.refunddesk.example/api/"],
+      "connect-src": ["https://refunddesk-sandbox-35-181-162-193.sslip.io/api/"],
       "purpose": "Send authenticated refund workflow, settings, alert, and audit requests to the RefundDesk API."
     }
   },
@@ -47,7 +47,7 @@
     }
   ],
   "constants": {
-    "API_BASE": "https://api.refunddesk.example/api",
+    "API_BASE": "https://refunddesk-sandbox-35-181-162-193.sslip.io/api",
     "PILOT_LIVE_ENABLED": false
   },
   "distribution_type": "public",

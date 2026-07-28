@@ -71,10 +71,10 @@ describe("Stripe App manifests", () => {
   it("keeps production CSP exact and all live controls disabled", async () => {
     const manifest = await readJson<AppManifest>(new URL("../stripe-app.json", import.meta.url));
     const sources = manifest.ui_extension.content_security_policy["connect-src"];
-    expect(sources).toEqual(["https://api.refunddesk.example/api/"]);
+    expect(sources).toEqual(["https://refunddesk-sandbox-35-181-162-193.sslip.io/api/"]);
     expect(sources.some((source) => source.includes("*"))).toBe(false);
     expect(manifest.constants).toEqual({
-      API_BASE: "https://api.refunddesk.example/api",
+      API_BASE: "https://refunddesk-sandbox-35-181-162-193.sslip.io/api",
       PILOT_LIVE_ENABLED: false,
     });
   });
