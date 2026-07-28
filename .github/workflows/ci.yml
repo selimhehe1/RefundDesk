@@ -11,6 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:18.4-bookworm
@@ -37,11 +38,13 @@ jobs:
       REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: v1
       REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: v1
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.17.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.18.0
           cache: pnpm
@@ -51,6 +54,125 @@ jobs:
       - run: pnpm test:integration
       - run: pnpm verify
       - run: pnpm audit:prod
+      - name: Validate Lightsail operator contracts
+        run: |
+          set -euo pipefail
+          shellcheck --severity=warning --source-path=SCRIPTDIR deploy/lightsail/scripts/*.sh
+
+          sudo install -d -o root -g root -m 0700 /etc/refunddesk
+          for name in postgres platform worker migration caddy backup; do
+            sudo install -o root -g root -m 0600 \
+              "deploy/lightsail/${name}.env.example" \
+              "/etc/refunddesk/${name}.env"
+          done
+          printf '%s\n' \
+            'REFUNDDESK_IMAGE_TAG=sandbox-ci' \
+            'REFUNDDESK_REVISION=0000000000000000000000000000000000000000' |
+            sudo tee /etc/refunddesk/release.env >/dev/null
+          sudo chmod 0600 /etc/refunddesk/release.env
+
+          docker compose \
+            --project-name refunddesk-ci \
+            --env-file /etc/refunddesk/release.env \
+            --file deploy/lightsail/compose.yml \
+            config --quiet
+
+          sudo install -d -o root -g root -m 0700 \
+            /etc/refunddesk/secrets \
+            /var/lib/refunddesk/postgres/data
+          sudo install -d -o root -g 999 -m 0750 /etc/refunddesk/tls/postgres
+          sudo install -d -o root -g 1000 -m 0750 /etc/refunddesk/tls/verifier
+          sudo install -d -o root -g root -m 0755 /etc/refunddesk/tls/client
+
+          for name in owner web worker queue; do
+            secret_file="$(mktemp)"
+            openssl rand -hex 32 > "$secret_file"
+            sudo install -o root -g root -m 0600 \
+              "$secret_file" \
+              "/etc/refunddesk/secrets/postgres-${name}-password"
+            rm -f -- "$secret_file"
+          done
+
+          sudo env \
+            REFUNDDESK_TLS_ROOT=/etc/refunddesk/tls \
+            bash deploy/lightsail/scripts/provision-internal-pki.sh
+
+          for caddyfile in public verifier; do
+            caddy_arguments=(
+              --rm
+              --network none
+              --user 1000:1000
+              --read-only
+              --cap-drop ALL
+              --security-opt no-new-privileges
+              --tmpfs /data:uid=1000,gid=1000,mode=0700
+              --tmpfs /config:uid=1000,gid=1000,mode=0700
+              --tmpfs /tmp:uid=1000,gid=1000,mode=1777
+              --mount "type=bind,source=$GITHUB_WORKSPACE/deploy/lightsail/Caddyfile.${caddyfile},target=/etc/caddy/Caddyfile,readonly"
+            )
+            if [[ "$caddyfile" = "public" ]]; then
+              caddy_arguments+=(
+                --env REFUNDDESK_PUBLIC_HOST=sandbox.example.invalid
+                --env REFUNDDESK_ACME_EMAIL=operator@example.invalid
+              )
+            else
+              caddy_arguments+=(
+                --mount type=bind,source=/etc/refunddesk/tls/verifier,target=/run/refunddesk/tls,readonly
+              )
+            fi
+            sudo docker run "${caddy_arguments[@]}" \
+              caddy:2.11.4-alpine \
+              validate --config /etc/caddy/Caddyfile
+          done
+          systemd-analyze verify \
+            deploy/lightsail/systemd/refunddesk-backup.service \
+            deploy/lightsail/systemd/refunddesk-backup.timer
+
+          cleanup_lightsail_contract() {
+            local status="$1"
+            if [[ "$status" -ne 0 ]]; then
+              sudo docker compose \
+                --project-name refunddesk-ci \
+                --env-file /etc/refunddesk/release.env \
+                --file deploy/lightsail/compose.yml \
+                logs --no-color postgres || true
+            fi
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              down --remove-orphans >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap 'cleanup_lightsail_contract "$?"' EXIT
+
+          for bootstrap_pass in 1 2; do
+            echo "PostgreSQL restricted-login bootstrap pass ${bootstrap_pass}/2"
+            sudo env \
+              PATH="$PATH" \
+              REFUNDDESK_ROOT="$GITHUB_WORKSPACE" \
+              REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
+              REFUNDDESK_COMPOSE_FILE="$GITHUB_WORKSPACE/deploy/lightsail/compose.yml" \
+              REFUNDDESK_COMPOSE_PROJECT=refunddesk-ci \
+              REFUNDDESK_RELEASE_ENV=/etc/refunddesk/release.env \
+              REFUNDDESK_OPERATOR_LOCK=/run/lock/refunddesk-ci.lock \
+              REFUNDDESK_IMAGE_TAG=sandbox-ci \
+              bash deploy/lightsail/scripts/bootstrap-database.sh
+          done
+
+          role_count="$(
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              exec --no-TTY postgres \
+              psql --username=refunddesk_owner --dbname=refunddesk \
+                --tuples-only --no-align \
+                --command="SELECT count(*) FROM pg_roles WHERE rolname IN ('refunddesk_web_login','refunddesk_worker_login','refunddesk_queue_login') AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls;"
+          )"
+          test "$role_count" = "3"
+          trap - EXIT
+          cleanup_lightsail_contract 0
       - name: Build provider-neutral OCI targets
         env:
           DOCKER_BUILDKIT: "1"
@@ -74,6 +196,7 @@ jobs:
               '/workspace/packages/db/test'
             ];
             if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
+            if (!fs.existsSync('/workspace/packages/config/dist/check-release.js')) process.exit(1);
           "
           docker run --rm --entrypoint node refunddesk-worker:ci -e "
             const fs = require('node:fs');
@@ -129,6 +252,11 @@ jobs:
           trap finish EXIT
 
           docker run --rm --network host \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
             -e DATABASE_URL \
             -e WORKER_DATABASE_URL \
             -e DATABASE_MIGRATION_URL \
@@ -136,6 +264,11 @@ jobs:
             refunddesk-migrate:ci
 
           docker run -d --network host --name refunddesk-web-ci \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
             --health-interval 1s \
             --health-start-period 1s \
             --health-timeout 2s \
@@ -161,6 +294,11 @@ jobs:
             refunddesk-web:ci
 
           docker run -d --network host --name refunddesk-worker-ci \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m \
             --health-interval 1s \
             --health-start-period 1s \
             --health-timeout 2s \
@@ -183,16 +321,29 @@ jobs:
             -e WORKER_HEALTH_PORT=3201 \
             refunddesk-worker:ci
 
-          for attempt in $(seq 1 80); do
-            curl --fail --silent http://127.0.0.1:3200/api/ready >/dev/null && break
-            test "$attempt" -lt 80
-            sleep 0.25
-          done
-          for attempt in $(seq 1 80); do
-            curl --fail --silent http://127.0.0.1:3201/ready >/dev/null && break
-            test "$attempt" -lt 80
-            sleep 0.25
-          done
+          wait_for_endpoint() {
+            name="$1"
+            container="$2"
+            url="$3"
+            for attempt in $(seq 1 80); do
+              status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url" || true)"
+              if [[ "$status" = "200" ]]; then
+                return 0
+              fi
+              if [[ "$attempt" -eq 80 ]]; then
+                echo "endpoint=${name} host_status=${status}"
+                docker exec "$container" node -e "
+                  fetch('${url}')
+                    .then((response) => console.error('endpoint=${name} container_status=' + response.status))
+                    .catch(() => console.error('endpoint=${name} container_status=unreachable'));
+                " || true
+                return 1
+              fi
+              sleep 0.25
+            done
+          }
+          wait_for_endpoint web-ready refunddesk-web-ci http://127.0.0.1:3200/api/ready
+          wait_for_endpoint worker-ready refunddesk-worker-ci http://127.0.0.1:3201/ready
           docker exec refunddesk-web-ci node -e "
             const forbidden = [
               'STRIPE_APP_SIGNING_SECRET',

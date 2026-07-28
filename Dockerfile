@@ -81,6 +81,7 @@ COPY --from=migrate-pruned --chown=node:node /workspace/scripts/local-environmen
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/config/package.json ./packages/config/
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/config/src ./packages/config/src
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/config/node_modules ./packages/config/node_modules
+COPY --from=build --chown=node:node /workspace/packages/config/dist ./packages/config/dist
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/db/package.json ./packages/db/
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/db/prisma ./packages/db/prisma
 COPY --from=migrate-pruned --chown=node:node /workspace/packages/db/scripts ./packages/db/scripts

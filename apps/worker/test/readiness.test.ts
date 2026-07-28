@@ -22,14 +22,16 @@ const clock: Clock = {
 };
 
 function healthyConsumers(): WorkerConsumerSnapshot[] {
-  return EXPECTED_WORKER_CONSUMERS.map((expected) => ({
-    name: expected.queue,
-    state: "active",
-    count: 0,
-    createdOn: NOW_MS - 60_000,
-    lastFetchedOn: NOW_MS - 1_000,
-    lastJobStartedOn: null,
-  }));
+  return EXPECTED_WORKER_CONSUMERS.flatMap((expected) =>
+    Array.from({ length: expected.localConcurrency }, () => ({
+      name: expected.queue,
+      state: "active" as const,
+      count: 0,
+      createdOn: NOW_MS - 60_000,
+      lastFetchedOn: NOW_MS - 1_000,
+      lastJobStartedOn: null,
+    })),
+  );
 }
 
 function healthySchedules(): WorkerScheduleSnapshot[] {
@@ -116,8 +118,9 @@ function dependencies(
 }
 
 describe("worker runtime readiness", () => {
-  it("is ready with all six polled consumers, four exact schedules and no installations", async () => {
+  it("is ready with all sixteen configured consumer instances and four exact schedules", async () => {
     const store = new ScannerStore();
+    expect(healthyConsumers()).toHaveLength(16);
 
     await expect(evaluateWorkerReadiness(dependencies(store))).resolves.toEqual({
       ready: true,
@@ -180,8 +183,12 @@ describe("worker runtime readiness", () => {
       ],
     },
     {
-      name: "an expected queue has a duplicate consumer",
+      name: "an expected queue has one consumer too many",
       mutate: (consumers: WorkerConsumerSnapshot[]) => [...consumers, { ...consumers[0]! }],
+    },
+    {
+      name: "an expected queue has one consumer too few",
+      mutate: (consumers: WorkerConsumerSnapshot[]) => consumers.slice(1),
     },
     {
       name: "one expected consumer is stopping",

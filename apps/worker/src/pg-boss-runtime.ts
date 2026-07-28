@@ -22,6 +22,7 @@ import { handleReconciliationScanJob } from "./reconciliation-scanner.js";
 import {
   createPgBossRuntimeReadinessSource,
   createWorkerReadinessProbe,
+  WORKER_CONSUMER_CONCURRENCY,
   type WorkerReadinessProbe,
 } from "./readiness.js";
 import { handleRefundExecutionJob } from "./refund-execution.js";
@@ -216,15 +217,28 @@ export async function startPgBossWorker(
     );
     await boss.send(QUEUES.recoverApproved, recoverApprovedJobSchema.parse({ scope: "approved" }));
 
-    await boss.work<unknown>(QUEUES.executeRefund, { batchSize: 1, localConcurrency: 4 }, (jobs) =>
-      handleOne(jobs, (data) => handleRefundExecutionJob(data, dependencies)),
+    await boss.work<unknown>(
+      QUEUES.executeRefund,
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.executeRefund],
+      },
+      (jobs) => handleOne(jobs, (data) => handleRefundExecutionJob(data, dependencies)),
     );
-    await boss.work<unknown>(QUEUES.processWebhook, { batchSize: 1, localConcurrency: 8 }, (jobs) =>
-      handleOne(jobs, (data) => handleWebhookJob(data, dependencies)),
+    await boss.work<unknown>(
+      QUEUES.processWebhook,
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.processWebhook],
+      },
+      (jobs) => handleOne(jobs, (data) => handleWebhookJob(data, dependencies)),
     );
     await boss.work<unknown>(
       QUEUES.recoverWebhooks,
-      { batchSize: 1, localConcurrency: 1 },
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.recoverWebhooks],
+      },
       (jobs) =>
         handleOne(jobs, (data) =>
           handleWebhookRecoveryJob(data, {
@@ -236,7 +250,10 @@ export async function startPgBossWorker(
     );
     await boss.work<unknown>(
       QUEUES.recoverApproved,
-      { batchSize: 1, localConcurrency: 1 },
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.recoverApproved],
+      },
       (jobs) =>
         handleOne(jobs, (data) =>
           handleApprovedExecutionRecoveryJob(data, {
@@ -246,11 +263,21 @@ export async function startPgBossWorker(
           }),
         ),
     );
-    await boss.work<unknown>(QUEUES.scanRefunds, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-      handleOne(jobs, (data) => handleReconciliationScanJob(data, dependencies)),
+    await boss.work<unknown>(
+      QUEUES.scanRefunds,
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.scanRefunds],
+      },
+      (jobs) => handleOne(jobs, (data) => handleReconciliationScanJob(data, dependencies)),
     );
-    await boss.work<unknown>(QUEUES.expireRequests, { batchSize: 1, localConcurrency: 1 }, (jobs) =>
-      handleOne(jobs, (data) => handleExpirationJob(data, dependencies)),
+    await boss.work<unknown>(
+      QUEUES.expireRequests,
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.expireRequests],
+      },
+      (jobs) => handleOne(jobs, (data) => handleExpirationJob(data, dependencies)),
     );
   });
 

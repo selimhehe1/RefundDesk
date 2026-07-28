@@ -1,0 +1,25 @@
+{
+	admin 127.0.0.1:2019
+	auto_https off
+	grace_period 30s
+}
+
+https://verifier.refunddesk.internal:8443 {
+	tls /run/refunddesk/tls/server.crt /run/refunddesk/tls/server.key
+
+	route {
+		@verify {
+			method POST
+			path /internal/v1/signed-requests/verify
+		}
+
+		reverse_proxy @verify worker.refunddesk.internal:3101 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 30s
+			}
+		}
+
+		respond 404
+	}
+}

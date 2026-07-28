@@ -1,0 +1,12 @@
+[Unit]
+Description=Run RefundDesk encrypted PostgreSQL backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=12min
+AccuracySec=1min
+Persistent=true
+Unit=refunddesk-backup.service
+
+[Install]
+WantedBy=timers.target

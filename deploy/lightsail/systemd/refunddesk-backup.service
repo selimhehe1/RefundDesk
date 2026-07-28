@@ -1,0 +1,33 @@
+[Unit]
+Description=RefundDesk encrypted PostgreSQL cold backup
+Documentation=https://github.com/selimhehe1/RefundDesk
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/refunddesk/backup.env
+ConditionPathExists=/opt/refunddesk/current/deploy/lightsail/scripts/backup.sh
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/refunddesk/backup.env
+ExecStart=/usr/bin/bash /opt/refunddesk/current/deploy/lightsail/scripts/backup.sh
+UMask=0077
+TimeoutStartSec=45min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/refunddesk/backups /run /var/log/refunddesk
+
+[Install]
+WantedBy=multi-user.target

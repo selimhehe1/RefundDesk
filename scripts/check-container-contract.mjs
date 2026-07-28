@@ -18,6 +18,7 @@ const requiredDockerfileFragments = [
   "ENV COREPACK_ENABLE_NETWORK=0",
   "ENV pnpm_config_verify_deps_before_run=false",
   "RUN chown node:node /workspace",
+  "COPY --from=build --chown=node:node /workspace/packages/config/dist ./packages/config/dist",
   'CMD ["node", "apps/platform/server.js"]',
   'CMD ["node", "--enable-source-maps", "dist/apps/worker/src/main.js"]',
   'CMD ["node", "scripts/database-command.mjs", "release-prepare"]',

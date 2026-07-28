@@ -1,0 +1,414 @@
+name: refunddesk
+
+x-runtime-security: &runtime-security
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 128
+  logging:
+    driver: json-file
+    options:
+      max-file: "3"
+      max-size: 5m
+
+services:
+  postgres:
+    image: postgres:18.4-bookworm
+    restart: unless-stopped
+    env_file:
+      - /etc/refunddesk/postgres.env
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/refunddesk-pg_hba.conf
+      - -c
+      - listen_addresses=*
+      - -c
+      - max_connections=45
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - effective_cache_size=128MB
+      - -c
+      - maintenance_work_mem=24MB
+      - -c
+      - work_mem=1MB
+      - -c
+      - jit=off
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - ssl=on
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - ssl_cert_file=/run/refunddesk/tls/server.crt
+      - -c
+      - ssl_key_file=/run/refunddesk/tls/server.key
+      - -c
+      - timezone=UTC
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 224m
+    cpus: 0.75
+    shm_size: 64m
+    stop_grace_period: 60s
+    volumes:
+      - type: bind
+        source: /var/lib/refunddesk/postgres/data
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/tls/postgres
+        target: /run/refunddesk/tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./pg_hba.conf
+        target: /etc/postgresql/refunddesk-pg_hba.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-owner-password
+        target: /run/secrets/postgres-owner-password
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/run/postgresql:uid=999,gid=999,mode=0775
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --quiet --host=/var/run/postgresql --username="$${POSTGRES_USER}" --dbname="$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      database-web:
+        aliases:
+          - postgres.refunddesk.internal
+      database-worker:
+        aliases:
+          - postgres.refunddesk.internal
+      database-migrate:
+        aliases:
+          - postgres.refunddesk.internal
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 5m
+
+  bootstrap:
+    image: postgres:18.4-bookworm
+    profiles:
+      - release
+    restart: "no"
+    env_file:
+      - /etc/refunddesk/postgres.env
+    entrypoint:
+      - /bin/bash
+      - /run/refunddesk/bootstrap-roles.sh
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    volumes:
+      - type: bind
+        source: ./scripts/bootstrap-roles.sh
+        target: /run/refunddesk/bootstrap-roles.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./10-bootstrap-roles.sql
+        target: /run/refunddesk/bootstrap-roles.sql
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/tls/postgres/ca.crt
+        target: /run/refunddesk/postgres-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-owner-password
+        target: /run/secrets/postgres-owner-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-web-password
+        target: /run/secrets/postgres-web-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-worker-password
+        target: /run/secrets/postgres-worker-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-queue-password
+        target: /run/secrets/postgres-queue-password
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:mode=1777
+    networks:
+      - database-migrate
+    logging:
+      driver: json-file
+      options:
+        max-file: "1"
+        max-size: 1m
+
+  migrate:
+    image: refunddesk-migrate:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
+    profiles:
+      - release
+    restart: "no"
+    env_file:
+      - /etc/refunddesk/migration.env
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/refunddesk/postgres-ca.crt
+      NODE_OPTIONS: --max-old-space-size=224
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 1.0
+    stop_grace_period: 60s
+    volumes:
+      - type: bind
+        source: /etc/refunddesk/tls/postgres/ca.crt
+        target: /run/refunddesk/postgres-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - database-migrate
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: 5m
+
+  worker:
+    <<: *runtime-security
+    image: refunddesk-worker:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - /etc/refunddesk/worker.env
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/refunddesk/postgres-ca.crt
+      NODE_OPTIONS: --max-old-space-size=144
+      WORKER_HEALTH_HOST: 0.0.0.0
+      WORKER_HEALTH_PORT: "3101"
+    user: "1000:1000"
+    mem_limit: 256m
+    cpus: 0.75
+    stop_grace_period: 45s
+    volumes:
+      - type: bind
+        source: /etc/refunddesk/tls/postgres/ca.crt
+        target: /run/refunddesk/postgres-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      database-worker: {}
+      verifier-back:
+        aliases:
+          - worker.refunddesk.internal
+      worker-egress: {}
+
+  verifier:
+    <<: *runtime-security
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    user: "1000:1000"
+    mem_limit: 40m
+    cpus: 0.25
+    stop_grace_period: 45s
+    volumes:
+      - type: bind
+        source: ./Caddyfile.verifier
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/tls/verifier
+        target: /run/refunddesk/tls
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /config:uid=1000,gid=1000,mode=0700
+      - /data:uid=1000,gid=1000,mode=0700
+      - /tmp:uid=1000,gid=1000,mode=1777
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --quiet --spider http://127.0.0.1:2019/config/
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      worker:
+        condition: service_started
+    networks:
+      verifier-front:
+        aliases:
+          - verifier.refunddesk.internal
+      verifier-back: {}
+
+  web:
+    <<: *runtime-security
+    image: refunddesk-web:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
+    restart: unless-stopped
+    env_file:
+      - /etc/refunddesk/platform.env
+    environment:
+      HOSTNAME: 0.0.0.0
+      NODE_EXTRA_CA_CERTS: /run/refunddesk/client-ca-bundle.crt
+      NODE_OPTIONS: --max-old-space-size=192
+    user: "1000:1000"
+    mem_limit: 256m
+    cpus: 0.75
+    stop_grace_period: 45s
+    volumes:
+      - type: bind
+        source: /etc/refunddesk/tls/client/refunddesk-ca-bundle.crt
+        target: /run/refunddesk/client-ca-bundle.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      edge:
+        aliases:
+          - web.refunddesk.internal
+      verifier-front: {}
+      database-web: {}
+      web-egress: {}
+
+  caddy:
+    <<: *runtime-security
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    env_file:
+      - /etc/refunddesk/caddy.env
+    user: "1000:1000"
+    mem_limit: 48m
+    cpus: 0.25
+    stop_grace_period: 45s
+    ports:
+      - "80:8080"
+      - "443:8443"
+    volumes:
+      - type: bind
+        source: ./Caddyfile.public
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/refunddesk/caddy-public/data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /var/lib/refunddesk/caddy-public/config
+        target: /config
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --quiet --spider http://127.0.0.1:2019/config/
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - edge
+      - caddy-egress
+
+networks:
+  edge:
+    driver: bridge
+    internal: true
+  verifier-front:
+    driver: bridge
+    internal: true
+  verifier-back:
+    driver: bridge
+    internal: true
+  database-web:
+    driver: bridge
+    internal: true
+  database-worker:
+    driver: bridge
+    internal: true
+  database-migrate:
+    driver: bridge
+    internal: true
+  caddy-egress:
+    driver: bridge
+  web-egress:
+    driver: bridge
+  worker-egress:
+    driver: bridge

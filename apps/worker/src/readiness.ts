@@ -16,32 +16,52 @@ export const DEFAULT_WORKER_READINESS_THRESHOLDS = Object.freeze({
   futureTimestampToleranceMs: 5 * SECOND_MILLISECONDS,
 });
 
+export const WORKER_CONSUMER_CONCURRENCY = Object.freeze({
+  [QUEUES.executeRefund]: 4,
+  [QUEUES.processWebhook]: 8,
+  [QUEUES.recoverWebhooks]: 1,
+  [QUEUES.recoverApproved]: 1,
+  [QUEUES.scanRefunds]: 1,
+  [QUEUES.expireRequests]: 1,
+} as const);
+
 export const EXPECTED_WORKER_CONSUMERS = Object.freeze([
   {
     queue: QUEUES.executeRefund,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.executeRefund],
     maxRunningAgeMs: 10 * MINUTE_MILLISECONDS,
   },
   {
     queue: QUEUES.processWebhook,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.processWebhook],
     maxRunningAgeMs: 5 * MINUTE_MILLISECONDS,
   },
   {
     queue: QUEUES.recoverWebhooks,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.recoverWebhooks],
     maxRunningAgeMs: 55 * SECOND_MILLISECONDS,
   },
   {
     queue: QUEUES.recoverApproved,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.recoverApproved],
     maxRunningAgeMs: 55 * SECOND_MILLISECONDS,
   },
   {
     queue: QUEUES.scanRefunds,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.scanRefunds],
     maxRunningAgeMs: 14 * MINUTE_MILLISECONDS,
   },
   {
     queue: QUEUES.expireRequests,
+    localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.expireRequests],
     maxRunningAgeMs: 4 * MINUTE_MILLISECONDS,
   },
 ] as const);
+
+const EXPECTED_WORKER_CONSUMER_COUNT = EXPECTED_WORKER_CONSUMERS.reduce(
+  (count, consumer) => count + consumer.localConcurrency,
+  0,
+);
 
 export const EXPECTED_WORKER_SCHEDULES = Object.freeze([
   {
@@ -294,7 +314,7 @@ function consumersAreReady(
   nowMs: number,
   thresholds: WorkerReadinessThresholds,
 ): boolean {
-  if (consumers.length !== EXPECTED_WORKER_CONSUMERS.length) {
+  if (consumers.length !== EXPECTED_WORKER_CONSUMER_COUNT) {
     return false;
   }
   const expectedQueues: ReadonlySet<string> = new Set(
@@ -307,7 +327,7 @@ function consumersAreReady(
   return EXPECTED_WORKER_CONSUMERS.every((expected) => {
     const matchingConsumers = consumers.filter((consumer) => consumer.name === expected.queue);
     return (
-      matchingConsumers.length > 0 &&
+      matchingConsumers.length === expected.localConcurrency &&
       matchingConsumers.every((consumer) =>
         consumerIsHealthy(consumer, nowMs, expected.maxRunningAgeMs, thresholds),
       )
