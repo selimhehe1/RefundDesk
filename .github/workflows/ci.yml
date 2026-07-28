@@ -71,7 +71,7 @@ jobs:
             sudo tee /etc/refunddesk/release.env >/dev/null
           sudo chmod 0600 /etc/refunddesk/release.env
 
-          docker compose \
+          sudo docker compose \
             --project-name refunddesk-ci \
             --env-file /etc/refunddesk/release.env \
             --file deploy/lightsail/compose.yml \
