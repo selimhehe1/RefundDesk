@@ -93,14 +93,16 @@ test("web and worker have disjoint database and verifier networks", async () => 
 });
 
 test("TLS names and ingress deny rules are explicit", async () => {
-  const [compose, publicCaddy, verifierCaddy, platform, worker, migration] = await Promise.all([
-    read("compose.yml"),
-    read("Caddyfile.public"),
-    read("Caddyfile.verifier"),
-    read("platform.env.example"),
-    read("worker.env.example"),
-    read("migration.env.example"),
-  ]);
+  const [compose, publicCaddy, verifierCaddy, platform, worker, migration, verifyDeployment] =
+    await Promise.all([
+      read("compose.yml"),
+      read("Caddyfile.public"),
+      read("Caddyfile.verifier"),
+      read("platform.env.example"),
+      read("worker.env.example"),
+      read("migration.env.example"),
+      read("scripts/verify-deployment.sh"),
+    ]);
 
   assert.match(compose, /postgres\.refunddesk\.internal/gu);
   assert.match(platform, /sslmode=verify-full/u);
@@ -112,10 +114,14 @@ test("TLS names and ingress deny rules are explicit", async () => {
   );
   assert.match(
     publicCaddy,
-    /@blocked path \/internal \/internal\/\* \/api\/ready \/api\/webhooks\/stripe-connected\/live/u,
+    /@blocked path \/internal \/internal\/\* \/api\/ready \/api\/webhooks\/stripe-connected \/api\/webhooks\/stripe-connected\/\* \/api\/webhooks\/stripe-account\/live/u,
   );
   assert.match(verifierCaddy, /https:\/\/verifier\.refunddesk\.internal:8443/u);
   assert.match(verifierCaddy, /method POST\s+path \/internal\/v1\/signed-requests\/verify/u);
+  assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/test/u);
+  assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/sandbox/u);
+  assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/live/u);
+  assert.match(verifyDeployment, /\/api\/webhooks\/stripe-connected\/test/u);
   assert.equal(
     (verifierCaddy.match(/reverse_proxy/gu) ?? []).length,
     1,
@@ -162,8 +168,8 @@ test("environment examples preserve authority separation and disable live", asyn
     "DATABASE_MIGRATION_URL",
     "STRIPE_PLATFORM_TEST_READ_KEY",
     "STRIPE_MANAGED_SANDBOX_READ_KEY",
-    "STRIPE_CONNECTED_TEST_WEBHOOK_SECRET",
-    "STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
     "REFUNDDESK_FIELD_ENCRYPTION_KEY_V1",
     "REFUNDDESK_EXPORT_SIGNING_KEY_V1",
   ]) {
@@ -182,7 +188,11 @@ test("environment examples preserve authority separation and disable live", asyn
   }
   assert.match(platformSource, /^REFUNDDESK_GLOBAL_LIVE_ENABLED=false$/mu);
   assert.match(workerSource, /^REFUNDDESK_GLOBAL_LIVE_ENABLED=false$/mu);
-  assert.match(platformSource, /^STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET=disabled$/mu);
+  assert.match(platformSource, /^STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled$/mu);
+  for (const source of [platformSource, workerSource]) {
+    assert.match(source, /^STRIPE_PLATFORM_TEST_ACCOUNT_ID=acct_[A-Za-z0-9]+$/mu);
+    assert.match(source, /^STRIPE_MANAGED_SANDBOX_ACCOUNT_ID=acct_[A-Za-z0-9]+$/mu);
+  }
   assert.match(
     postgresSource,
     /^POSTGRES_PASSWORD_FILE=\/run\/secrets\/postgres-owner-password$/mu,

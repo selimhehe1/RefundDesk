@@ -381,6 +381,11 @@ GRANT EXECUTE ON FUNCTION refunddesk_find_webhook_receipt(
   VARCHAR,
   VARCHAR
 ) TO refunddesk_runtime;
+GRANT EXECUTE ON FUNCTION refunddesk_find_webhook_receipt_v2(
+  webhook_endpoint,
+  VARCHAR,
+  VARCHAR
+) TO refunddesk_runtime;
 GRANT EXECUTE ON FUNCTION refunddesk_resolve_webhook_installation(
   VARCHAR,
   stripe_environment
@@ -390,6 +395,8 @@ GRANT EXECUTE ON FUNCTION refunddesk_list_scannable_installations()
 GRANT EXECUTE ON FUNCTION refunddesk_list_active_tenant_ids()
   TO refunddesk_worker;
 GRANT EXECUTE ON FUNCTION refunddesk_list_recoverable_webhook_receipts(INTEGER)
+  TO refunddesk_worker;
+GRANT EXECUTE ON FUNCTION refunddesk_list_recoverable_webhook_receipts_v2(INTEGER)
   TO refunddesk_worker;
 
 -- Maintenance is a capability role, not a read/delete role.

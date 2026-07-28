@@ -1,7 +1,7 @@
 import type { WorkerConfig } from "@refunddesk/config";
 import { RefundProofKeyring } from "@refunddesk/domain";
 import { createLogger } from "@refunddesk/observability";
-import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
+import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import type { Clock, WorkerLogger, WorkerStore } from "./ports.js";
 
@@ -11,7 +11,7 @@ export const systemClock: Clock = {
 
 export interface WorkerDependencies {
   readonly store: WorkerStore;
-  readonly stripe: ConnectedAccountStripeClient;
+  readonly stripe: DirectAccountStripeClient;
   readonly proofs: RefundProofKeyring;
   readonly clock: Clock;
   readonly logger: WorkerLogger;
@@ -23,10 +23,16 @@ export function createWorkerDependencies(
 ): WorkerDependencies {
   return {
     store,
-    stripe: new ConnectedAccountStripeClient(
+    stripe: new DirectAccountStripeClient(
       new StripeCredentialResolver({
-        platformTestKey: config.stripe.platformTestEffectKey,
-        managedSandboxKey: config.stripe.managedSandboxEffectKey,
+        platformTest: {
+          apiKey: config.stripe.platformTestEffectKey,
+          expectedAccountId: config.stripe.platformTestAccountId,
+        },
+        managedSandbox: {
+          apiKey: config.stripe.managedSandboxEffectKey,
+          expectedAccountId: config.stripe.managedSandboxAccountId,
+        },
       }),
     ),
     proofs: new RefundProofKeyring({

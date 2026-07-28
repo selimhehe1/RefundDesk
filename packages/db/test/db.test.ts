@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   TenantRepositories,
-  assertNormalizedWebhookRowConsistency,
+  accountWebhookEndpointSchema,
+  assertNormalizedAccountWebhookRowConsistency,
   assertTenantId,
   isRetryableTransactionError,
-  normalizedConnectedWebhookPayloadSchema,
+  normalizedAccountWebhookPayloadSchema,
   type Prisma,
 } from "../src/index.js";
 
@@ -369,6 +370,45 @@ describe("migration hardening", () => {
     );
   });
 
+  it("adds account-scoped webhook endpoints with account-global Event deduplication", async () => {
+    const [enumSql, sql] = await Promise.all([
+      readFile(
+        new URL(
+          "../prisma/migrations/20260728145900_account_scoped_webhook_endpoint_enum/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL(
+          "../prisma/migrations/20260728150000_account_scoped_webhook_endpoints/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
+
+    expect(enumSql).toContain("ADD VALUE IF NOT EXISTS 'account_test'");
+    expect(enumSql).toContain("ADD VALUE IF NOT EXISTS 'account_sandbox'");
+    expect(enumSql).toMatch(/^--[\s\S]+BEGIN;[\s\S]+COMMIT;\s*$/u);
+    expect(sql).not.toContain("ADD VALUE");
+    expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
+    expect(sql).toContain('"webhook_receipts_account_event_key"');
+    expect(sql).toContain('("stripe_account_id", "stripe_event_id")');
+    expect(sql).toContain('DROP INDEX "webhook_receipts_endpoint_event_key"');
+    expect(sql).toContain("receipt.\"endpoint\" IN ('connected_test', 'account_test')");
+    expect(sql).toContain("receipt.\"endpoint\" IN ('connected_sandbox', 'account_sandbox')");
+    expect(sql).toContain('"refunddesk_find_webhook_receipt_v2"');
+    expect(sql).toContain('"refunddesk_list_recoverable_webhook_receipts_v2"');
+    expect(sql).not.toContain('CREATE OR REPLACE FUNCTION "refunddesk_find_webhook_receipt"');
+    expect(sql).not.toContain(
+      'CREATE OR REPLACE FUNCTION "refunddesk_list_recoverable_webhook_receipts"',
+    );
+    expect(sql).toContain(
+      '"stripe_event_id" = requested_event_id\n    AND receipt."stripe_account_id" = requested_account_id',
+    );
+  });
+
   it("converges a succeeded linked Refund when Stripe later cancels it", async () => {
     const sql = await readFile(
       new URL(
@@ -427,7 +467,7 @@ describe("migration hardening", () => {
   });
 });
 
-describe("normalized connected webhook payloads", () => {
+describe("normalized account webhook payloads", () => {
   const payload = {
     schema_version: 1,
     environment: "test",
@@ -447,16 +487,23 @@ describe("normalized connected webhook payloads", () => {
     },
   } as const;
 
+  it("allows only account-scoped labels for new webhook writes", () => {
+    expect(accountWebhookEndpointSchema.parse("account_test")).toBe("account_test");
+    expect(accountWebhookEndpointSchema.parse("account_sandbox")).toBe("account_sandbox");
+    expect(() => accountWebhookEndpointSchema.parse("connected_test")).toThrow();
+    expect(() => accountWebhookEndpointSchema.parse("connected_sandbox")).toThrow();
+  });
+
   it("keeps tampered metadata classifiable while rejecting raw or unknown fields", () => {
-    expect(normalizedConnectedWebhookPayloadSchema.parse(payload)).toEqual(payload);
+    expect(normalizedAccountWebhookPayloadSchema.parse(payload)).toEqual(payload);
     expect(() =>
-      normalizedConnectedWebhookPayloadSchema.parse({
+      normalizedAccountWebhookPayloadSchema.parse({
         ...payload,
         raw_body: '{"customer":"cus_forbidden"}',
       }),
     ).toThrow();
     expect(() =>
-      normalizedConnectedWebhookPayloadSchema.parse({
+      normalizedAccountWebhookPayloadSchema.parse({
         ...payload,
         environment: "live",
       }),
@@ -465,8 +512,8 @@ describe("normalized connected webhook payloads", () => {
 
   it("binds endpoint, type, object and creation time to the durable payload", () => {
     expect(
-      assertNormalizedWebhookRowConsistency({
-        endpoint: "connected_test",
+      assertNormalizedAccountWebhookRowConsistency({
+        endpoint: "account_test",
         eventType: "refund.created",
         objectId: "re_contract",
         stripeCreatedAt: new Date(1_893_499_200_000),
@@ -474,13 +521,22 @@ describe("normalized connected webhook payloads", () => {
       }),
     ).toEqual(payload);
     expect(() =>
-      assertNormalizedWebhookRowConsistency({
-        endpoint: "connected_sandbox",
+      assertNormalizedAccountWebhookRowConsistency({
+        endpoint: "account_sandbox",
         eventType: "refund.created",
         objectId: "re_contract",
         stripeCreatedAt: new Date(1_893_499_200_000),
         normalizedPayload: payload,
       }),
     ).toThrow("endpoint");
+    expect(
+      assertNormalizedAccountWebhookRowConsistency({
+        endpoint: "connected_test",
+        eventType: "refund.created",
+        objectId: "re_contract",
+        stripeCreatedAt: new Date(1_893_499_200_000),
+        normalizedPayload: payload,
+      }),
+    ).toEqual(payload);
   });
 });

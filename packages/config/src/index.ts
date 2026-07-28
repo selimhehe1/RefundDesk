@@ -9,6 +9,10 @@ const stripeAppId = z
   .string()
   .regex(/^ca_[A-Za-z0-9]+$/u)
   .max(255);
+const stripeAccountId = z
+  .string()
+  .regex(/^acct_[A-Za-z0-9]+$/u)
+  .max(255);
 const legacyTestApiKey = z.string().regex(/^(?:sk|rk)_test_[A-Za-z0-9_]+$/u);
 const optionalLegacyTestApiKey = legacyTestApiKey.optional();
 const restrictedTestApiKey = z.string().regex(/^rk_test_[A-Za-z0-9_]+$/u);
@@ -275,9 +279,11 @@ const platformEnvironmentSchema = z
     STRIPE_MANAGED_SANDBOX_READ_KEY: optionalRestrictedTestApiKey,
     STRIPE_PLATFORM_TEST_KEY: optionalLegacyTestApiKey,
     STRIPE_MANAGED_SANDBOX_KEY: optionalLegacyTestApiKey,
-    STRIPE_CONNECTED_TEST_WEBHOOK_SECRET: webhookSecret,
-    STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: webhookSecret,
-    STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: z.literal("disabled").default("disabled"),
+    STRIPE_PLATFORM_TEST_ACCOUNT_ID: stripeAccountId,
+    STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: stripeAccountId,
+    STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET: webhookSecret,
+    STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: webhookSecret,
+    STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: z.literal("disabled").default("disabled"),
     REFUNDDESK_GLOBAL_LIVE_ENABLED: globalLiveEnabled,
     REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: base64Key,
     REFUNDDESK_EXPORT_SIGNING_KEY_V1: base64Key,
@@ -309,12 +315,17 @@ const platformEnvironmentSchema = z
         message: "Test-mode and managed-sandbox API keys must be distinct",
       });
     }
-    if (
-      value.STRIPE_CONNECTED_TEST_WEBHOOK_SECRET === value.STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET
-    ) {
+    if (value.STRIPE_PLATFORM_TEST_ACCOUNT_ID === value.STRIPE_MANAGED_SANDBOX_ACCOUNT_ID) {
       context.addIssue({
         code: "custom",
-        path: ["STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET"],
+        path: ["STRIPE_MANAGED_SANDBOX_ACCOUNT_ID"],
+        message: "Test-mode and managed-sandbox account IDs must be distinct",
+      });
+    }
+    if (value.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET === value.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET) {
+      context.addIssue({
+        code: "custom",
+        path: ["STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET"],
         message: "Test-mode and managed-sandbox webhook secrets must be distinct",
       });
     }
@@ -339,6 +350,8 @@ const workerEnvironmentSchema = z
     STRIPE_MANAGED_SANDBOX_EFFECT_KEY: optionalRestrictedTestApiKey,
     STRIPE_PLATFORM_TEST_KEY: optionalLegacyTestApiKey,
     STRIPE_MANAGED_SANDBOX_KEY: optionalLegacyTestApiKey,
+    STRIPE_PLATFORM_TEST_ACCOUNT_ID: stripeAccountId,
+    STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: stripeAccountId,
     REFUNDDESK_GLOBAL_LIVE_ENABLED: globalLiveEnabled,
     REFUNDDESK_PROOF_HMAC_KEY_V1: base64Key,
     REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: z.literal("v1"),
@@ -380,6 +393,13 @@ const workerEnvironmentSchema = z
         code: "custom",
         path: ["STRIPE_MANAGED_SANDBOX_EFFECT_KEY"],
         message: "Test-mode and managed-sandbox API keys must be distinct",
+      });
+    }
+    if (value.STRIPE_PLATFORM_TEST_ACCOUNT_ID === value.STRIPE_MANAGED_SANDBOX_ACCOUNT_ID) {
+      context.addIssue({
+        code: "custom",
+        path: ["STRIPE_MANAGED_SANDBOX_ACCOUNT_ID"],
+        message: "Test-mode and managed-sandbox account IDs must be distinct",
       });
     }
     if (value.REFUNDDESK_PROOF_HMAC_KEY_V1 === value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1) {
@@ -445,11 +465,13 @@ export interface PlatformConfig extends RuntimeConfig {
   readonly stripe: {
     readonly apiVersion: "2026-06-24.dahlia";
     readonly appId: string;
+    readonly platformTestAccountId: string;
+    readonly managedSandboxAccountId: string;
     readonly platformTestReadKey: string;
     readonly managedSandboxReadKey: string;
-    readonly connectedTestWebhookSecret: string;
-    readonly connectedSandboxWebhookSecret: string;
-    readonly connectedLiveWebhookSecret: "disabled";
+    readonly accountTestWebhookSecret: string;
+    readonly accountSandboxWebhookSecret: string;
+    readonly accountLiveWebhookSecret: "disabled";
   };
   readonly keys: {
     readonly activeFieldVersion: "v1";
@@ -465,6 +487,8 @@ export interface WorkerConfig extends RuntimeConfig {
   readonly stripe: {
     readonly apiVersion: "2026-06-24.dahlia";
     readonly appSigningSecret: string;
+    readonly platformTestAccountId: string;
+    readonly managedSandboxAccountId: string;
     readonly platformTestEffectKey: string;
     readonly managedSandboxEffectKey: string;
   };
@@ -512,11 +536,13 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
     [
       "STRIPE_API_VERSION",
       "STRIPE_APP_ID",
+      "STRIPE_PLATFORM_TEST_ACCOUNT_ID",
+      "STRIPE_MANAGED_SANDBOX_ACCOUNT_ID",
       "STRIPE_PLATFORM_TEST_READ_KEY",
       "STRIPE_MANAGED_SANDBOX_READ_KEY",
-      "STRIPE_CONNECTED_TEST_WEBHOOK_SECRET",
-      "STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET",
-      "STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET",
+      "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET",
+      "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
+      "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET",
     ],
     [
       "REFUNDDESK_GLOBAL_LIVE_ENABLED",
@@ -539,6 +565,8 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,
       appId: env.STRIPE_APP_ID,
+      platformTestAccountId: env.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
+      managedSandboxAccountId: env.STRIPE_MANAGED_SANDBOX_ACCOUNT_ID,
       platformTestReadKey: requireScopedKey(
         env.STRIPE_PLATFORM_TEST_READ_KEY,
         env.STRIPE_PLATFORM_TEST_KEY,
@@ -547,9 +575,9 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
         env.STRIPE_MANAGED_SANDBOX_READ_KEY,
         env.STRIPE_MANAGED_SANDBOX_KEY,
       ),
-      connectedTestWebhookSecret: env.STRIPE_CONNECTED_TEST_WEBHOOK_SECRET,
-      connectedSandboxWebhookSecret: env.STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET,
-      connectedLiveWebhookSecret: env.STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET,
+      accountTestWebhookSecret: env.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET,
+      accountSandboxWebhookSecret: env.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET,
+      accountLiveWebhookSecret: env.STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET,
     },
     keys: {
       activeFieldVersion: env.REFUNDDESK_ACTIVE_FIELD_KEY_VERSION,
@@ -569,9 +597,9 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     "STRIPE_APP_ID",
     "STRIPE_PLATFORM_TEST_READ_KEY",
     "STRIPE_MANAGED_SANDBOX_READ_KEY",
-    "STRIPE_CONNECTED_TEST_WEBHOOK_SECRET",
-    "STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET",
-    "STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET",
     "REFUNDDESK_FIELD_ENCRYPTION_KEY_V1",
     "REFUNDDESK_EXPORT_SIGNING_KEY_V1",
   ]);
@@ -580,6 +608,8 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     [
       "STRIPE_API_VERSION",
       "STRIPE_APP_SIGNING_SECRET",
+      "STRIPE_PLATFORM_TEST_ACCOUNT_ID",
+      "STRIPE_MANAGED_SANDBOX_ACCOUNT_ID",
       "STRIPE_PLATFORM_TEST_EFFECT_KEY",
       "STRIPE_MANAGED_SANDBOX_EFFECT_KEY",
     ],
@@ -603,6 +633,8 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,
       appSigningSecret: env.STRIPE_APP_SIGNING_SECRET,
+      platformTestAccountId: env.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
+      managedSandboxAccountId: env.STRIPE_MANAGED_SANDBOX_ACCOUNT_ID,
       platformTestEffectKey: requireScopedKey(
         env.STRIPE_PLATFORM_TEST_EFFECT_KEY,
         env.STRIPE_PLATFORM_TEST_KEY,
@@ -799,6 +831,19 @@ export function assertReleaseConfigSeparation(config: ReleaseConfigSet): void {
   }
   if (config.platform.signedRequestVerifierToken !== config.worker.signedRequestVerifierToken) {
     throw new Error("SIGNED_REQUEST_VERIFIER_TOKEN_MISMATCH");
+  }
+  if (
+    config.platform.stripe.platformTestAccountId !== config.worker.stripe.platformTestAccountId ||
+    config.platform.stripe.managedSandboxAccountId !== config.worker.stripe.managedSandboxAccountId
+  ) {
+    throw new Error("STRIPE_ACCOUNT_BINDING_MISMATCH");
+  }
+  if (
+    config.platform.stripe.platformTestAccountId ===
+      config.platform.stripe.managedSandboxAccountId ||
+    config.worker.stripe.platformTestAccountId === config.worker.stripe.managedSandboxAccountId
+  ) {
+    throw new Error("STRIPE_ACCOUNT_BINDINGS_NOT_DISTINCT");
   }
   const verifierToken = Buffer.from(config.platform.signedRequestVerifierToken, "base64");
   if (applicationKeys.some((key) => key.equals(verifierToken))) {

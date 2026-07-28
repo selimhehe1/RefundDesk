@@ -1,7 +1,8 @@
 import {
-  assertNormalizedWebhookRowConsistency,
-  connectedWebhookEndpointSchema,
-  type NormalizedConnectedWebhookPayload,
+  accountWebhookEndpointSchema,
+  assertNormalizedAccountWebhookRowConsistency,
+  type AccountWebhookEndpoint,
+  type NormalizedAccountWebhookPayload,
 } from "./connected-webhook.js";
 
 import type {
@@ -108,14 +109,14 @@ export interface WebhookReceiptInsertResult {
 
 export interface WebhookReceiptInsertInput {
   readonly installationId: string;
-  readonly endpoint: "connected_test" | "connected_sandbox";
+  readonly endpoint: AccountWebhookEndpoint;
   readonly stripeEventId: string;
   readonly stripeAccountId: string;
-  readonly eventType: NormalizedConnectedWebhookPayload["event_type"];
+  readonly eventType: NormalizedAccountWebhookPayload["event_type"];
   readonly objectId: string;
   readonly stripeCreatedAt: Date;
   readonly receivedAt?: Date;
-  readonly normalizedPayload: NormalizedConnectedWebhookPayload;
+  readonly normalizedPayload: NormalizedAccountWebhookPayload;
 }
 
 export interface RefundCorrelationCandidateInput {
@@ -545,7 +546,7 @@ export class TenantRepositories {
     }
     // The role-boundary trigger permits only monotone protective lifecycle
     // changes once the installation is durably non-executable. Keep this order
-    // aligned with the connected-webhook path; the transaction rolls it all
+    // aligned with the account-webhook path; the transaction rolls it all
     // back if request settlement fails.
     await this.settleRequestsForDeauthorization(deauthorizedAt);
     await this.tx.tenant.updateMany({
@@ -1701,8 +1702,8 @@ export class TenantRepositories {
   }
 
   async insertWebhookReceipt(data: WebhookReceiptInsertInput): Promise<WebhookReceiptInsertResult> {
-    const endpoint = connectedWebhookEndpointSchema.parse(data.endpoint);
-    const normalizedPayload = assertNormalizedWebhookRowConsistency({
+    const endpoint = accountWebhookEndpointSchema.parse(data.endpoint);
+    const normalizedPayload = assertNormalizedAccountWebhookRowConsistency({
       endpoint,
       eventType: data.eventType,
       objectId: data.objectId,
@@ -1728,8 +1729,8 @@ export class TenantRepositories {
     });
     const receipt = await this.tx.webhookReceipt.findUnique({
       where: {
-        endpoint_stripeEventId: {
-          endpoint: data.endpoint,
+        stripeAccountId_stripeEventId: {
+          stripeAccountId: data.stripeAccountId,
           stripeEventId: data.stripeEventId,
         },
       },

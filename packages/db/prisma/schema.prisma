@@ -105,6 +105,8 @@ enum WebhookEndpoint {
   connected_live
   connected_test
   connected_sandbox
+  account_test
+  account_sandbox
 
   @@map("webhook_endpoint")
 }
@@ -442,7 +444,7 @@ model WebhookReceipt {
   tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   installation StripeInstallation @relation(fields: [installationId, tenantId], references: [id, tenantId], onDelete: Restrict)
 
-  @@unique([endpoint, stripeEventId], map: "webhook_receipts_endpoint_event_key")
+  @@unique([stripeAccountId, stripeEventId], map: "webhook_receipts_account_event_key")
   @@index([tenantId, status, receivedAt], map: "webhook_receipts_tenant_status_received_idx")
   @@index([status, receivedAt], map: "webhook_receipts_recovery_idx")
   @@map("webhook_receipts")

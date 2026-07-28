@@ -2,8 +2,8 @@ import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
 
 import type {
-  ConnectedWebhookEndpoint,
-  NormalizedConnectedWebhookPayload,
+  AccountWebhookEndpoint,
+  NormalizedAccountWebhookPayload,
   WebhookReceiptInsertResult,
 } from "@refunddesk/db";
 import type {
@@ -13,11 +13,11 @@ import type {
 } from "@refunddesk/stripe-adapter";
 
 import {
-  receiveConnectedWebhook,
-  type ConnectedWebhookDependencies,
-  type ConnectedWebhookPersistence,
+  receiveAccountWebhook,
+  type AccountWebhookDependencies,
+  type AccountWebhookPersistence,
   type ResolvedWebhookInstallation,
-} from "../src/server/connected-webhook.js";
+} from "../src/server/account-webhook.js";
 import {
   executePhase0Probe,
   type ExecutePhase0ProbeInput,
@@ -105,20 +105,20 @@ class DeferredRefundGateway implements Phase0ProbeGateway {
 }
 
 interface InsertCall {
-  readonly endpoint: ConnectedWebhookEndpoint;
+  readonly endpoint: AccountWebhookEndpoint;
   readonly stripeEventId: string;
   readonly stripeAccountId: string;
-  readonly payload: NormalizedConnectedWebhookPayload;
+  readonly payload: NormalizedAccountWebhookPayload;
 }
 
-class HarnessWebhookPersistence implements ConnectedWebhookPersistence {
+class HarnessWebhookPersistence implements AccountWebhookPersistence {
   readonly inserts: InsertCall[] = [];
   private readonly receipts = new Map<string, string>();
 
   constructor(private readonly trace: string[]) {}
 
   findExisting(
-    endpoint: ConnectedWebhookEndpoint,
+    endpoint: AccountWebhookEndpoint,
     stripeEventId: string,
     stripeAccountId: string,
   ): Promise<{ readonly receiptId: string } | null> {
@@ -135,7 +135,7 @@ class HarnessWebhookPersistence implements ConnectedWebhookPersistence {
   }
 
   insert(
-    input: Parameters<ConnectedWebhookPersistence["insert"]>[0],
+    input: Parameters<AccountWebhookPersistence["insert"]>[0],
   ): Promise<WebhookReceiptInsertResult> {
     const key = `${input.endpoint}\0${input.stripeAccountId}\0${input.stripeEventId}`;
     const existingReceiptId = this.receipts.get(key);
@@ -182,7 +182,6 @@ function refundEvent(
   return {
     id: eventId,
     object: "event",
-    account: ACCOUNT_ID,
     api_version: "2026-06-24.dahlia",
     created: EVENT_CREATED,
     data: {
@@ -215,7 +214,7 @@ function signedWebhookRequest(event: Readonly<Record<string, unknown>>): Request
     secret: SIGNING_SECRET,
     timestamp: EVENT_CREATED,
   });
-  return new Request("http://localhost/api/webhooks/stripe-connected/test", {
+  return new Request("http://localhost/api/webhooks/stripe-account/test", {
     method: "POST",
     headers: { "stripe-signature": signature },
     body: payload,
@@ -228,8 +227,10 @@ async function deliverWebhook(input: {
   readonly persistence: HarnessWebhookPersistence;
   readonly trace: string[];
 }): Promise<Readonly<Record<string, unknown>>> {
-  const dependencies: ConnectedWebhookDependencies = {
+  const dependencies: AccountWebhookDependencies = {
     expectedApplicationId: "ca_refunddesk",
+    expectedAccountId: ACCOUNT_ID,
+    expectedApiVersion: "2026-06-24.dahlia",
     signingSecret: SIGNING_SECRET,
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300, undefined, EVENT_CREATED),
@@ -242,7 +243,7 @@ async function deliverWebhook(input: {
       },
     },
   };
-  const response = await receiveConnectedWebhook(
+  const response = await receiveAccountWebhook(
     signedWebhookRequest(input.event),
     "test",
     dependencies,

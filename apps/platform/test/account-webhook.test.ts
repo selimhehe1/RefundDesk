@@ -2,44 +2,46 @@ import Stripe from "stripe";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-  ConnectedWebhookEndpoint,
-  NormalizedConnectedWebhookPayload,
+  AccountWebhookEndpoint,
+  NormalizedAccountWebhookPayload,
   WebhookReceiptInsertResult,
 } from "@refunddesk/db";
 
 import {
-  receiveConnectedWebhook,
-  type ConnectedWebhookDependencies,
-  type ConnectedWebhookPersistence,
+  receiveAccountWebhook,
+  type AccountWebhookDependencies,
+  type AccountWebhookPersistence,
+  type AccountWebhookRouteEnvironment,
   type ResolvedWebhookInstallation,
-  type WebhookEndpoint,
-} from "../src/server/connected-webhook.js";
+} from "../src/server/account-webhook.js";
 
-const TEST_SECRET = "whsec_connected_test";
-const SANDBOX_SECRET = "whsec_connected_sandbox";
-const APP_ID = "ca_connected";
+const TEST_SECRET = "whsec_account_test";
+const SANDBOX_SECRET = "whsec_account_sandbox";
+const APP_ID = "ca_account";
+const TEST_ACCOUNT_ID = "acct_DirectTest123";
+const SANDBOX_ACCOUNT_ID = "acct_DirectSandbox456";
 const TENANT_ID = "4f7718e3-783b-4698-8f86-af631bd4c91e";
 const INSTALLATION_ID = "8f9dd61e-5ce4-4c74-a88f-297730aab274";
 const RECEIPT_ID = "67f37649-b880-4bb9-847f-21da2cf53580";
 
 interface InsertCall {
   readonly resolved: ResolvedWebhookInstallation;
-  readonly endpoint: ConnectedWebhookEndpoint;
+  readonly endpoint: AccountWebhookEndpoint;
   readonly stripeEventId: string;
   readonly stripeAccountId: string;
-  readonly payload: NormalizedConnectedWebhookPayload;
+  readonly payload: NormalizedAccountWebhookPayload;
   readonly objectId: string;
   readonly receivedAt: Date;
 }
 
-class FakePersistence implements ConnectedWebhookPersistence {
+class FakePersistence implements AccountWebhookPersistence {
   existingReceiptId: string | null = null;
   resolved: ResolvedWebhookInstallation | null = {
     tenantId: TENANT_ID,
     installationId: INSTALLATION_ID,
     applied: false,
   };
-  readonly resolutions: Array<Parameters<ConnectedWebhookPersistence["resolve"]>[0]> = [];
+  readonly resolutions: Array<Parameters<AccountWebhookPersistence["resolve"]>[0]> = [];
   readonly inserts: InsertCall[] = [];
   findExistingCalls = 0;
   insertError: Error | null = null;
@@ -52,7 +54,7 @@ class FakePersistence implements ConnectedWebhookPersistence {
   }
 
   resolve(
-    input: Parameters<ConnectedWebhookPersistence["resolve"]>[0],
+    input: Parameters<AccountWebhookPersistence["resolve"]>[0],
   ): Promise<ResolvedWebhookInstallation | null> {
     this.resolutions.push(input);
     return Promise.resolve(this.resolved);
@@ -77,18 +79,17 @@ function refundEvent(
 ): Readonly<Record<string, unknown>> {
   const created = Math.floor(Date.now() / 1_000);
   return {
-    id: "evt_connected_refund",
+    id: "evt_account_refund",
     object: "event",
-    account: "acct_connected",
     api_version: "2026-06-24.dahlia",
     created,
     data: {
       object: {
-        id: "re_connected",
+        id: "re_account",
         object: "refund",
         amount: 500,
-        charge: "ch_connected",
-        payment_intent: "pi_connected",
+        charge: "ch_account",
+        payment_intent: "pi_account",
         currency: "eur",
         status: "succeeded",
         created,
@@ -100,7 +101,7 @@ function refundEvent(
     },
     livemode: false,
     pending_webhooks: 1,
-    request: { id: "req_connected", idempotency_key: null },
+    request: { id: "req_account", idempotency_key: null },
     type: "refund.created",
     ...overrides,
   };
@@ -116,7 +117,6 @@ function lifecycleEvent(
         ? "evt_application_authorized"
         : "evt_application_removed",
     object: "event",
-    account: "acct_connected",
     api_version: "2026-06-24.dahlia",
     created: Math.floor(Date.now() / 1_000),
     data: {
@@ -144,7 +144,7 @@ function signedRequest(
     secret,
     timestamp,
   });
-  return new Request("http://localhost/api/webhooks/stripe-connected/test", {
+  return new Request("http://localhost/api/webhooks/stripe-account/test", {
     method: "POST",
     headers: { "stripe-signature": signature },
     body: payload,
@@ -152,11 +152,14 @@ function signedRequest(
 }
 
 function dependencies(
-  persistence: ConnectedWebhookPersistence,
+  persistence: AccountWebhookPersistence,
   signingSecret = TEST_SECRET,
-): ConnectedWebhookDependencies {
+  expectedAccountId = TEST_ACCOUNT_ID,
+): AccountWebhookDependencies {
   return {
     expectedApplicationId: APP_ID,
+    expectedAccountId,
+    expectedApiVersion: "2026-06-24.dahlia",
     signingSecret,
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300),
@@ -168,17 +171,21 @@ function dependencies(
 async function receive(
   event: Readonly<Record<string, unknown>>,
   persistence: FakePersistence,
-  endpoint: WebhookEndpoint = "test",
+  endpoint: AccountWebhookRouteEnvironment = "test",
   secret = TEST_SECRET,
 ): Promise<Response> {
-  return receiveConnectedWebhook(
+  return receiveAccountWebhook(
     signedRequest(event, secret),
     endpoint,
-    dependencies(persistence, endpoint === "sandbox" ? SANDBOX_SECRET : TEST_SECRET),
+    dependencies(
+      persistence,
+      endpoint === "sandbox" ? SANDBOX_SECRET : TEST_SECRET,
+      endpoint === "sandbox" ? SANDBOX_ACCOUNT_ID : TEST_ACCOUNT_ID,
+    ),
   );
 }
 
-describe("durable connected Stripe webhook ingress", () => {
+describe("durable direct-account Stripe webhook ingress", () => {
   it("persists only a strict normalized refund receipt for outbox recovery", async () => {
     const persistence = new FakePersistence();
 
@@ -193,15 +200,15 @@ describe("durable connected Stripe webhook ingress", () => {
     });
     expect(persistence.inserts).toHaveLength(1);
     expect(persistence.inserts[0]).toMatchObject({
-      endpoint: "connected_test",
-      stripeAccountId: "acct_connected",
-      objectId: "re_connected",
+      endpoint: "account_test",
+      stripeAccountId: TEST_ACCOUNT_ID,
+      objectId: "re_account",
       payload: {
         schema_version: 1,
         environment: "test",
         event_type: "refund.created",
         refund: {
-          refund_id: "re_connected",
+          refund_id: "re_account",
           amount_minor: "500",
           currency: "eur",
         },
@@ -213,7 +220,7 @@ describe("durable connected Stripe webhook ingress", () => {
   it("feeds a verified and durably persisted Refund into the development Phase-0 observer", async () => {
     const persistence = new FakePersistence();
     const observe = vi.fn(() => "internal" as const);
-    const response = await receiveConnectedWebhook(signedRequest(refundEvent()), "test", {
+    const response = await receiveAccountWebhook(signedRequest(refundEvent()), "test", {
       ...dependencies(persistence),
       phase0Observer: { observe },
     });
@@ -221,11 +228,11 @@ describe("durable connected Stripe webhook ingress", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ phase0_correlation: "internal" });
     expect(observe).toHaveBeenCalledWith({
-      eventId: "evt_connected_refund",
-      refundId: "re_connected",
-      accountId: "acct_connected",
+      eventId: "evt_account_refund",
+      refundId: "re_account",
+      accountId: TEST_ACCOUNT_ID,
       environment: "test",
-      paymentKey: "pi_connected",
+      paymentKey: "pi_account",
       amountMinor: "500",
       currency: "eur",
       requestNonce: "cc3cb5d1-268c-49b4-831f-a6f392097189",
@@ -312,7 +319,7 @@ describe("durable connected Stripe webhook ingress", () => {
     const event = refundEvent();
     const alteredRequest = signedRequest(event);
     const alteredPayload = JSON.stringify({ ...event, pending_webhooks: 2 });
-    const alteredResponse = await receiveConnectedWebhook(
+    const alteredResponse = await receiveAccountWebhook(
       new Request(alteredRequest.url, {
         method: "POST",
         headers: alteredRequest.headers,
@@ -321,7 +328,7 @@ describe("durable connected Stripe webhook ingress", () => {
       "test",
       dependencies(persistence),
     );
-    const expiredResponse = await receiveConnectedWebhook(
+    const expiredResponse = await receiveAccountWebhook(
       signedRequest(event, TEST_SECRET, Math.floor(Date.now() / 1_000) - 301),
       "test",
       dependencies(persistence),
@@ -336,17 +343,80 @@ describe("durable connected Stripe webhook ingress", () => {
     expect(persistence.inserts).toEqual([]);
   });
 
+  it("rejects connected-scope and wrong-version Events before persistence", async () => {
+    const persistence = new FakePersistence();
+
+    const connectedScope = await receive(refundEvent({ account: TEST_ACCOUNT_ID }), persistence);
+    const wrongVersion = await receive(
+      refundEvent({ api_version: "2026-02-25.clover" }),
+      persistence,
+    );
+
+    expect(connectedScope.status).toBe(400);
+    expect(await connectedScope.json()).toMatchObject({
+      code: "DELIVERY_SCOPE_MISMATCH",
+    });
+    expect(wrongVersion.status).toBe(400);
+    expect(await wrongVersion.json()).toMatchObject({
+      code: "API_VERSION_MISMATCH",
+    });
+    expect(persistence.findExistingCalls).toBe(0);
+    expect(persistence.resolutions).toEqual([]);
+    expect(persistence.inserts).toEqual([]);
+  });
+
+  it.each(["source_transfer_reversal", "transfer_reversal"] as const)(
+    "rejects a direct Event whose Refund carries the Connect field %s before persistence",
+    async (field) => {
+      const persistence = new FakePersistence();
+      const event = refundEvent();
+      const data = event["data"] as {
+        readonly object: Readonly<Record<string, unknown>>;
+      };
+      const connectRefund = {
+        ...event,
+        data: {
+          object: {
+            ...data.object,
+            [field]: "trr_connect",
+          },
+        },
+      };
+
+      const response = await receive(connectRefund, persistence);
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "PAYLOAD_INVALID" });
+      expect(persistence.findExistingCalls).toBe(0);
+      expect(persistence.resolutions).toEqual([]);
+      expect(persistence.inserts).toEqual([]);
+    },
+  );
+
+  it("fails closed before persistence when the configured direct account is invalid", async () => {
+    const persistence = new FakePersistence();
+    const response = await receiveAccountWebhook(
+      signedRequest(refundEvent()),
+      "test",
+      dependencies(persistence, TEST_SECRET, "acct_invalid_with_underscores"),
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "ENDPOINT_MISCONFIGURED" });
+    expect(persistence.findExistingCalls).toBe(0);
+  });
+
   it("never logs a raw invalid payload and keeps the live endpoint hard-disabled", async () => {
     const persistence = new FakePersistence();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const response = await receiveConnectedWebhook(
+    const response = await receiveAccountWebhook(
       signedRequest(refundEvent(), "whsec_wrong"),
       "test",
       dependencies(persistence),
     );
-    const live = await receiveConnectedWebhook(
-      new Request("http://localhost/api/webhooks/stripe-connected/live", {
+    const live = await receiveAccountWebhook(
+      new Request("http://localhost/api/webhooks/stripe-account/live", {
         method: "POST",
         body: "raw-secret-payload",
       }),
@@ -378,7 +448,7 @@ describe("durable connected Stripe webhook ingress", () => {
     });
     expect(persistence.inserts[0]?.payload).toMatchObject({
       event_type: "account.application.authorized",
-      application_id: "ca_connected",
+      application_id: APP_ID,
     });
   });
 });

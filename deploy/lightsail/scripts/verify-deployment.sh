@@ -125,6 +125,30 @@ public_internal_status="$(
 [[ "${public_internal_status}" == "404" ]] ||
   die "private verifier route is reachable through public ingress"
 
+public_post_status() {
+  curl_local_public --silent --show-error \
+    --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 \
+    --request POST --header 'content-type: application/json' --data '{}' \
+    "${PUBLIC_ORIGIN}${1}"
+}
+
+for direct_route in \
+  "/api/webhooks/stripe-account/test" \
+  "/api/webhooks/stripe-account/sandbox"; do
+  [[ "$(public_post_status "${direct_route}")" == "400" ]] ||
+    die "direct-account webhook route is not reachable at ${direct_route}"
+done
+
+for blocked_webhook_route in \
+  "/api/webhooks/stripe-account/live" \
+  "/api/webhooks/stripe-connected/test" \
+  "/api/webhooks/stripe-connected/sandbox" \
+  "/api/webhooks/stripe-connected/live"; do
+  [[ "$(public_post_status "${blocked_webhook_route}")" == "404" ]] ||
+    die "disabled webhook route is reachable at ${blocked_webhook_route}"
+done
+
 refunddesk_compose exec --no-TTY web node -e '
   const response = await fetch("http://127.0.0.1:3000/api/ready", {
     signal: AbortSignal.timeout(5000),
@@ -159,13 +183,21 @@ for service in web worker; do
   jq --exit-status '
     index("REFUNDDESK_GLOBAL_LIVE_ENABLED=false") != null
     and (
-      map(select(startswith("STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET=")))
-      | all(. == "STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET=disabled")
+      map(select(startswith("STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=")))
+      | all(. == "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled")
+    )
+    and (
+      map(select(startswith("STRIPE_PLATFORM_TEST_ACCOUNT_ID=acct_")))
+      | length == 1
+    )
+    and (
+      map(select(startswith("STRIPE_MANAGED_SANDBOX_ACCOUNT_ID=acct_")))
+      | length == 1
     )
     and (
       map(split("=")[0])
       | all(
-          . == "STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET"
+          . == "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET"
           or (test("(^STRIPE_.*LIVE|^LIVE_.*(KEY|SECRET|TOKEN))") | not)
         )
     )

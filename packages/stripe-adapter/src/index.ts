@@ -10,9 +10,14 @@ export interface StripeInstallation {
   readonly active: boolean;
 }
 
+export interface DirectAccountCredential {
+  readonly apiKey: string;
+  readonly expectedAccountId: string;
+}
+
 export interface StripeCredentialSet {
-  readonly platformTestKey: string;
-  readonly managedSandboxKey: string;
+  readonly platformTest: DirectAccountCredential;
+  readonly managedSandbox: DirectAccountCredential;
 }
 
 export class UnsupportedStripeEnvironmentError extends Error {
@@ -22,22 +27,45 @@ export class UnsupportedStripeEnvironmentError extends Error {
   }
 }
 
+export class StripeAccountMismatchError extends Error {
+  constructor() {
+    super("Stripe installation does not match the configured direct account");
+    this.name = "StripeAccountMismatchError";
+  }
+}
+
+export class StripeConnectSemanticsError extends Error {
+  constructor() {
+    super("Stripe Connect objects are not supported by the direct-account pilot");
+    this.name = "StripeConnectSemanticsError";
+  }
+}
+
 export class StripeCredentialResolver {
   constructor(private readonly credentials: StripeCredentialSet) {}
 
-  resolve(installation: StripeInstallation): string {
+  resolve(installation: StripeInstallation): DirectAccountCredential {
     if (!installation.active) {
       throw new Error("Stripe installation is not active");
     }
 
+    let credential: DirectAccountCredential;
     switch (installation.environment) {
       case "test":
-        return this.credentials.platformTestKey;
+        credential = this.credentials.platformTest;
+        break;
       case "sandbox":
-        return this.credentials.managedSandboxKey;
+        credential = this.credentials.managedSandbox;
+        break;
       case "live":
         throw new UnsupportedStripeEnvironmentError("live");
     }
+
+    if (installation.stripeAccountId !== credential.expectedAccountId) {
+      throw new StripeAccountMismatchError();
+    }
+
+    return credential;
   }
 }
 
@@ -107,7 +135,15 @@ function normalizeRefundStatus(status: string | null): NormalizedRefund["status"
   }
 }
 
+function refundHasConnectSemantics(refund: Stripe.Refund): boolean {
+  return refund.source_transfer_reversal != null || refund.transfer_reversal != null;
+}
+
 function normalizeRefund(refund: Stripe.Refund, requestId: string | null = null): NormalizedRefund {
+  if (refundHasConnectSemantics(refund)) {
+    throw new StripeConnectSemanticsError();
+  }
+
   return {
     id: refund.id,
     paymentIntentId: stripeId(refund.payment_intent),
@@ -121,11 +157,31 @@ function normalizeRefund(refund: Stripe.Refund, requestId: string | null = null)
   };
 }
 
-export class ConnectedAccountStripeClient {
+function paymentHasConnectSemantics(
+  paymentIntent: Stripe.PaymentIntent | null,
+  charge: Stripe.Charge,
+): boolean {
+  return (
+    charge.application != null ||
+    charge.application_fee != null ||
+    charge.on_behalf_of != null ||
+    charge.source_transfer != null ||
+    charge.transfer != null ||
+    charge.transfer_group != null ||
+    paymentIntent?.application != null ||
+    paymentIntent?.application_fee_amount != null ||
+    paymentIntent?.on_behalf_of != null ||
+    paymentIntent?.transfer_data != null ||
+    paymentIntent?.transfer_group != null
+  );
+}
+
+export class DirectAccountStripeClient {
   constructor(private readonly resolver: StripeCredentialResolver) {}
 
   private client(installation: StripeInstallation): Stripe {
-    return new Stripe(this.resolver.resolve(installation), {
+    const credential = this.resolver.resolve(installation);
+    return new Stripe(credential.apiKey, {
       apiVersion,
       maxNetworkRetries: 0,
       telemetry: false,
@@ -138,27 +194,31 @@ export class ConnectedAccountStripeClient {
     resourceId: string,
   ): Promise<NormalizedPayment> {
     const stripe = this.client(installation);
-    const options: Stripe.RequestOptions = { stripeAccount: installation.stripeAccountId };
 
     let paymentIntent: Stripe.PaymentIntent | null = null;
     let charge: Stripe.Charge;
 
     if (resourceType === "payment_intent") {
-      paymentIntent = await stripe.paymentIntents.retrieve(
-        resourceId,
-        { expand: ["latest_charge"] },
-        options,
-      );
+      paymentIntent = await stripe.paymentIntents.retrieve(resourceId, {
+        expand: ["latest_charge"],
+      });
       if (paymentIntent.latest_charge === null || typeof paymentIntent.latest_charge === "string") {
         throw new Error("PaymentIntent has no retrievable latest Charge");
       }
       charge = paymentIntent.latest_charge;
     } else {
-      charge = await stripe.charges.retrieve(resourceId, {}, options);
+      charge = await stripe.charges.retrieve(resourceId);
+      if (paymentHasConnectSemantics(null, charge)) {
+        throw new StripeConnectSemanticsError();
+      }
       const paymentIntentId = stripeId(charge.payment_intent);
       if (paymentIntentId !== null) {
-        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId, {}, options);
+        paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
       }
+    }
+
+    if (paymentHasConnectSemantics(paymentIntent, charge)) {
+      throw new StripeConnectSemanticsError();
     }
 
     return {
@@ -172,18 +232,7 @@ export class ConnectedAccountStripeClient {
       paid: charge.paid,
       disputed: charge.disputed,
       paymentMethodType: charge.payment_method_details?.type ?? null,
-      hasConnectSemantics:
-        charge.application != null ||
-        charge.application_fee != null ||
-        charge.on_behalf_of != null ||
-        charge.source_transfer != null ||
-        charge.transfer != null ||
-        charge.transfer_group != null ||
-        paymentIntent?.application != null ||
-        paymentIntent?.application_fee_amount != null ||
-        paymentIntent?.on_behalf_of != null ||
-        paymentIntent?.transfer_data != null ||
-        paymentIntent?.transfer_group != null,
+      hasConnectSemantics: false,
     };
   }
 
@@ -213,7 +262,6 @@ export class ConnectedAccountStripeClient {
         metadata: input.metadata,
       },
       {
-        stripeAccount: input.installation.stripeAccountId,
         idempotencyKey: input.idempotencyKey,
       },
     );
@@ -229,11 +277,7 @@ export class ConnectedAccountStripeClient {
     }
 
     const stripe = this.client(installation);
-    const refund = await stripe.refunds.retrieve(
-      refundId,
-      {},
-      { stripeAccount: installation.stripeAccountId },
-    );
+    const refund = await stripe.refunds.retrieve(refundId);
     return normalizeRefund(refund);
   }
 
@@ -243,14 +287,11 @@ export class ConnectedAccountStripeClient {
     startingAfter?: string,
   ): Promise<RefundPage> {
     const stripe = this.client(installation);
-    const page = await stripe.refunds.list(
-      {
-        created: { gte: created.gte, lte: created.lte },
-        limit: 100,
-        ...(startingAfter === undefined ? {} : { starting_after: startingAfter }),
-      },
-      { stripeAccount: installation.stripeAccountId },
-    );
+    const page = await stripe.refunds.list({
+      created: { gte: created.gte, lte: created.lte },
+      limit: 100,
+      ...(startingAfter === undefined ? {} : { starting_after: startingAfter }),
+    });
     return {
       refunds: page.data.map((refund) => normalizeRefund(refund)),
       hasMore: page.has_more,

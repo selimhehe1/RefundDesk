@@ -23,7 +23,7 @@ https://{$REFUNDDESK_PUBLIC_HOST}:8443 {
 	}
 
 	route {
-		@blocked path /internal /internal/* /api/ready /api/webhooks/stripe-connected/live
+		@blocked path /internal /internal/* /api/ready /api/webhooks/stripe-connected /api/webhooks/stripe-connected/* /api/webhooks/stripe-account/live
 		respond @blocked 404
 
 		reverse_proxy web.refunddesk.internal:3000 {

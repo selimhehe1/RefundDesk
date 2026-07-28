@@ -2,20 +2,43 @@ import { z } from "zod";
 
 const currencySchema = z.string().regex(/^[a-z]{3}$/u);
 
-export const connectedWebhookEnvironmentSchema = z.enum(["test", "sandbox"]);
-export type ConnectedWebhookEnvironment = z.infer<typeof connectedWebhookEnvironmentSchema>;
+export const accountWebhookEnvironmentSchema = z.enum(["test", "sandbox"]);
+export type AccountWebhookEnvironment = z.infer<typeof accountWebhookEnvironmentSchema>;
 
-export const connectedWebhookEndpointSchema = z.enum(["connected_test", "connected_sandbox"]);
-export type ConnectedWebhookEndpoint = z.infer<typeof connectedWebhookEndpointSchema>;
+export const accountWebhookEndpointSchema = z.enum(["account_test", "account_sandbox"]);
+export type AccountWebhookEndpoint = z.infer<typeof accountWebhookEndpointSchema>;
 
-export const connectedWebhookEventTypeSchema = z.enum([
+export const legacyConnectedWebhookEndpointSchema = z.enum(["connected_test", "connected_sandbox"]);
+export type LegacyConnectedWebhookEndpoint = z.infer<typeof legacyConnectedWebhookEndpointSchema>;
+
+export const storedWebhookEndpointSchema = z.union([
+  accountWebhookEndpointSchema,
+  legacyConnectedWebhookEndpointSchema,
+]);
+export type StoredWebhookEndpoint = z.infer<typeof storedWebhookEndpointSchema>;
+
+/** @deprecated Use accountWebhookEnvironmentSchema. */
+export const connectedWebhookEnvironmentSchema = accountWebhookEnvironmentSchema;
+/** @deprecated Use AccountWebhookEnvironment. */
+export type ConnectedWebhookEnvironment = AccountWebhookEnvironment;
+/** @deprecated Historical endpoint labels are recovery-only. */
+export const connectedWebhookEndpointSchema = legacyConnectedWebhookEndpointSchema;
+/** @deprecated Historical endpoint labels are recovery-only. */
+export type ConnectedWebhookEndpoint = LegacyConnectedWebhookEndpoint;
+
+export const accountWebhookEventTypeSchema = z.enum([
   "refund.created",
   "refund.updated",
   "refund.failed",
   "account.application.authorized",
   "account.application.deauthorized",
 ]);
-export type ConnectedWebhookEventType = z.infer<typeof connectedWebhookEventTypeSchema>;
+export type AccountWebhookEventType = z.infer<typeof accountWebhookEventTypeSchema>;
+
+/** @deprecated Use accountWebhookEventTypeSchema. */
+export const connectedWebhookEventTypeSchema = accountWebhookEventTypeSchema;
+/** @deprecated Use AccountWebhookEventType. */
+export type ConnectedWebhookEventType = AccountWebhookEventType;
 
 export const refundWebhookEventTypeSchema = z.enum([
   "refund.created",
@@ -72,7 +95,7 @@ export type NormalizedWebhookRefund = z.infer<typeof normalizedWebhookRefundSche
 
 const durableWebhookBase = z.object({
   schema_version: z.literal(1),
-  environment: connectedWebhookEnvironmentSchema,
+  environment: accountWebhookEnvironmentSchema,
   event_created: z.number().int().nonnegative(),
   event_idempotency_key: z.string().min(1).max(255).nullable(),
 });
@@ -91,7 +114,7 @@ export const normalizedInstallationWebhookPayloadSchema = durableWebhookBase
   })
   .strict();
 
-export const normalizedConnectedWebhookPayloadSchema = z.union([
+export const normalizedAccountWebhookPayloadSchema = z.union([
   normalizedRefundWebhookPayloadSchema,
   normalizedInstallationWebhookPayloadSchema,
 ]);
@@ -100,25 +123,37 @@ export type NormalizedRefundWebhookPayload = z.infer<typeof normalizedRefundWebh
 export type NormalizedInstallationWebhookPayload = z.infer<
   typeof normalizedInstallationWebhookPayloadSchema
 >;
-export type NormalizedConnectedWebhookPayload = z.infer<
-  typeof normalizedConnectedWebhookPayloadSchema
->;
+export type NormalizedAccountWebhookPayload = z.infer<typeof normalizedAccountWebhookPayloadSchema>;
 
-export function endpointForWebhookEnvironment(
-  environment: ConnectedWebhookEnvironment,
-): ConnectedWebhookEndpoint {
-  return environment === "test" ? "connected_test" : "connected_sandbox";
+/** @deprecated The normalized payload is shared with the direct account webhook contract. */
+export const normalizedConnectedWebhookPayloadSchema = normalizedAccountWebhookPayloadSchema;
+/** @deprecated Use NormalizedAccountWebhookPayload. */
+export type NormalizedConnectedWebhookPayload = NormalizedAccountWebhookPayload;
+
+export function accountEndpointForWebhookEnvironment(
+  environment: AccountWebhookEnvironment,
+): AccountWebhookEndpoint {
+  return environment === "test" ? "account_test" : "account_sandbox";
 }
 
-export function assertNormalizedWebhookRowConsistency(input: {
-  readonly endpoint: ConnectedWebhookEndpoint;
+export function environmentForStoredWebhookEndpoint(
+  endpoint: StoredWebhookEndpoint,
+): AccountWebhookEnvironment {
+  return endpoint === "account_test" || endpoint === "connected_test" ? "test" : "sandbox";
+}
+
+/** @deprecated Use accountEndpointForWebhookEnvironment. */
+export const endpointForWebhookEnvironment = accountEndpointForWebhookEnvironment;
+
+export function assertNormalizedAccountWebhookRowConsistency(input: {
+  readonly endpoint: StoredWebhookEndpoint;
   readonly eventType: string;
   readonly objectId: string | null;
   readonly stripeCreatedAt: Date;
   readonly normalizedPayload: unknown;
-}): NormalizedConnectedWebhookPayload {
-  const payload = normalizedConnectedWebhookPayloadSchema.parse(input.normalizedPayload);
-  if (endpointForWebhookEnvironment(payload.environment) !== input.endpoint) {
+}): NormalizedAccountWebhookPayload {
+  const payload = normalizedAccountWebhookPayloadSchema.parse(input.normalizedPayload);
+  if (environmentForStoredWebhookEndpoint(input.endpoint) !== payload.environment) {
     throw new TypeError("Webhook endpoint and normalized environment differ");
   }
   if (payload.event_type !== input.eventType) {
@@ -132,4 +167,15 @@ export function assertNormalizedWebhookRowConsistency(input: {
     throw new TypeError("Webhook creation time and normalized payload differ");
   }
   return payload;
+}
+
+/** @deprecated Use assertNormalizedAccountWebhookRowConsistency. */
+export function assertNormalizedWebhookRowConsistency(input: {
+  readonly endpoint: StoredWebhookEndpoint;
+  readonly eventType: string;
+  readonly objectId: string | null;
+  readonly stripeCreatedAt: Date;
+  readonly normalizedPayload: unknown;
+}): NormalizedAccountWebhookPayload {
+  return assertNormalizedAccountWebhookRowConsistency(input);
 }

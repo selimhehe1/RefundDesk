@@ -1,32 +1,31 @@
-import type Stripe from "stripe";
+import Stripe from "stripe";
 
 import { loadPlatformConfig } from "@refunddesk/config";
 import {
   findWebhookReceipt,
-  normalizedConnectedWebhookPayloadSchema,
+  normalizedAccountWebhookPayloadSchema,
   provisionWebhookInstallation,
   resolveInstallation,
   resolveWebhookInstallation,
   withTenantTransaction,
-  type ConnectedWebhookEnvironment,
-  type ConnectedWebhookEventType,
-  type ConnectedWebhookEndpoint,
-  type NormalizedConnectedWebhookPayload,
+  type AccountWebhookEndpoint,
+  type AccountWebhookEnvironment,
+  type AccountWebhookEventType,
+  type NormalizedAccountWebhookPayload,
   type PrismaClient,
   type WebhookReceiptInsertResult,
 } from "@refunddesk/db";
-import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import { apiError, jsonResponse } from "./http";
 import type { Phase0Correlation, Phase0ObservedRefund } from "./phase0-store";
 import { getPilotRuntime } from "./pilot-runtime";
 
-export type WebhookEndpoint = "live" | "test" | "sandbox";
+export type AccountWebhookRouteEnvironment = "live" | "test" | "sandbox";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const TENANT_PURGE_DELAY_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
 const STRIPE_ACCOUNT_PATTERN = /^acct_[A-Za-z0-9]+$/u;
-const SUPPORTED_EVENT_TYPES = new Set<ConnectedWebhookEventType>([
+const SUPPORTED_EVENT_TYPES = new Set<AccountWebhookEventType>([
   "refund.created",
   "refund.updated",
   "refund.failed",
@@ -40,50 +39,52 @@ export interface ResolvedWebhookInstallation {
   readonly applied: boolean;
 }
 
-export interface ConnectedWebhookPersistence {
+export interface AccountWebhookPersistence {
   findExisting(
-    endpoint: ConnectedWebhookEndpoint,
+    endpoint: AccountWebhookEndpoint,
     stripeEventId: string,
     stripeAccountId: string,
   ): Promise<{ readonly receiptId: string } | null>;
   resolve(input: {
     readonly stripeAccountId: string;
-    readonly environment: ConnectedWebhookEnvironment;
-    readonly eventType: ConnectedWebhookEventType;
+    readonly environment: AccountWebhookEnvironment;
+    readonly eventType: AccountWebhookEventType;
     readonly stripeEventId: string;
     readonly stripeEventCreatedAt: Date;
   }): Promise<ResolvedWebhookInstallation | null>;
   insert(input: {
     readonly resolved: ResolvedWebhookInstallation;
-    readonly endpoint: ConnectedWebhookEndpoint;
+    readonly endpoint: AccountWebhookEndpoint;
     readonly stripeEventId: string;
     readonly stripeAccountId: string;
-    readonly payload: NormalizedConnectedWebhookPayload;
+    readonly payload: NormalizedAccountWebhookPayload;
     readonly objectId: string;
     readonly receivedAt: Date;
   }): Promise<WebhookReceiptInsertResult>;
 }
 
-export interface ConnectedWebhookDependencies {
+export interface AccountWebhookDependencies {
   readonly expectedApplicationId: string;
+  readonly expectedAccountId: string;
+  readonly expectedApiVersion: "2026-06-24.dahlia";
   readonly signingSecret: string;
   readonly constructEvent: (
     rawBody: Buffer,
     signature: string,
     signingSecret: string,
   ) => Stripe.Event;
-  readonly persistence: ConnectedWebhookPersistence;
+  readonly persistence: AccountWebhookPersistence;
   readonly now: () => Date;
   readonly phase0Observer?: {
     observe(refund: Phase0ObservedRefund): Phase0Correlation;
   };
 }
 
-class PrismaConnectedWebhookPersistence implements ConnectedWebhookPersistence {
+class PrismaAccountWebhookPersistence implements AccountWebhookPersistence {
   constructor(private readonly client: PrismaClient) {}
 
   async findExisting(
-    endpoint: ConnectedWebhookEndpoint,
+    endpoint: AccountWebhookEndpoint,
     stripeEventId: string,
     stripeAccountId: string,
   ): Promise<{ readonly receiptId: string } | null> {
@@ -93,8 +94,8 @@ class PrismaConnectedWebhookPersistence implements ConnectedWebhookPersistence {
 
   async resolve(input: {
     readonly stripeAccountId: string;
-    readonly environment: ConnectedWebhookEnvironment;
-    readonly eventType: ConnectedWebhookEventType;
+    readonly environment: AccountWebhookEnvironment;
+    readonly eventType: AccountWebhookEventType;
     readonly stripeEventId: string;
     readonly stripeEventCreatedAt: Date;
   }): Promise<ResolvedWebhookInstallation | null> {
@@ -127,10 +128,10 @@ class PrismaConnectedWebhookPersistence implements ConnectedWebhookPersistence {
 
   insert(input: {
     readonly resolved: ResolvedWebhookInstallation;
-    readonly endpoint: ConnectedWebhookEndpoint;
+    readonly endpoint: AccountWebhookEndpoint;
     readonly stripeEventId: string;
     readonly stripeAccountId: string;
-    readonly payload: NormalizedConnectedWebhookPayload;
+    readonly payload: NormalizedAccountWebhookPayload;
     readonly objectId: string;
     readonly receivedAt: Date;
   }): Promise<WebhookReceiptInsertResult> {
@@ -170,34 +171,38 @@ class PrismaConnectedWebhookPersistence implements ConnectedWebhookPersistence {
   }
 }
 
-function connectedEndpoint(endpoint: Exclude<WebhookEndpoint, "live">): ConnectedWebhookEndpoint {
-  return endpoint === "test" ? "connected_test" : "connected_sandbox";
+function accountEndpoint(
+  endpoint: Exclude<AccountWebhookRouteEnvironment, "live">,
+): AccountWebhookEndpoint {
+  return endpoint === "test" ? "account_test" : "account_sandbox";
 }
 
-function environmentFor(endpoint: Exclude<WebhookEndpoint, "live">): ConnectedWebhookEnvironment {
+function environmentFor(
+  endpoint: Exclude<AccountWebhookRouteEnvironment, "live">,
+): AccountWebhookEnvironment {
   return endpoint;
 }
 
 function defaultDependencies(
-  endpoint: Exclude<WebhookEndpoint, "live">,
-): ConnectedWebhookDependencies {
+  endpoint: Exclude<AccountWebhookRouteEnvironment, "live">,
+): AccountWebhookDependencies {
   const config = loadPlatformConfig();
   const signingSecret =
     endpoint === "test"
-      ? config.stripe.connectedTestWebhookSecret
-      : config.stripe.connectedSandboxWebhookSecret;
-  const stripe = new ConnectedAccountStripeClient(
-    new StripeCredentialResolver({
-      platformTestKey: config.stripe.platformTestReadKey,
-      managedSandboxKey: config.stripe.managedSandboxReadKey,
-    }),
-  );
+      ? config.stripe.accountTestWebhookSecret
+      : config.stripe.accountSandboxWebhookSecret;
+  const expectedAccountId =
+    endpoint === "test"
+      ? config.stripe.platformTestAccountId
+      : config.stripe.managedSandboxAccountId;
   return {
     expectedApplicationId: config.stripe.appId,
+    expectedAccountId,
+    expectedApiVersion: config.stripe.apiVersion,
     signingSecret,
     constructEvent: (rawBody, signature, secret) =>
-      stripe.constructWebhookEvent(rawBody, signature, secret),
-    persistence: new PrismaConnectedWebhookPersistence(getPilotRuntime().client),
+      Stripe.webhooks.constructEvent(rawBody, signature, secret, 300),
+    persistence: new PrismaAccountWebhookPersistence(getPilotRuntime().client),
     now: () => new Date(),
   };
 }
@@ -212,9 +217,9 @@ function metadataValue(value: string | undefined): string | null {
 
 function normalizeEvent(
   event: Stripe.Event,
-  environment: ConnectedWebhookEnvironment,
-): { readonly payload: NormalizedConnectedWebhookPayload; readonly objectId: string } | null {
-  if (!SUPPORTED_EVENT_TYPES.has(event.type as ConnectedWebhookEventType)) {
+  environment: AccountWebhookEnvironment,
+): { readonly payload: NormalizedAccountWebhookPayload; readonly objectId: string } | null {
+  if (!SUPPORTED_EVENT_TYPES.has(event.type as AccountWebhookEventType)) {
     return null;
   }
   const common = {
@@ -229,8 +234,11 @@ function normalizeEvent(
     event.type === "refund.failed"
   ) {
     const refund = event.data.object;
+    if (refund.source_transfer_reversal != null || refund.transfer_reversal != null) {
+      throw new Error("CONNECT_REFUND_UNSUPPORTED");
+    }
     const metadata = refund.metadata ?? {};
-    const payload = normalizedConnectedWebhookPayloadSchema.parse({
+    const payload = normalizedAccountWebhookPayloadSchema.parse({
       ...common,
       event_type: event.type,
       refund: {
@@ -252,7 +260,7 @@ function normalizeEvent(
     event.type === "account.application.deauthorized"
   ) {
     const application = event.data.object;
-    const payload = normalizedConnectedWebhookPayloadSchema.parse({
+    const payload = normalizedAccountWebhookPayloadSchema.parse({
       ...common,
       event_type: event.type,
       application_id: application.id,
@@ -263,10 +271,10 @@ function normalizeEvent(
 }
 
 function observePhase0Refund(
-  dependencies: ConnectedWebhookDependencies,
+  dependencies: AccountWebhookDependencies,
   event: Stripe.Event,
   stripeAccountId: string,
-  payload: NormalizedConnectedWebhookPayload,
+  payload: NormalizedAccountWebhookPayload,
 ): Phase0Correlation | undefined {
   if (dependencies.phase0Observer === undefined || !("refund" in payload)) {
     return undefined;
@@ -290,10 +298,10 @@ function observePhase0Refund(
   });
 }
 
-export async function receiveConnectedWebhook(
+export async function receiveAccountWebhook(
   request: Request,
-  endpoint: WebhookEndpoint,
-  injectedDependencies?: ConnectedWebhookDependencies,
+  endpoint: AccountWebhookRouteEnvironment,
+  injectedDependencies?: AccountWebhookDependencies,
 ): Promise<Response> {
   if (endpoint === "live") {
     return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
@@ -301,6 +309,9 @@ export async function receiveConnectedWebhook(
   const dependencies = injectedDependencies ?? defaultDependencies(endpoint);
   if (dependencies.signingSecret === "disabled") {
     return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
+  }
+  if (!STRIPE_ACCOUNT_PATTERN.test(dependencies.expectedAccountId)) {
+    return apiError("ENDPOINT_MISCONFIGURED", "Webhook endpoint is unavailable", 503);
   }
   const signature = request.headers.get("stripe-signature");
   if (signature === null) {
@@ -324,13 +335,20 @@ export async function receiveConnectedWebhook(
   if (event.livemode) {
     return apiError("MODE_MISMATCH", "Live events are disabled for the pilot", 400);
   }
-  const accountId = event.account;
-  if (accountId === undefined || !STRIPE_ACCOUNT_PATTERN.test(accountId)) {
-    return apiError("ACCOUNT_INVALID", "Connected-account event has no valid account", 400);
+  if (event.api_version !== dependencies.expectedApiVersion) {
+    return apiError("API_VERSION_MISMATCH", "Webhook API version is not supported", 400);
   }
+  if (event.account !== undefined) {
+    return apiError(
+      "DELIVERY_SCOPE_MISMATCH",
+      "Connected-account delivery is not accepted by this endpoint",
+      400,
+    );
+  }
+  const accountId = dependencies.expectedAccountId;
 
   let normalized: {
-    readonly payload: NormalizedConnectedWebhookPayload;
+    readonly payload: NormalizedAccountWebhookPayload;
     readonly objectId: string;
   } | null;
   try {
@@ -352,7 +370,7 @@ export async function receiveConnectedWebhook(
     );
   }
 
-  const dbEndpoint = connectedEndpoint(endpoint);
+  const dbEndpoint = accountEndpoint(endpoint);
   try {
     const existing = await dependencies.persistence.findExisting(dbEndpoint, event.id, accountId);
     if (existing !== null && normalized.payload.event_type !== "account.application.deauthorized") {

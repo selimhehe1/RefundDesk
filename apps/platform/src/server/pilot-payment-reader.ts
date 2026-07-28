@@ -1,4 +1,4 @@
-import type { ConnectedAccountStripeClient } from "@refunddesk/stripe-adapter";
+import type { DirectAccountStripeClient } from "@refunddesk/stripe-adapter";
 
 import type {
   PilotPayment,
@@ -7,8 +7,8 @@ import type {
   PilotTenantContext,
 } from "./pilot-ports";
 
-export class ConnectedStripePaymentReader implements PilotPaymentReader {
-  constructor(private readonly stripe: ConnectedAccountStripeClient) {}
+export class DirectStripePaymentReader implements PilotPaymentReader {
+  constructor(private readonly stripe: DirectAccountStripeClient) {}
 
   async retrievePayment(
     context: PilotTenantContext,

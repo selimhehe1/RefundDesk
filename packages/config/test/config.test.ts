@@ -13,11 +13,13 @@ function platformEnvironment(): NodeJS.ProcessEnv {
     DATABASE_URL: "postgresql://runtime:local@localhost:5432/refunddesk",
     STRIPE_API_VERSION: "2026-06-24.dahlia",
     STRIPE_APP_ID: "ca_synthetic",
+    STRIPE_PLATFORM_TEST_ACCOUNT_ID: "acct_PlatformTest123",
+    STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: "acct_ManagedSandbox456",
     STRIPE_PLATFORM_TEST_READ_KEY: "rk_test_platform_read",
     STRIPE_MANAGED_SANDBOX_READ_KEY: "rk_test_sandbox_read",
-    STRIPE_CONNECTED_TEST_WEBHOOK_SECRET: "whsec_synthetic_test",
-    STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: "whsec_synthetic_sandbox",
-    STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: "disabled",
+    STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET: "whsec_synthetic_test",
+    STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: "whsec_synthetic_sandbox",
+    STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: "disabled",
     REFUNDDESK_GLOBAL_LIVE_ENABLED: "false",
     REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: Buffer.alloc(32, 1).toString("base64"),
     REFUNDDESK_EXPORT_SIGNING_KEY_V1: Buffer.alloc(32, 4).toString("base64"),
@@ -35,6 +37,8 @@ function workerEnvironment(): NodeJS.ProcessEnv {
     PGBOSS_DATABASE_URL: "postgresql://queue:queue@localhost:5432/refunddesk",
     STRIPE_API_VERSION: "2026-06-24.dahlia",
     STRIPE_APP_SIGNING_SECRET: "absec_synthetic",
+    STRIPE_PLATFORM_TEST_ACCOUNT_ID: "acct_PlatformTest123",
+    STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: "acct_ManagedSandbox456",
     STRIPE_PLATFORM_TEST_EFFECT_KEY: "rk_test_platform_effect",
     STRIPE_MANAGED_SANDBOX_EFFECT_KEY: "rk_test_sandbox_effect",
     REFUNDDESK_GLOBAL_LIVE_ENABLED: "false",
@@ -82,6 +86,7 @@ describe("runtime-scoped configuration", () => {
 
     expect(config.databaseUrl).toContain("runtime");
     expect(config.stripe.appId).toBe("ca_synthetic");
+    expect(config.stripe.platformTestAccountId).toBe("acct_PlatformTest123");
     expect(config.stripe.platformTestReadKey).toBe("rk_test_platform_read");
     expect(config.signedRequestVerifierUrl).toBe(
       "https://worker.example/internal/v1/signed-requests/verify",
@@ -100,10 +105,11 @@ describe("runtime-scoped configuration", () => {
     expect(config.keys.approvalAttestationV1).toHaveLength(32);
     expect(config.signedRequestVerifierToken).toBe(Buffer.alloc(32, 5).toString("base64"));
     expect(config.stripe.appSigningSecret).toBe("absec_synthetic");
+    expect(config.stripe.managedSandboxAccountId).toBe("acct_ManagedSandbox456");
     expect(config.stripe.platformTestEffectKey).toBe("rk_test_platform_effect");
     expect(config.health).toEqual({ host: "127.0.0.1", port: 3101 });
     expect(config).not.toHaveProperty("databaseUrl");
-    expect(config.stripe).not.toHaveProperty("connectedTestWebhookSecret");
+    expect(config.stripe).not.toHaveProperty("accountTestWebhookSecret");
     expect(config.keys).not.toHaveProperty("fieldV1");
     expect(config.keys).not.toHaveProperty("exportV1");
   });
@@ -162,6 +168,12 @@ describe("runtime-scoped configuration", () => {
     expect(() =>
       loadPlatformConfig({
         ...platformEnvironment(),
+        STRIPE_PLATFORM_TEST_ACCOUNT_ID: "ca_not_an_account",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadPlatformConfig({
+        ...platformEnvironment(),
         STRIPE_PLATFORM_TEST_READ_KEY: "sk_test_full_web_authority",
       }),
     ).toThrow();
@@ -215,7 +227,13 @@ describe("runtime-scoped configuration", () => {
     expect(() =>
       loadPlatformConfig({
         ...platform,
-        STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: platform.STRIPE_CONNECTED_TEST_WEBHOOK_SECRET,
+        STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: platform.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET,
+      }),
+    ).toThrow();
+    expect(() =>
+      loadPlatformConfig({
+        ...platform,
+        STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: platform.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
       }),
     ).toThrow();
 
@@ -224,6 +242,12 @@ describe("runtime-scoped configuration", () => {
       loadWorkerConfig({
         ...worker,
         STRIPE_MANAGED_SANDBOX_EFFECT_KEY: worker.STRIPE_PLATFORM_TEST_EFFECT_KEY,
+      }),
+    ).toThrow();
+    expect(() =>
+      loadWorkerConfig({
+        ...worker,
+        STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: worker.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
       }),
     ).toThrow();
   });
@@ -262,7 +286,7 @@ describe("runtime-scoped configuration", () => {
       loadWorkerConfig({
         ...workerEnvironment(),
         NODE_ENV: "production",
-        STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: "disabled",
+        STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: "disabled",
       }),
     ).toThrow("FOREIGN_RUNTIME_SECRET_FORBIDDEN");
     expect(() =>
@@ -511,6 +535,19 @@ describe("runtime-scoped configuration", () => {
         migration,
       }),
     ).toThrow("SIGNED_REQUEST_VERIFIER_TOKEN_MISMATCH");
+    expect(() =>
+      assertReleaseConfigSeparation({
+        platform,
+        worker: {
+          ...worker,
+          stripe: {
+            ...worker.stripe,
+            platformTestAccountId: "acct_WrongPlatform789",
+          },
+        },
+        migration,
+      }),
+    ).toThrow("STRIPE_ACCOUNT_BINDING_MISMATCH");
     expect(() =>
       assertReleaseConfigSeparation({
         platform,

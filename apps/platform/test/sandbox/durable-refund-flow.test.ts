@@ -17,7 +17,7 @@ import {
   RefundProofKeyring,
   refundIdempotencyKey,
 } from "@refunddesk/domain";
-import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
+import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import {
   handleReconciliationScanJob,
@@ -32,7 +32,7 @@ import {
 } from "../../../worker/src/index.js";
 import { readOrderedMigrationSql } from "../../../../packages/db/test/postgres-test-support.js";
 import { TestAndSandboxAccessPolicy } from "../../src/server/pilot-access-policy.js";
-import { ConnectedStripePaymentReader } from "../../src/server/pilot-payment-reader.js";
+import { DirectStripePaymentReader } from "../../src/server/pilot-payment-reader.js";
 import { PilotPrismaRepository } from "../../src/server/pilot-prisma-repository.js";
 import type {
   PilotEnvironment,
@@ -66,8 +66,10 @@ interface HarnessEnvironment {
   readonly adminDatabaseUrl: string;
   readonly environment: PilotEnvironment;
   readonly fixtureKey: string;
-  readonly managedSandboxKey: string;
-  readonly platformTestKey: string;
+  readonly managedSandboxAccountId: string;
+  readonly managedSandboxEffectKey: string;
+  readonly platformTestAccountId: string;
+  readonly platformTestEffectKey: string;
 }
 
 interface TerminalDatabaseState {
@@ -139,27 +141,35 @@ function readHarnessEnvironment(): HarnessEnvironment {
     throw new Error("SANDBOX_E2E_ENVIRONMENT_MUST_BE_TEST_OR_SANDBOX");
   }
   const environment: PilotEnvironment = selectedEnvironment;
-  const accountId = requiredEnvironment("REFUNDDESK_SANDBOX_E2E_ACCOUNT_ID");
-  if (!ACCOUNT_ID_PATTERN.test(accountId)) {
+  const platformTestAccountId = requiredEnvironment("STRIPE_PLATFORM_TEST_ACCOUNT_ID");
+  const managedSandboxAccountId = requiredEnvironment("STRIPE_MANAGED_SANDBOX_ACCOUNT_ID");
+  const accountId = environment === "test" ? platformTestAccountId : managedSandboxAccountId;
+  if (
+    !ACCOUNT_ID_PATTERN.test(platformTestAccountId) ||
+    !ACCOUNT_ID_PATTERN.test(managedSandboxAccountId)
+  ) {
     throw new Error("SANDBOX_E2E_ACCOUNT_ID_INVALID");
   }
+  if (platformTestAccountId === managedSandboxAccountId) {
+    throw new Error("SANDBOX_E2E_STRIPE_ENVIRONMENT_ACCOUNTS_MUST_BE_DISTINCT");
+  }
 
-  const platformTestKey = requiredEnvironment("STRIPE_PLATFORM_TEST_KEY");
-  const managedSandboxKey = requiredEnvironment("STRIPE_MANAGED_SANDBOX_KEY");
+  const platformTestEffectKey = requiredEnvironment("STRIPE_PLATFORM_TEST_EFFECT_KEY");
+  const managedSandboxEffectKey = requiredEnvironment("STRIPE_MANAGED_SANDBOX_EFFECT_KEY");
   const fixtureKey =
     environment === "test"
       ? requiredEnvironment("STRIPE_FIXTURE_TEST_KEY")
       : requiredEnvironment("STRIPE_FIXTURE_MANAGED_SANDBOX_KEY");
   for (const [name, key] of [
-    ["STRIPE_PLATFORM_TEST_KEY", platformTestKey],
-    ["STRIPE_MANAGED_SANDBOX_KEY", managedSandboxKey],
+    ["STRIPE_PLATFORM_TEST_EFFECT_KEY", platformTestEffectKey],
+    ["STRIPE_MANAGED_SANDBOX_EFFECT_KEY", managedSandboxEffectKey],
     ["STRIPE_FIXTURE_KEY", fixtureKey],
   ] as const) {
     if (!TEST_KEY_PATTERN.test(key)) {
       throw new Error(`SANDBOX_E2E_NON_TEST_KEY_REJECTED_${name}`);
     }
   }
-  if (platformTestKey === managedSandboxKey) {
+  if (platformTestEffectKey === managedSandboxEffectKey) {
     throw new Error("SANDBOX_E2E_STRIPE_ENVIRONMENT_KEYS_MUST_BE_DISTINCT");
   }
 
@@ -185,8 +195,10 @@ function readHarnessEnvironment(): HarnessEnvironment {
     adminDatabaseUrl: databaseUrl.toString(),
     environment,
     fixtureKey,
-    managedSandboxKey,
-    platformTestKey,
+    managedSandboxAccountId,
+    managedSandboxEffectKey,
+    platformTestAccountId,
+    platformTestEffectKey,
   };
 }
 
@@ -708,10 +720,16 @@ describe.sequential("durable real Stripe refund flow", () => {
     const approvalAttestations = new ApprovalAttestationKeyring({
       active: { key: approvalAttestationKey, version: "v1" },
     });
-    const stripeGateway = new ConnectedAccountStripeClient(
+    const stripeGateway = new DirectAccountStripeClient(
       new StripeCredentialResolver({
-        platformTestKey: environment.platformTestKey,
-        managedSandboxKey: environment.managedSandboxKey,
+        platformTest: {
+          apiKey: environment.platformTestEffectKey,
+          expectedAccountId: environment.platformTestAccountId,
+        },
+        managedSandbox: {
+          apiKey: environment.managedSandboxEffectKey,
+          expectedAccountId: environment.managedSandboxAccountId,
+        },
       }),
     );
 
@@ -729,7 +747,7 @@ describe.sequential("durable real Stripe refund flow", () => {
     });
     const service = new PilotService(
       repository,
-      new ConnectedStripePaymentReader(stripeGateway),
+      new DirectStripePaymentReader(stripeGateway),
       new TestAndSandboxAccessPolicy(),
     );
 
@@ -1042,8 +1060,10 @@ describe.sequential("durable real Stripe refund flow", () => {
       stripe: {
         apiVersion: API_VERSION,
         appSigningSecret: "absec_sandbox_e2e",
-        managedSandboxEffectKey: environment.managedSandboxKey,
-        platformTestEffectKey: environment.platformTestKey,
+        managedSandboxAccountId: environment.managedSandboxAccountId,
+        managedSandboxEffectKey: environment.managedSandboxEffectKey,
+        platformTestAccountId: environment.platformTestAccountId,
+        platformTestEffectKey: environment.platformTestEffectKey,
       },
       workerDatabaseUrl,
     };

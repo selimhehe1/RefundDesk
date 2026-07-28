@@ -18,14 +18,14 @@ vi.mock("stripe", () => {
   return { default: FakeStripe };
 });
 
-import { ConnectedAccountStripeClient, StripeCredentialResolver } from "../src/index.js";
+import { DirectAccountStripeClient, StripeCredentialResolver } from "../src/index.js";
 
-describe("ConnectedAccountStripeClient.retrieveRefund", () => {
+describe("DirectAccountStripeClient.retrieveRefund", () => {
   beforeEach(() => {
     stripeMocks.retrieveRefund.mockReset();
   });
 
-  it("retrieves and normalizes a linked Refund in its connected test account", async () => {
+  it("retrieves and normalizes a linked Refund from the credential's direct account", async () => {
     stripeMocks.retrieveRefund.mockResolvedValue({
       id: "re_linked",
       payment_intent: "pi_linked",
@@ -38,10 +38,16 @@ describe("ConnectedAccountStripeClient.retrieveRefund", () => {
         refunddesk_request_id: "11111111-1111-4111-8111-111111111111",
       },
     });
-    const client = new ConnectedAccountStripeClient(
+    const client = new DirectAccountStripeClient(
       new StripeCredentialResolver({
-        platformTestKey: "sk_test_platform",
-        managedSandboxKey: "sk_test_sandbox",
+        platformTest: {
+          apiKey: "sk_test_platform",
+          expectedAccountId: "acct_linked",
+        },
+        managedSandbox: {
+          apiKey: "sk_test_sandbox",
+          expectedAccountId: "acct_sandbox",
+        },
       }),
     );
 
@@ -67,18 +73,20 @@ describe("ConnectedAccountStripeClient.retrieveRefund", () => {
       },
       requestId: null,
     });
-    expect(stripeMocks.retrieveRefund).toHaveBeenCalledWith(
-      "re_linked",
-      {},
-      { stripeAccount: "acct_linked" },
-    );
+    expect(stripeMocks.retrieveRefund).toHaveBeenCalledWith("re_linked");
   });
 
   it("rejects malformed Refund IDs before making a Stripe request", async () => {
-    const client = new ConnectedAccountStripeClient(
+    const client = new DirectAccountStripeClient(
       new StripeCredentialResolver({
-        platformTestKey: "sk_test_platform",
-        managedSandboxKey: "sk_test_sandbox",
+        platformTest: {
+          apiKey: "sk_test_platform",
+          expectedAccountId: "acct_linked",
+        },
+        managedSandbox: {
+          apiKey: "sk_test_sandbox",
+          expectedAccountId: "acct_sandbox",
+        },
       }),
     );
 

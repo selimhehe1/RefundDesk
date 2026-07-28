@@ -1,21 +1,54 @@
 import { describe, expect, it } from "vitest";
 
-import { StripeCredentialResolver, UnsupportedStripeEnvironmentError } from "../src/index.js";
+import {
+  StripeAccountMismatchError,
+  StripeCredentialResolver,
+  UnsupportedStripeEnvironmentError,
+} from "../src/index.js";
 
 describe("StripeCredentialResolver", () => {
   const resolver = new StripeCredentialResolver({
-    platformTestKey: "test-key",
-    managedSandboxKey: "sandbox-key",
+    platformTest: {
+      apiKey: "test-key",
+      expectedAccountId: "acct_test",
+    },
+    managedSandbox: {
+      apiKey: "sandbox-key",
+      expectedAccountId: "acct_sandbox",
+    },
   });
 
-  it("selects credentials only from the verified installation environment", () => {
+  it("returns the key and expected account bound to the verified environment", () => {
     expect(
       resolver.resolve({
         active: true,
         environment: "sandbox",
-        stripeAccountId: "acct_123",
+        stripeAccountId: "acct_sandbox",
       }),
-    ).toBe("sandbox-key");
+    ).toEqual({
+      apiKey: "sandbox-key",
+      expectedAccountId: "acct_sandbox",
+    });
+  });
+
+  it("rejects an installation whose account does not match the credential binding", () => {
+    expect(() =>
+      resolver.resolve({
+        active: true,
+        environment: "test",
+        stripeAccountId: "acct_sandbox",
+      }),
+    ).toThrow(StripeAccountMismatchError);
+  });
+
+  it("rejects an inactive installation before returning a credential", () => {
+    expect(() =>
+      resolver.resolve({
+        active: false,
+        environment: "test",
+        stripeAccountId: "acct_test",
+      }),
+    ).toThrow("Stripe installation is not active");
   });
 
   it("fails closed for live mode", () => {
@@ -23,7 +56,7 @@ describe("StripeCredentialResolver", () => {
       resolver.resolve({
         active: true,
         environment: "live",
-        stripeAccountId: "acct_123",
+        stripeAccountId: "acct_test",
       }),
     ).toThrow(UnsupportedStripeEnvironmentError);
   });

@@ -1,14 +1,16 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
 import {
-  assertNormalizedWebhookRowConsistency,
+  assertNormalizedAccountWebhookRowConsistency,
   decideRefundCandidate,
+  environmentForStoredWebhookEndpoint,
   listActiveTenantIds,
   listRecoverableWebhookReceipts,
   listScannableInstallations as listDbScannableInstallations,
   resolveInstallation,
+  storedWebhookEndpointSchema,
   type ExecutionWorkItem,
-  type NormalizedConnectedWebhookPayload,
+  type NormalizedAccountWebhookPayload,
   type PrismaClient,
   type TenantRepositories,
   withTenantTransaction,
@@ -405,8 +407,8 @@ function dateEquals(left: Date, right: Date): boolean {
 }
 
 function normalizedPayloadEquals(
-  left: NormalizedConnectedWebhookPayload,
-  right: NormalizedConnectedWebhookPayload,
+  left: NormalizedAccountWebhookPayload,
+  right: NormalizedAccountWebhookPayload,
 ): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
@@ -1027,15 +1029,15 @@ export class PrismaWorkerStore implements WorkerStore {
       if (receipt.status === "processed") {
         return;
       }
-      const endpoint = input.environment === "test" ? "connected_test" : "connected_sandbox";
-      const storedPayload = assertNormalizedWebhookRowConsistency({
+      const endpoint = storedWebhookEndpointSchema.parse(receipt.endpoint);
+      const storedPayload = assertNormalizedAccountWebhookRowConsistency({
         endpoint,
         eventType: receipt.eventType,
         objectId: receipt.objectId,
         stripeCreatedAt: receipt.stripeCreatedAt,
         normalizedPayload: receipt.normalizedPayload,
       });
-      const expectedPayload: NormalizedConnectedWebhookPayload = {
+      const expectedPayload: NormalizedAccountWebhookPayload = {
         schema_version: 1,
         environment: input.environment,
         event_type: input.eventType,
@@ -1045,7 +1047,7 @@ export class PrismaWorkerStore implements WorkerStore {
       };
       if (
         receipt.installationId !== input.installationId ||
-        receipt.endpoint !== endpoint ||
+        environmentForStoredWebhookEndpoint(endpoint) !== input.environment ||
         receipt.stripeEventId !== input.stripeEventId ||
         receipt.stripeAccountId !== input.stripeAccountId ||
         !normalizedPayloadEquals(storedPayload, expectedPayload)
@@ -1112,15 +1114,15 @@ export class PrismaWorkerStore implements WorkerStore {
         if (receipt.status === "processed") {
           return;
         }
-        const endpoint = input.environment === "test" ? "connected_test" : "connected_sandbox";
-        const storedPayload = assertNormalizedWebhookRowConsistency({
+        const endpoint = storedWebhookEndpointSchema.parse(receipt.endpoint);
+        const storedPayload = assertNormalizedAccountWebhookRowConsistency({
           endpoint,
           eventType: receipt.eventType,
           objectId: receipt.objectId,
           stripeCreatedAt: receipt.stripeCreatedAt,
           normalizedPayload: receipt.normalizedPayload,
         });
-        const expectedPayload: NormalizedConnectedWebhookPayload = {
+        const expectedPayload: NormalizedAccountWebhookPayload = {
           schema_version: 1,
           environment: input.environment,
           event_type: input.source.eventType,
@@ -1140,7 +1142,7 @@ export class PrismaWorkerStore implements WorkerStore {
         };
         if (
           receipt.installationId !== input.installationId ||
-          receipt.endpoint !== endpoint ||
+          environmentForStoredWebhookEndpoint(endpoint) !== input.environment ||
           receipt.stripeEventId !== input.source.stripeEventId ||
           receipt.stripeAccountId !== input.source.stripeAccountId ||
           !normalizedPayloadEquals(storedPayload, expectedPayload)

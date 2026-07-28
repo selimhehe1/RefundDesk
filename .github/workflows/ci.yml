@@ -217,13 +217,15 @@ jobs:
           STRIPE_API_VERSION: 2026-06-24.dahlia
           STRIPE_APP_ID: ca_ciSynthetic
           STRIPE_APP_SIGNING_SECRET: absec_ci_synthetic
+          STRIPE_PLATFORM_TEST_ACCOUNT_ID: acct_CiPlatform123
+          STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: acct_CiSandbox456
           STRIPE_PLATFORM_TEST_READ_KEY: rk_test_ci_platform_read
           STRIPE_MANAGED_SANDBOX_READ_KEY: rk_test_ci_sandbox_read
           STRIPE_PLATFORM_TEST_EFFECT_KEY: rk_test_ci_platform_effect
           STRIPE_MANAGED_SANDBOX_EFFECT_KEY: rk_test_ci_sandbox_effect
-          STRIPE_CONNECTED_TEST_WEBHOOK_SECRET: whsec_ci_test
-          STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET: whsec_ci_sandbox
-          STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET: disabled
+          STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET: whsec_ci_test
+          STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: whsec_ci_sandbox
+          STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: disabled
           REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=
           REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: v1
           REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=
@@ -281,11 +283,13 @@ jobs:
             -e DATABASE_URL \
             -e STRIPE_API_VERSION \
             -e STRIPE_APP_ID \
+            -e STRIPE_PLATFORM_TEST_ACCOUNT_ID \
+            -e STRIPE_MANAGED_SANDBOX_ACCOUNT_ID \
             -e STRIPE_PLATFORM_TEST_READ_KEY \
             -e STRIPE_MANAGED_SANDBOX_READ_KEY \
-            -e STRIPE_CONNECTED_TEST_WEBHOOK_SECRET \
-            -e STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET \
-            -e STRIPE_CONNECTED_LIVE_WEBHOOK_SECRET \
+            -e STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET \
+            -e STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET \
+            -e STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET \
             -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
             -e REFUNDDESK_FIELD_ENCRYPTION_KEY_V1 \
             -e REFUNDDESK_EXPORT_SIGNING_KEY_V1 \
@@ -310,6 +314,8 @@ jobs:
             -e PGBOSS_DATABASE_URL \
             -e STRIPE_API_VERSION \
             -e STRIPE_APP_SIGNING_SECRET \
+            -e STRIPE_PLATFORM_TEST_ACCOUNT_ID \
+            -e STRIPE_MANAGED_SANDBOX_ACCOUNT_ID \
             -e STRIPE_PLATFORM_TEST_EFFECT_KEY \
             -e STRIPE_MANAGED_SANDBOX_EFFECT_KEY \
             -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
@@ -362,8 +368,8 @@ jobs:
             const forbidden = [
               'STRIPE_PLATFORM_TEST_READ_KEY',
               'STRIPE_MANAGED_SANDBOX_READ_KEY',
-              'STRIPE_CONNECTED_TEST_WEBHOOK_SECRET',
-              'STRIPE_CONNECTED_SANDBOX_WEBHOOK_SECRET',
+              'STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET',
+              'STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET',
               'REFUNDDESK_FIELD_ENCRYPTION_KEY_V1',
               'REFUNDDESK_EXPORT_SIGNING_KEY_V1',
               'DATABASE_URL',
@@ -379,6 +385,29 @@ jobs:
               --data '{}' \
               http://127.0.0.1:3200/api/v1/context/sync
           )" = "401"
+          for environment in test sandbox; do
+            test "$(
+              curl --silent --output /dev/null --write-out '%{http_code}' \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --data '{}' \
+                "http://127.0.0.1:3200/api/webhooks/stripe-account/${environment}"
+            )" = "400"
+            test "$(
+              curl --silent --output /dev/null --write-out '%{http_code}' \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --data '{}' \
+                "http://127.0.0.1:3200/api/webhooks/stripe-connected/${environment}"
+            )" = "404"
+          done
+          test "$(
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              --request POST \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              http://127.0.0.1:3200/api/webhooks/stripe-account/live
+          )" = "503"
           test "$(
             curl --silent --output /dev/null --write-out '%{http_code}' \
               --request POST \

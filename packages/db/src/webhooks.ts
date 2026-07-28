@@ -1,8 +1,8 @@
 import {
-  assertNormalizedWebhookRowConsistency,
-  connectedWebhookEndpointSchema,
-  type ConnectedWebhookEndpoint,
-  type NormalizedConnectedWebhookPayload,
+  assertNormalizedAccountWebhookRowConsistency,
+  storedWebhookEndpointSchema,
+  type NormalizedAccountWebhookPayload,
+  type StoredWebhookEndpoint,
 } from "./connected-webhook.js";
 
 import type { PrismaClient, ReceiptStatus } from "./generated/prisma/client.js";
@@ -18,13 +18,13 @@ export interface ExistingWebhookReceipt {
 }
 
 export interface RecoverableWebhookReceipt extends ExistingWebhookReceipt {
-  readonly endpoint: ConnectedWebhookEndpoint;
+  readonly endpoint: StoredWebhookEndpoint;
   readonly stripeEventId: string;
   readonly stripeAccountId: string;
-  readonly eventType: NormalizedConnectedWebhookPayload["event_type"];
+  readonly eventType: NormalizedAccountWebhookPayload["event_type"];
   readonly objectId: string;
   readonly stripeCreatedAt: Date;
-  readonly normalizedPayload: NormalizedConnectedWebhookPayload;
+  readonly normalizedPayload: NormalizedAccountWebhookPayload;
   readonly processingAttempts: number;
 }
 
@@ -60,16 +60,16 @@ function assertStripeAccountId(stripeAccountId: string): void {
 
 export async function findWebhookReceipt(
   client: PrismaClient,
-  endpoint: ConnectedWebhookEndpoint,
+  endpoint: StoredWebhookEndpoint,
   stripeEventId: string,
   stripeAccountId: string,
 ): Promise<ExistingWebhookReceipt | null> {
-  connectedWebhookEndpointSchema.parse(endpoint);
+  storedWebhookEndpointSchema.parse(endpoint);
   assertStripeEventId(stripeEventId);
   assertStripeAccountId(stripeAccountId);
   const rows = await client.$queryRaw<readonly ExistingWebhookReceiptRow[]>`
     SELECT tenant_id, installation_id, receipt_id, receipt_status
-    FROM refunddesk_find_webhook_receipt(
+    FROM refunddesk_find_webhook_receipt_v2(
       ${endpoint}::webhook_endpoint,
       ${stripeEventId}::VARCHAR,
       ${stripeAccountId}::VARCHAR
@@ -107,13 +107,13 @@ export async function listRecoverableWebhookReceipts(
       normalized_payload,
       receipt_status,
       processing_attempts
-    FROM refunddesk_list_recoverable_webhook_receipts(${limit}::INTEGER)
+    FROM refunddesk_list_recoverable_webhook_receipts_v2(${limit}::INTEGER)
   `;
   return rows.map((row) => {
-    const endpoint = connectedWebhookEndpointSchema.parse(row.endpoint);
+    const endpoint = storedWebhookEndpointSchema.parse(row.endpoint);
     assertStripeEventId(row.stripe_event_id);
     assertStripeAccountId(row.stripe_account_id);
-    const normalizedPayload = assertNormalizedWebhookRowConsistency({
+    const normalizedPayload = assertNormalizedAccountWebhookRowConsistency({
       endpoint,
       eventType: row.event_type,
       objectId: row.object_id,

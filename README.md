@@ -3,14 +3,15 @@
 RefundDesk is a Stripe App pilot that routes card-refund requests through a one-person approval
 workflow, records every workflow decision, and flags refunds detected outside it.
 
-The pilot is test/sandbox-only. Live refunds, Marketplace publication, Billing, e-mail
-notifications, paid infrastructure and production deployment are deliberately disabled.
+The pilot is test/sandbox-only. Live refunds, Marketplace publication, Billing and e-mail
+notifications are deliberately disabled. An AWS sandbox deployment is authorized under a
+10 EUR/month ceiling; it contains synthetic data only.
 
 ## Current pilot status
 
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
-backend Refund permission, Stripe idempotency, connected webhook deduplication and ordering,
+backend Refund permission, Stripe idempotency, historical connected-webhook deduplication and ordering,
 external-Refund detection, copied-proof classification and minimal permission set.
 
 Every Phase-0 runtime route, client call, UI control and manifest switch has been removed from the
@@ -58,7 +59,7 @@ impossible, not that Stripe has approved the App for Marketplace distribution. E
 access was closed after verification.
 
 The repository foundations and durable pilot path are implemented and locally verified. The pinned
-workspace, strict contracts, PostgreSQL role separation, seven migrations, forced-RLS checks,
+workspace, strict contracts, PostgreSQL role separation, ordered migrations, forced-RLS checks,
 PostgreSQL integration suites, build, secret scanning and dependency audits pass.
 
 The current local hardening revision also replaces a Prisma sibling-relation load at the financial
@@ -68,28 +69,31 @@ adapter-pg boundary and the isolated queue capability, so neither an overlapping
 `pg.Client.query()` warning nor a worker-capable pg-boss login can be silently accepted. The exact
 standalone Stripe App graph separately passes 69 tests under its pinned pnpm 10.30.3 lockfile.
 
-The next autonomy milestone is prepared locally but not deployed. Web, worker and migration now
-have separate production configuration contracts; hosted web keys are read-only and distinct from
-worker effect keys, known foreign-service secrets make production startup fail, and an offline
-preflight verifies database, Stripe and cryptographic-key separation. The Stripe App signing secret
-now exists only in the worker. Web forwards the exact signed body to a private worker verifier, and
-an approval can advance only when PostgreSQL binds it to a worker-created, append-only HMAC
-attestation of the exact financial and identity snapshot. Web has no privilege on that evidence
-table, and web, worker and pg-boss use separate database logins.
+The hosted sandbox now runs on one hardened AWS Lightsail instance with five isolated containers,
+PostgreSQL 18, a stable HTTPS origin, a private versioned backup bucket and live mode disabled.
+Web, worker and migration have separate configuration and database authority. Four distinct
+restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the
+web read keys were proved unable to create Refunds. The Stripe App signing secret exists only in
+the worker. Web forwards the exact signed body to a private worker verifier, and an approval can
+advance only when PostgreSQL binds it to a worker-created, append-only HMAC attestation of the
+exact financial and identity snapshot.
 
 A provider-neutral multi-target Dockerfile produces a minimal Next.js server, a portable worker and
 a one-shot migrator. Web readiness verifies PostgreSQL/schema/RLS authority, while the worker has
 independent generic probes for its exact pg-boss consumers, schedules and scanner coverage.
 
-The portable worker bundle, its real `/health` socket, the Next standalone liveness and scoped
-database readiness, and the canonical migrate/grant/access-check job all pass locally. Linux builds
-for all three OCI targets and scoped container smokes are now required in CI. This workstation has
-no Docker engine, so no local OCI-build success is claimed. No host, stable HTTPS origin, managed
-backup, real read/effect restricted-key pair, new Stripe App upload or external deployment has been
-created. The approval command and trust boundary changed after `0.1.2`, so that upload cannot carry
-the current source or installation evidence. Version `0.1.3` is reserved in the local manifest but
-has not been uploaded; it requires a stable origin, a clean snapshot and fresh installation
-evidence.
+The deployed immutable backend artifact passed its probes and a real encrypted PostgreSQL backup
+was restored on a disposable PostgreSQL 18 verifier. The approval command and trust boundary
+changed after `0.1.2`, so that upload cannot carry the current source or installation evidence.
+Version `0.1.3` is reserved in the local manifest but has not been uploaded.
+
+Real Stripe calls then exposed a topology mismatch: the pilot credentials are direct-account
+credentials, while the first hosted client/webhook code used Connect semantics. The current source
+removes every `Stripe-Account` request option, binds each credential to an expected account ID and
+adds `/api/webhooks/stripe-account/test` plus `/sandbox`. It rejects any webhook carrying
+`Event.account`, an unexpected API version or live mode. Historical `connected_*` receipts remain
+recovery-only and Event deduplication is account-global. The hosted direct-account delivery gate
+must be rerun in both environments before the product is called commercially ready.
 
 The production-shape offline configuration preflight also passes with four distinct database
 principals, separately scoped Stripe credentials, four distinct application keys and a dedicated
@@ -145,10 +149,9 @@ Never paste secrets into source files, Git, logs, issues, or chat. Put local cre
 the ignored `.env.local`. Do not run real sandbox scenarios without explicit test/sandbox
 credentials and synthetic allowlisted objects.
 
-## Persistent sandbox preparation
+## Persistent sandbox release contract
 
-An external hosted sandbox still requires a provider/domain checkpoint. The local release contract
-can be checked without deploying:
+The hosted sandbox release contract can also be checked locally:
 
 ```powershell
 pnpm container:check
@@ -159,11 +162,14 @@ pnpm db:release:prepare
 The three environment files are ignored and service-scoped. In `NODE_ENV=production`, use
 `STRIPE_PLATFORM_TEST_READ_KEY` and `STRIPE_MANAGED_SANDBOX_READ_KEY` only in the web service, and
 distinct `STRIPE_PLATFORM_TEST_EFFECT_KEY` and `STRIPE_MANAGED_SANDBOX_EFFECT_KEY` only in the
-worker. `STRIPE_APP_SIGNING_SECRET` and the approval-attestation HMAC key also belong only to the
-worker. Platform receives only the private verifier URL and the bearer token shared with worker.
-The migration job receives database URLs only. Generic `STRIPE_PLATFORM_TEST_KEY` and
-`STRIPE_MANAGED_SANDBOX_KEY` remain a non-production compatibility bridge and are rejected by
-production loaders.
+worker. Both services must carry the same `STRIPE_PLATFORM_TEST_ACCOUNT_ID` and
+`STRIPE_MANAGED_SANDBOX_ACCOUNT_ID`, and those IDs must be distinct. Platform alone receives
+`STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET` and `STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET`;
+`STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET` stays literally `disabled`. `STRIPE_APP_SIGNING_SECRET` and
+the approval-attestation HMAC key belong only to the worker. Platform receives only the private
+verifier URL and the bearer token shared with worker. The migration job receives database URLs
+only. Generic `STRIPE_PLATFORM_TEST_KEY` and `STRIPE_MANAGED_SANDBOX_KEY` remain a non-production
+compatibility bridge and are rejected by production loaders.
 
 `db:release:prepare` is the sole release migration entrypoint: it runs Prisma migrations and grants,
 pg-boss migration and grants, then the real-login access check. It must run once in a serialized
@@ -180,12 +186,14 @@ required test/sandbox setting and the exact synthetic-test consent are present:
 $env:REFUNDDESK_RUN_SANDBOX_E2E = "I_ACKNOWLEDGE_SYNTHETIC_TEST_ONLY"
 $env:REFUNDDESK_GLOBAL_LIVE_ENABLED = "false"
 $env:REFUNDDESK_SANDBOX_E2E_ENVIRONMENT = "test"
-$env:REFUNDDESK_SANDBOX_E2E_ACCOUNT_ID = "<selected test account ID>"
 $env:REFUNDDESK_SANDBOX_E2E_ADMIN_DATABASE_URL = "<loopback PostgreSQL 18 owner URL for a disposable cluster>"
 $env:REFUNDDESK_SANDBOX_E2E_DISPOSABLE_POSTGRES_CLUSTER = "I_ACKNOWLEDGE_DEDICATED_DISPOSABLE_POSTGRES_CLUSTER"
-$env:STRIPE_PLATFORM_TEST_KEY = "<test-mode platform key>"
+$env:STRIPE_PLATFORM_TEST_ACCOUNT_ID = "<test-mode account ID>"
+$env:STRIPE_MANAGED_SANDBOX_ACCOUNT_ID = "<managed-sandbox account ID>"
+$env:STRIPE_PLATFORM_TEST_EFFECT_KEY = "<test-mode effect key>"
 $env:STRIPE_FIXTURE_TEST_KEY = "<test-mode key bound to the selected account>"
-$env:STRIPE_MANAGED_SANDBOX_KEY = "<separate managed-sandbox test key>"
+$env:STRIPE_MANAGED_SANDBOX_EFFECT_KEY = "<separate managed-sandbox effect key>"
+$env:STRIPE_FIXTURE_MANAGED_SANDBOX_KEY = "<managed-sandbox fixture key>"
 pnpm test:sandbox
 ```
 

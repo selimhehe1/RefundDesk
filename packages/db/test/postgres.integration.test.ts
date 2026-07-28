@@ -1343,7 +1343,7 @@ databaseDescribe("PostgreSQL security invariants", () => {
     await client.query("RESET ROLE");
     await client.query("SET ROLE refunddesk_runtime");
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
-    const insert = async (): Promise<number | null> => {
+    const insert = async (endpoint: "account_test" | "connected_test"): Promise<number | null> => {
       const result = await client.query(
         `INSERT INTO webhook_receipts (
           tenant_id,
@@ -1356,17 +1356,18 @@ databaseDescribe("PostgreSQL security invariants", () => {
           normalized_payload,
           stripe_created_at
         ) VALUES (
-          $1, $2, 'connected_test', 'evt_DeauthIntegration',
+          $1, $2, $3, 'evt_DeauthIntegration',
           'acct_IntegrationA', 'account.application.deauthorized',
-          'ca_Integration', $3::JSONB, $4
+          'ca_Integration', $4::JSONB, $5
         )
-        ON CONFLICT (endpoint, stripe_event_id) DO NOTHING`,
-        [tenantA, installationA, JSON.stringify(payload), eventCreated],
+        ON CONFLICT (stripe_account_id, stripe_event_id) DO NOTHING`,
+        [tenantA, installationA, endpoint, JSON.stringify(payload), eventCreated],
       );
       return result.rowCount;
     };
-    expect(await insert()).toBe(1);
-    expect(await insert()).toBe(0);
+    expect(await insert("account_test")).toBe(1);
+    expect(await insert("account_test")).toBe(0);
+    expect(await insert("connected_test")).toBe(0);
 
     await client.query("SET ROLE refunddesk_worker");
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
@@ -1388,12 +1389,25 @@ databaseDescribe("PostgreSQL security invariants", () => {
       [tenantA, new Date(eventCreated.getTime() + 30 * 24 * 60 * 60 * 1_000)],
     );
     const recoverable = await client.query<{ receipt_id: string }>(
-      "SELECT receipt_id FROM refunddesk_list_recoverable_webhook_receipts(100)",
+      "SELECT receipt_id FROM refunddesk_list_recoverable_webhook_receipts_v2(100)",
     );
     expect(recoverable.rowCount).toBe(1);
+    const legacyRecoverable = await client.query<{ receipt_id: string }>(
+      "SELECT receipt_id FROM refunddesk_list_recoverable_webhook_receipts(100)",
+    );
+    expect(legacyRecoverable.rowCount).toBe(0);
 
     await client.query("SET ROLE refunddesk_runtime");
     const duplicate = await client.query<{ receipt_id: string }>(
+      `SELECT receipt_id
+       FROM refunddesk_find_webhook_receipt_v2(
+         'account_test',
+         'evt_DeauthIntegration',
+         'acct_IntegrationA'
+       )`,
+    );
+    expect(duplicate.rowCount).toBe(1);
+    const legacyDuplicate = await client.query<{ receipt_id: string }>(
       `SELECT receipt_id
        FROM refunddesk_find_webhook_receipt(
          'connected_test',
@@ -1401,7 +1415,7 @@ databaseDescribe("PostgreSQL security invariants", () => {
          'acct_IntegrationA'
        )`,
     );
-    expect(duplicate.rowCount).toBe(1);
+    expect(legacyDuplicate.rowCount).toBe(0);
   });
 
   it("does not let a delayed authorization reactivate a newer deauthorization", async () => {

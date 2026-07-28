@@ -1,10 +1,10 @@
 import { loadPlatformConfig } from "@refunddesk/config";
 import { createPrismaClient, type PrismaClient } from "@refunddesk/db";
 import { FieldEncryptionKeyring } from "@refunddesk/domain";
-import { ConnectedAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
+import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import { TestAndSandboxAccessPolicy } from "./pilot-access-policy";
-import { ConnectedStripePaymentReader } from "./pilot-payment-reader";
+import { DirectStripePaymentReader } from "./pilot-payment-reader";
 import { PilotPrismaRepository } from "./pilot-prisma-repository";
 import { PilotService } from "./pilot-service";
 import { RemoteSignedRequestVerifier, type SignedRequestVerifier } from "./signed-request";
@@ -38,10 +38,16 @@ export function getPilotRuntime(): PilotRuntime {
     client,
     fieldKeyring,
   });
-  const stripeClient = new ConnectedAccountStripeClient(
+  const stripeClient = new DirectAccountStripeClient(
     new StripeCredentialResolver({
-      managedSandboxKey: config.stripe.managedSandboxReadKey,
-      platformTestKey: config.stripe.platformTestReadKey,
+      platformTest: {
+        apiKey: config.stripe.platformTestReadKey,
+        expectedAccountId: config.stripe.platformTestAccountId,
+      },
+      managedSandbox: {
+        apiKey: config.stripe.managedSandboxReadKey,
+        expectedAccountId: config.stripe.managedSandboxAccountId,
+      },
     }),
   );
   runtimeInstance = {
@@ -49,7 +55,7 @@ export function getPilotRuntime(): PilotRuntime {
     client,
     service: new PilotService(
       repository,
-      new ConnectedStripePaymentReader(stripeClient),
+      new DirectStripePaymentReader(stripeClient),
       new TestAndSandboxAccessPolicy(),
     ),
     signedRequestVerifier: new RemoteSignedRequestVerifier(
