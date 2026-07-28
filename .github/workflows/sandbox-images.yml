@@ -107,7 +107,7 @@ jobs:
             )" = "$SOURCE_URL"
             docker image inspect "$image" |
               jq --exit-status '
-                (.Config.Env // []) |
+                (.[0].Config.Env // []) |
                 all(.[];
                   test("^(?:DATABASE_URL|WORKER_DATABASE_URL|PGBOSS_DATABASE_URL|DATABASE_MIGRATION_URL|STRIPE_.*(?:KEY|SECRET)|REFUNDDESK_.*(?:KEY|TOKEN)|.*PASSWORD)=") |
                   not
@@ -149,11 +149,11 @@ jobs:
             docker image inspect --format '{{json .Config.Cmd}}' "$MIGRATE_IMAGE"
           )" = '["node","scripts/database-command.mjs","release-prepare"]'
           docker image inspect "$WEB_IMAGE" |
-            jq --exit-status '(.Config.ExposedPorts | keys) == ["3000/tcp"]' >/dev/null
+            jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3000/tcp"]' >/dev/null
           docker image inspect "$WORKER_IMAGE" |
-            jq --exit-status '(.Config.ExposedPorts | keys) == ["3101/tcp"]' >/dev/null
+            jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3101/tcp"]' >/dev/null
           docker image inspect "$MIGRATE_IMAGE" |
-            jq --exit-status '(.Config.ExposedPorts // {} | length) == 0' >/dev/null
+            jq --exit-status '(.[0].Config.ExposedPorts // {} | length) == 0' >/dev/null
 
           docker run --rm --entrypoint node "$WEB_IMAGE" -e "
             const fs = require('node:fs');
