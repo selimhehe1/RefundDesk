@@ -20,7 +20,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint scripts packages/db/scripts apps/worker/scripts && pnpm -r --if-present run lint",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "test": "pnpm -r --if-present run test",
+    "test": "pnpm -r --filter \"./packages/**\" --if-present run build && pnpm -r --if-present run test",
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:sandbox": "pnpm --filter @refunddesk/platform test:sandbox",
     "audit:prod": "pnpm audit --prod --audit-level high",
