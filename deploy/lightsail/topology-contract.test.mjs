@@ -324,6 +324,65 @@ test("host installs a pinned and authenticated AWS CLI v2", async () => {
   );
 });
 
+test("host pins the classic Docker store required by release image IDs", async () => {
+  const bootstrapHost = await read("scripts/bootstrap-host.sh");
+
+  assert.match(bootstrapHost, /and \(\(\.features \/\/ \{\}\) \| type == "object"\)/u);
+  assert.match(
+    bootstrapHost,
+    /\.features = \(\(\.features \/\/ \{\}\) \+ \{"containerd-snapshotter":false\}\)/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /\{"features":\{"containerd-snapshotter":false\},"log-driver":"local"/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /io\.containerd\.snapshotter\.v1[\s\S]+docker ps --all --quiet[\s\S]+docker image ls --quiet/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /current_containers="\$\(docker ps --all --quiet\)" \|\|\s+die "Docker container inventory is unavailable"/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /current_images="\$\(docker image ls --quiet\)" \|\|\s+die "Docker image inventory is unavailable"/u,
+  );
+  assert.doesNotMatch(bootstrapHost, /"containerd-snapshotter":true/u);
+
+  const emptyStoreGuard = bootstrapHost.indexOf(
+    "refusing to hide images while switching Docker image stores",
+  );
+  const daemonInstall = bootstrapHost.indexOf('install -o root -g root -m 0644 "${daemon_tmp}"');
+  const daemonValidation = bootstrapHost.indexOf(
+    'dockerd --validate --config-file="${daemon_tmp}"',
+  );
+  const daemonRestart = bootstrapHost.indexOf("systemctl restart docker.service");
+  const driverCheck = bootstrapHost.indexOf(
+    "Docker classic overlay2 image store is required for verified RefundDesk image IDs",
+  );
+  assert.ok(
+    emptyStoreGuard >= 0 && emptyStoreGuard < daemonInstall,
+    "the active containerd store must be empty before the daemon config changes",
+  );
+  assert.ok(
+    daemonValidation >= 0 && daemonValidation < daemonInstall,
+    "the generated daemon config must validate before installation",
+  );
+  assert.ok(
+    daemonInstall < daemonRestart && daemonRestart < driverCheck,
+    "the daemon config must be installed and restarted before its driver is accepted",
+  );
+  assert.match(
+    bootstrapHost,
+    /\[\[ "\$\{docker_driver\}" == "overlay2" \]\][\s\S]+Docker classic overlay2 image store is required/u,
+  );
+  assert.match(
+    bootstrapHost,
+    /docker_driver_status="\$\(docker info --format '\{\{json \.DriverStatus\}\}'\)"[\s\S]+Docker containerd image store remained active after restart/u,
+  );
+});
+
 test("one-shot database jobs cannot build or pull an unverified image", async () => {
   const [bootstrapDatabase, release] = await Promise.all([
     read("scripts/bootstrap-database.sh"),

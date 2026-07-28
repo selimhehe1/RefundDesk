@@ -277,22 +277,52 @@ daemon_tmp="$(mktemp)"
 trap 'rm -f -- "${daemon_tmp:-}"' EXIT
 if [[ -e "${daemon_file}" ]]; then
   assert_regular_file "${daemon_file}"
-  jq --exit-status 'type == "object"' "${daemon_file}" >/dev/null ||
-    die "existing Docker daemon configuration is not a JSON object"
+  jq --exit-status '
+    type == "object"
+    and ((."log-opts" // {}) | type == "object")
+    and ((.features // {}) | type == "object")
+  ' "${daemon_file}" >/dev/null ||
+    die "existing Docker daemon configuration has incompatible types"
   existing_driver="$(jq --raw-output '."log-driver" // "local"' "${daemon_file}")"
   [[ "${existing_driver}" == "local" ]] ||
     die "existing Docker log driver is not local; refusing to overwrite it"
   jq \
     '."log-driver" = "local"
-     | ."log-opts" = ((."log-opts" // {}) + {"max-size":"10m","max-file":"3"})' \
+     | ."log-opts" = ((."log-opts" // {}) + {"max-size":"10m","max-file":"3"})
+     | .features = ((.features // {}) + {"containerd-snapshotter":false})' \
     "${daemon_file}" >"${daemon_tmp}"
 else
   jq --null-input \
-    '{"log-driver":"local","log-opts":{"max-size":"10m","max-file":"3"}}' \
+    '{"features":{"containerd-snapshotter":false},"log-driver":"local","log-opts":{"max-size":"10m","max-file":"3"}}' \
     >"${daemon_tmp}"
 fi
+
+current_driver_status="$(docker info --format '{{json .DriverStatus}}')" ||
+  die "Docker daemon information is unavailable"
+if grep -Fq 'io.containerd.snapshotter.v1' <<<"${current_driver_status}"; then
+  current_containers="$(docker ps --all --quiet)" ||
+    die "Docker container inventory is unavailable"
+  [[ -z "${current_containers}" ]] ||
+    die "refusing to hide containers while switching Docker image stores"
+  current_images="$(docker image ls --quiet)" ||
+    die "Docker image inventory is unavailable"
+  [[ -z "${current_images}" ]] ||
+    die "refusing to hide images while switching Docker image stores"
+fi
+
+dockerd --validate --config-file="${daemon_tmp}" >/dev/null ||
+  die "generated Docker daemon configuration is invalid"
 install -o root -g root -m 0644 "${daemon_tmp}" "${daemon_file}"
 systemctl restart docker.service
+docker_driver="$(docker info --format '{{.Driver}}')" ||
+  die "Docker daemon did not recover after restart"
+[[ "${docker_driver}" == "overlay2" ]] ||
+  die "Docker classic overlay2 image store is required for verified RefundDesk image IDs"
+docker_driver_status="$(docker info --format '{{json .DriverStatus}}')" ||
+  die "Docker driver status is unavailable after restart"
+if grep -Fq 'io.containerd.snapshotter.v1' <<<"${docker_driver_status}"; then
+  die "Docker containerd image store remained active after restart"
+fi
 
 install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
 cat >/etc/systemd/journald.conf.d/refunddesk.conf <<'EOF'
