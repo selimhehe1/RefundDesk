@@ -23,6 +23,7 @@ const requiredFragments = [
   "refunddesk-migrate:sandbox-$actual_revision",
   "refunddesk-source-${actual_revision}.tar.zst",
   "docker image save",
+  'git ls-tree -r --name-only "$REVISION" deploy/lightsail',
   'git archive --format=tar "$REVISION" deploy/lightsail',
   'zstd --test --no-progress "$bundle_path"',
   'zstd --test --no-progress "$source_path"',
@@ -40,8 +41,11 @@ const requiredFragments = [
   "REFUNDDESK_SANDBOX_ARTIFACT_ACCESS_KEY_ID",
   "REFUNDDESK_SANDBOX_ARTIFACT_SECRET_ACCESS_KEY",
   'artifact_prefix="refunddesk-sandbox/releases/$REVISION"',
-  '[[ "$existing_count" == "0" ]]',
-  '[[ "$remote_count" == "5" ]]',
+  'if [[ "$existing_count" != "0" ]]',
+  'if [[ "$remote_count" != "5" ]]',
+  "for _ in {1..60}",
+  "The temporary bucket credential did not propagate within ten minutes.",
+  'for artifact_file in "${upload_order[@]}"',
   "--sse AES256",
   "cleanup_partial_upload",
   "retention-days: 1",
@@ -62,8 +66,15 @@ if (
   throw new Error("SANDBOX_IMAGE_NONROOT_CHECK_MISSING");
 }
 
+const prefixEmptyGuard = workflow.indexOf('if [[ "$existing_count" != "0" ]]');
+const partialCleanupTrap = workflow.indexOf("trap cleanup_partial_upload EXIT");
+if (prefixEmptyGuard < 0 || partialCleanupTrap < 0 || partialCleanupTrap < prefixEmptyGuard) {
+  throw new Error("SANDBOX_IMAGE_PREFIX_CLEANUP_ORDER_INVALID");
+}
+
 const forbiddenPatterns = [
   { name: "scheduled_or_push_trigger", pattern: /^\s{2}(?:push|pull_request|schedule):/mu },
+  { name: "invalid_git_ls_tree_option", pattern: /git ls-tree --recursive/u },
   { name: "registry_login", pattern: /docker\/login-action|docker\s+login/iu },
   { name: "registry_push", pattern: /docker\s+(?:image\s+)?push|push-to-registry:\s*true/iu },
   { name: "ghcr_reference", pattern: /ghcr\.io/iu },

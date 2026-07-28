@@ -208,7 +208,7 @@ jobs:
           )
           bundle_sha256="$(sha256sum "$bundle_path" | cut -d ' ' -f 1)"
 
-          if git ls-tree --recursive --name-only "$REVISION" deploy/lightsail |
+          if git ls-tree -r --name-only "$REVISION" deploy/lightsail |
             grep --extended-regexp '\.md$' >/dev/null; then
             echo "::error::The operator source archive contains a forbidden Markdown file."
             exit 1
@@ -324,11 +324,47 @@ jobs:
         run: |
           set -euo pipefail
           command -v aws >/dev/null
-          [[ "$AWS_ACCESS_KEY_ID" == AKIA* ]]
-          [[ -n "$AWS_SECRET_ACCESS_KEY" ]]
-          [[ "$SANDBOX_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+          if [[ "$AWS_ACCESS_KEY_ID" != AKIA* || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
+            echo "::error::The temporary bucket credential has an unexpected shape."
+            exit 1
+          fi
+          if [[ ! "$SANDBOX_ARTIFACT_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+            echo "::error::The private bucket name has an unexpected shape."
+            exit 1
+          fi
 
           artifact_prefix="refunddesk-sandbox/releases/$REVISION"
+          s3_error="$RUNNER_TEMP/refunddesk-s3-error"
+          credential_ready=false
+          for _ in {1..60}; do
+            if existing_count="$(
+              aws s3api list-objects-v2 \
+                --bucket "$SANDBOX_ARTIFACT_BUCKET" \
+                --prefix "$artifact_prefix/" \
+                --query 'KeyCount' \
+                --output text \
+                2>"$s3_error"
+            )"; then
+              credential_ready=true
+              break
+            fi
+            if ! grep --quiet 'InvalidAccessKeyId' "$s3_error"; then
+              sed 's/^/::error::/' "$s3_error"
+              exit 1
+            fi
+            sleep 10
+          done
+          if [[ "$credential_ready" != true ]]; then
+            sed 's/^/::error::/' "$s3_error"
+            echo "::error::The temporary bucket credential did not propagate within ten minutes."
+            exit 1
+          fi
+          rm --force "$s3_error"
+          if [[ "$existing_count" != "0" ]]; then
+            echo "::error::The revision-scoped artifact prefix is not empty."
+            exit 1
+          fi
+
           committed=false
           cleanup_partial_upload() {
             status=$?
@@ -343,15 +379,6 @@ jobs:
           }
           trap cleanup_partial_upload EXIT
 
-          existing_count="$(
-            aws s3api list-objects-v2 \
-              --bucket "$SANDBOX_ARTIFACT_BUCKET" \
-              --prefix "$artifact_prefix/" \
-              --query 'KeyCount' \
-              --output text
-          )"
-          [[ "$existing_count" == "0" ]]
-
           mapfile -t artifact_files < <(
             find "$OUT_DIR" -maxdepth 1 -type f -printf '%f\n' | sort
           )
@@ -363,15 +390,27 @@ jobs:
             "$SOURCE_BASENAME.sha256"
           )
           mapfile -t expected_files < <(printf '%s\n' "${expected_files[@]}" | sort)
-          [[ "${artifact_files[*]}" == "${expected_files[*]}" ]]
+          if [[ "${artifact_files[*]}" != "${expected_files[*]}" ]]; then
+            echo "::error::The artifact directory does not contain exactly the expected five files."
+            exit 1
+          fi
 
-          aws s3 cp \
-            "$OUT_DIR/" \
-            "s3://$SANDBOX_ARTIFACT_BUCKET/$artifact_prefix/" \
-            --recursive \
-            --only-show-errors \
-            --no-progress \
-            --sse AES256
+          upload_order=(
+            "$BUNDLE_BASENAME"
+            "$SOURCE_BASENAME"
+            "$BUNDLE_BASENAME.sha256"
+            "$SOURCE_BASENAME.sha256"
+            "$MANIFEST_BASENAME"
+          )
+          for artifact_file in "${upload_order[@]}"; do
+            echo "Uploading verified $artifact_file"
+            aws s3 cp \
+              "$OUT_DIR/$artifact_file" \
+              "s3://$SANDBOX_ARTIFACT_BUCKET/$artifact_prefix/$artifact_file" \
+              --only-show-errors \
+              --no-progress \
+              --sse AES256
+          done
 
           remote_count="$(
             aws s3api list-objects-v2 \
@@ -380,7 +419,10 @@ jobs:
               --query 'KeyCount' \
               --output text
           )"
-          [[ "$remote_count" == "5" ]]
+          if [[ "$remote_count" != "5" ]]; then
+            echo "::error::The private bucket does not contain exactly five current objects."
+            exit 1
+          fi
           for artifact_file in "${artifact_files[@]}"; do
             local_size="$(stat --format='%s' "$OUT_DIR/$artifact_file")"
             remote_size="$(
@@ -390,7 +432,10 @@ jobs:
                 --query 'ContentLength' \
                 --output text
             )"
-            [[ "$local_size" == "$remote_size" ]]
+            if [[ "$local_size" != "$remote_size" ]]; then
+              echo "::error::Remote size verification failed for $artifact_file."
+              exit 1
+            fi
           done
 
           committed=true
