@@ -110,7 +110,23 @@ jobs:
             docker stop --time 40 refunddesk-worker-ci refunddesk-web-ci >/dev/null 2>&1 || true
             docker rm refunddesk-worker-ci refunddesk-web-ci >/dev/null 2>&1 || true
           }
-          trap cleanup EXIT
+          finish() {
+            exit_code="$?"
+            trap - EXIT
+            if [[ "$exit_code" -ne 0 ]]; then
+              for container in refunddesk-web-ci refunddesk-worker-ci; do
+                if docker inspect "$container" >/dev/null 2>&1; then
+                  docker inspect \
+                    --format 'container={{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} error={{json .State.Error}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                    "$container" || true
+                  docker logs --tail 200 "$container" 2>&1 || true
+                fi
+              done
+            fi
+            cleanup
+            exit "$exit_code"
+          }
+          trap finish EXIT
 
           docker run --rm --network host \
             -e DATABASE_URL \
