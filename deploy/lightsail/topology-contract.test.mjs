@@ -40,6 +40,13 @@ test("runtime topology publishes only the public Caddy ports", async () => {
   }
   const publicCaddy = serviceBlock(compose, "caddy");
   assert.match(publicCaddy, /^\s{4}ports:\n\s{6}- "80:8080"\n\s{6}- "443:8443"$/mu);
+  for (const caddyService of ["verifier", "caddy"]) {
+    const block = serviceBlock(compose, caddyService);
+    assert.match(block, /^\s{4}cap_add:\n\s{6}- NET_BIND_SERVICE$/mu);
+  }
+  for (const service of ["postgres", "bootstrap", "migrate", "worker", "web"]) {
+    assert.doesNotMatch(serviceBlock(compose, service), /NET_BIND_SERVICE/u);
+  }
 });
 
 test("web and worker have disjoint database and verifier networks", async () => {
