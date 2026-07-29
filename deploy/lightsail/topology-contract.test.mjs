@@ -447,6 +447,13 @@ test("environment examples preserve authority separation and disable live", asyn
   }
   assert.match(bootstrapScript, /export PGSSLMODE=verify-full/u);
   assert.match(bootstrapScript, /REFUNDDESK_POSTGRES_MAINTENANCE_PASSWORD/u);
+  assert.match(bootstrapScript, /--no-psqlrc/u);
+  assert.match(bootstrapScript, /--set=ON_ERROR_STOP=1/u);
+  assert.match(bootstrapSql, /^\\set ON_ERROR_STOP on$/mu);
+  assert.equal((bootstrapSql.match(/RAISE EXCEPTION USING/gu) ?? []).length, 2);
+  assert.match(bootstrapSql, /ERRCODE = '42501'/u);
+  assert.match(bootstrapSql, /ERRCODE = '22023'/u);
+  assert.doesNotMatch(bootstrapSql, /^\\(?:q|quit)(?:\s|$)/mu);
   assert.doesNotMatch(bootstrapSql, /\brefunddesk_(?:runtime|worker|queue)\b/u);
   assert.doesNotMatch(bootstrapSql, /\brefunddesk_attestation_writer\b/u);
   assert.match(
@@ -469,6 +476,18 @@ test("environment examples preserve authority separation and disable live", asyn
   );
   assert.match(bootstrapSql, /count\(DISTINCT password_value\) = 5/u);
   assert.match(bootstrapSql, /min\(length\(password_value\)\) >= 32/u);
+  const firstRoleCreation = bootstrapSql.indexOf("CREATE ROLE refunddesk_maintenance");
+  const sessionGuardAbort = bootstrapSql.indexOf(
+    "RefundDesk database bootstrap session contract is invalid.",
+  );
+  const passwordGuardAbort = bootstrapSql.indexOf(
+    "RefundDesk database password contract is invalid.",
+  );
+  assert.ok(
+    sessionGuardAbort >= 0 &&
+      passwordGuardAbort > sessionGuardAbort &&
+      firstRoleCreation > passwordGuardAbort,
+  );
   assert.equal((bootstrapSql.match(/CREATE ROLE refunddesk_[a-z]+_login LOGIN/gu) ?? []).length, 4);
 });
 

@@ -14,7 +14,13 @@ SELECT
 \if :refunddesk_bootstrap_session_safe
 \else
 \echo 'Database bootstrap requires a superuser session with statement error logging disabled.'
-\quit 4
+DO $refunddesk$
+BEGIN
+  RAISE EXCEPTION USING
+    ERRCODE = '42501',
+    MESSAGE = 'RefundDesk database bootstrap session contract is invalid.';
+END
+$refunddesk$;
 \endif
 
 SELECT count(*) = 5
@@ -34,7 +40,13 @@ FROM (
 \if :refunddesk_passwords_valid
 \else
 \echo 'Database password files must be non-empty, distinct values of at least 32 characters.'
-\quit 3
+DO $refunddesk$
+BEGIN
+  RAISE EXCEPTION USING
+    ERRCODE = '22023',
+    MESSAGE = 'RefundDesk database password contract is invalid.';
+END
+$refunddesk$;
 \endif
 
 SELECT

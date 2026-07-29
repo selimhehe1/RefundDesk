@@ -46,4 +46,6 @@ exec psql \
   --username="${POSTGRES_USER:?POSTGRES_USER is required}" \
   --dbname="${POSTGRES_DB:?POSTGRES_DB is required}" \
   --no-password \
+  --no-psqlrc \
+  --set=ON_ERROR_STOP=1 \
   --file=/run/refunddesk/bootstrap-roles.sql

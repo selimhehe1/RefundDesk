@@ -297,6 +297,19 @@ jobs:
               bash deploy/lightsail/scripts/bootstrap-database.sh
           done
 
+          role_password_state() {
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              exec --no-TTY postgres \
+              psql --username=refunddesk_owner --dbname=refunddesk \
+                --no-psqlrc --tuples-only --no-align \
+                --command="SELECT jsonb_object_agg(rolname, rolpassword ORDER BY rolname)::text FROM pg_authid WHERE rolname IN ('refunddesk_web_login','refunddesk_worker_login','refunddesk_queue_login','refunddesk_maintenance_login');"
+          }
+          role_password_state_before="$(role_password_state)"
+          [[ -n "$role_password_state_before" ]]
+
           maintenance_secret_backup="$(mktemp)"
           sudo install -o root -g root -m 0600 \
             /etc/refunddesk/secrets/postgres-maintenance-password \
@@ -304,7 +317,8 @@ jobs:
           sudo install -o root -g root -m 0600 \
             /etc/refunddesk/secrets/postgres-owner-password \
             /etc/refunddesk/secrets/postgres-maintenance-password
-          if sudo env \
+          set +e
+          sudo env \
             PATH="$PATH" \
             REFUNDDESK_ROOT="$GITHUB_WORKSPACE" \
             REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
@@ -317,14 +331,23 @@ jobs:
             CI=true \
             GITHUB_ACTIONS=true \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
-            bash deploy/lightsail/scripts/bootstrap-database.sh; then
-            echo "bootstrap accepted duplicate owner/maintenance passwords" >&2
-            exit 1
-          fi
+            bash deploy/lightsail/scripts/bootstrap-database.sh
+          duplicate_password_status="$?"
+          set -e
           sudo install -o root -g root -m 0600 \
             "$maintenance_secret_backup" \
             /etc/refunddesk/secrets/postgres-maintenance-password
           sudo rm -f -- "$maintenance_secret_backup"
+          if [[ "$duplicate_password_status" -ne 3 ]]; then
+            echo "duplicate-password bootstrap returned an unexpected status" >&2
+            exit 1
+          fi
+          role_password_state_after="$(role_password_state)"
+          if [[ "$role_password_state_after" != "$role_password_state_before" ]]; then
+            echo "duplicate-password bootstrap mutated restricted role credentials" >&2
+            exit 1
+          fi
+          unset role_password_state_before role_password_state_after
 
           role_count="$(
             sudo docker compose \
