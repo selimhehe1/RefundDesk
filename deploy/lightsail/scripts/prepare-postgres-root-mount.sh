@@ -254,6 +254,10 @@ recover_stale_helper_container() {
 tree_fingerprint() {
   local root="$1"
 
+  # GNU tar PAX headers otherwise include atime and ctime. The former can
+  # change while reading and the latter necessarily changes during a copy, so
+  # neither can prove clone integrity. Relevant preservable fields remain hashed:
+  # paths, types, contents, owners, modes, mtime, ACLs and extended attributes.
   tar \
     --create \
     --file=- \
@@ -263,6 +267,8 @@ tree_fingerprint() {
     --acls \
     --xattrs \
     --sort=name \
+    --format=posix \
+    --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' \
     . |
     sha256sum |
     awk '{print $1}'
@@ -455,7 +461,15 @@ cp --archive --reflink=auto --one-file-system \
   "$(<"${clone_pgdata}/PG_VERSION")" == "18" &&
   ! -e "${clone_pgdata}/postmaster.pid" ]] ||
   die "cold PostgreSQL clone does not preserve the cluster root contract"
-[[ "$(tree_fingerprint "${resolved_pgdata}")" == "$(tree_fingerprint "${clone_pgdata}")" ]] ||
+source_fingerprint="$(tree_fingerprint "${resolved_pgdata}")" ||
+  die "source PostgreSQL tree fingerprint could not be computed"
+clone_fingerprint="$(tree_fingerprint "${clone_pgdata}")" ||
+  die "cloned PostgreSQL tree fingerprint could not be computed"
+[[ "${source_fingerprint}" =~ ^[0-9a-f]{64}$ ]] ||
+  die "source PostgreSQL tree fingerprint is invalid"
+[[ "${clone_fingerprint}" =~ ^[0-9a-f]{64}$ ]] ||
+  die "cloned PostgreSQL tree fingerprint is invalid"
+[[ "${source_fingerprint}" == "${clone_fingerprint}" ]] ||
   die "cold PostgreSQL clone differs from its source data and metadata"
 
 volumes_before_probe="$(volume_inventory)"

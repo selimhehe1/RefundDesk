@@ -121,6 +121,51 @@ test("Docker running-state filter accepts false and rejects malformed inspection
   }
 });
 
+test("PostgreSQL tree fingerprint propagates archive failures", async (t) => {
+  const version = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (version.error?.code === "ENOENT" || version.status !== 0) {
+    t.skip("bash is unavailable on this host; CI executes this functional contract");
+    return;
+  }
+
+  const migration = await read("scripts/prepare-postgres-root-mount.sh");
+  const fingerprint = shellFunction(migration, "tree_fingerprint");
+  assert.match(migration, /^set -Eeuo pipefail$/mu);
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-fingerprint-"));
+  const failingTar = join(temporaryDirectory, "tar");
+
+  try {
+    await writeFile(failingTar, "#!/usr/bin/env bash\nexit 73\n", { mode: 0o700 });
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -Eeuo pipefail
+${fingerprint}
+if tree_fingerprint "$1" >/dev/null; then
+  exit 99
+else
+  status=$?
+fi
+[[ "\${status}" -eq 73 ]]
+`,
+        "bash",
+        temporaryDirectory,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${temporaryDirectory}:${process.env.PATH ?? ""}`,
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
 test("runtime topology publishes only the public Caddy ports", async () => {
   const compose = await read("compose.yml");
   assert.match(compose, /^name: refunddesk$/mu);
@@ -1459,6 +1504,8 @@ test("PostgreSQL 18 root-mount migration proves a cold clone before deleting the
     "PG_VERSION",
     "cp --archive --reflink=auto --one-file-system",
     "tree_fingerprint",
+    "--format=posix",
+    "--pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime'",
     "insufficient free space",
     "--pull=never",
     "--network none",
@@ -1488,6 +1535,17 @@ test("PostgreSQL 18 root-mount migration proves a cold clone before deleting the
   assert.match(migrationTest, /BASELINE_VOLUMES/u);
   assert.match(migrationTest, /interrupted-clone/u);
   assert.match(migration, /recover_stale_helper_container/u);
+  assert.match(
+    migration,
+    /source_fingerprint="\$\(tree_fingerprint "\$\{resolved_pgdata\}"\)" \|\|\s+die "source PostgreSQL tree fingerprint could not be computed"/u,
+  );
+  assert.match(
+    migration,
+    /clone_fingerprint="\$\(tree_fingerprint "\$\{clone_pgdata\}"\)" \|\|\s+die "cloned PostgreSQL tree fingerprint could not be computed"/u,
+  );
+  assert.match(migration, /\[\[ "\$\{source_fingerprint\}" =~ \^\[0-9a-f\]\{64\}\$ \]\]/u);
+  assert.match(migration, /\[\[ "\$\{clone_fingerprint\}" =~ \^\[0-9a-f\]\{64\}\$ \]\]/u);
+  assert.doesNotMatch(migration, /\[\[ "\$\(tree_fingerprint/u);
 });
 
 test("backup upload uses the AWS CLI v2 SSE-S3 surface and verifies the result", async () => {
