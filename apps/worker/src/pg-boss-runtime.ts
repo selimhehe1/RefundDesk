@@ -211,6 +211,12 @@ export async function startPgBossWorker(
       expireRequestsJobSchema.parse({ scope: "due" }),
       { key: "pilot_request_expire_v1" },
     );
+    await handleReconciliationScanJob(scanRefundsJobSchema.parse({ scope: "all" }), dependencies);
+    dependencies.logger.info(
+      { queue: QUEUES.scanRefunds },
+      "Startup reconciliation catch-up completed",
+    );
+
     await boss.send(
       QUEUES.recoverWebhooks,
       recoverWebhooksJobSchema.parse({ scope: "recoverable" }),
