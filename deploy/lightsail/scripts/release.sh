@@ -49,6 +49,7 @@ PREVIOUS_ROTATION_STATE_BACKUP=""
 ROTATION_STATE_TMP=""
 TRANSITION_JOURNAL_FILE="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
 TRANSITION_COMMIT_MARKER="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-committed.json"
+TRANSITION_JOURNAL_LOCK="${REFUNDDESK_CONFIG_ROOT}/application-key-transition.lock"
 TRANSITION_CANDIDATE_FILE=""
 TARGET_FINGERPRINTS_FILE=""
 PREVIOUS_FINGERPRINTS_FILE=""
@@ -852,8 +853,18 @@ stop_stale_release_fences() {
   done <<<"${fence_units}"
 }
 
+assert_candidate_runtime_admission() {
+  local -a admission_lines
+
+  assert_root_secret_file "${RELEASE_CANDIDATE_ADMISSION_FILE}"
+  mapfile -t admission_lines <"${RELEASE_CANDIDATE_ADMISSION_FILE}"
+  (( ${#admission_lines[@]} == 1 )) &&
+    [[ "${admission_lines[0]}" == "revision=${REVISION}" ]] ||
+    die "candidate runtime admission proof is invalid"
+}
+
 assert_release_fence_armed() {
-  local -a admission_lines ready_lines
+  local -a ready_lines
 
   systemctl is-active --quiet "${RELEASE_FENCE_UNIT}" ||
     die "release fence systemd unit is not active"
@@ -868,11 +879,7 @@ assert_release_fence_armed() {
     die "release fence readiness proof is invalid"
   if [[ -e "${RELEASE_CANDIDATE_ADMISSION_FILE}" ||
     -L "${RELEASE_CANDIDATE_ADMISSION_FILE}" ]]; then
-    assert_root_secret_file "${RELEASE_CANDIDATE_ADMISSION_FILE}"
-    mapfile -t admission_lines <"${RELEASE_CANDIDATE_ADMISSION_FILE}"
-    (( ${#admission_lines[@]} == 1 )) &&
-      [[ "${admission_lines[0]}" == "revision=${REVISION}" ]] ||
-      die "candidate runtime admission proof is invalid"
+    assert_candidate_runtime_admission
   fi
 }
 
@@ -954,18 +961,78 @@ prove_candidate_created_contract() {
   done
 }
 
+transition_journal_lock_descriptor_is_current() {
+  local descriptor_device_inode lock_device_inode lock_metadata
+
+  [[ -f "${TRANSITION_JOURNAL_LOCK}" && ! -L "${TRANSITION_JOURNAL_LOCK}" ]] ||
+    return 1
+  lock_metadata="$(stat --format='%u:%g:%a' -- "${TRANSITION_JOURNAL_LOCK}")" ||
+    return 1
+  [[ "${lock_metadata}" == "0:0:600" ]] || return 1
+  lock_device_inode="$(stat --format='%d:%i' -- "${TRANSITION_JOURNAL_LOCK}")" ||
+    return 1
+  descriptor_device_inode="$(
+    stat --dereference --format='%d:%i' -- /proc/self/fd/8
+  )" || return 1
+  [[ "${descriptor_device_inode}" == "${lock_device_inode}" ]]
+}
+
+open_transition_journal_lock() {
+  if [[ ! -e "${TRANSITION_JOURNAL_LOCK}" && ! -L "${TRANSITION_JOURNAL_LOCK}" ]]; then
+    (
+      set -o noclobber
+      : >"${TRANSITION_JOURNAL_LOCK}"
+    ) 2>/dev/null || true
+  fi
+  assert_root_secret_file "${TRANSITION_JOURNAL_LOCK}"
+  [[ "$(stat --format='%u:%g:%a' -- "${TRANSITION_JOURNAL_LOCK}")" == "0:0:600" ]] ||
+    die "release transition coordination lock metadata is unsafe"
+  exec 8<>"${TRANSITION_JOURNAL_LOCK}" ||
+    die "release transition coordination lock could not be opened"
+  transition_journal_lock_descriptor_is_current ||
+    die "release transition coordination lock changed during secure open"
+}
+
+lock_transition_journal() {
+  transition_journal_lock_descriptor_is_current || return 1
+  flock --exclusive 8 || return 1
+  if ! transition_journal_lock_descriptor_is_current; then
+    flock --unlock 8 || true
+    return 1
+  fi
+}
+
 enable_candidate_runtime() {
-  local admission_tmp
+  local admission_published=false admission_tmp
 
   [[ ! -e "${RELEASE_CANDIDATE_ADMISSION_FILE}" &&
     ! -L "${RELEASE_CANDIDATE_ADMISSION_FILE}" ]] ||
     die "candidate runtime admission already exists"
+  open_transition_journal_lock
   admission_tmp="${RELEASE_CANDIDATE_ADMISSION_FILE}.$$"
   rm -f -- "${admission_tmp}"
   printf 'revision=%s\n' "${REVISION}" >"${admission_tmp}"
   chown root:root "${admission_tmp}"
   chmod 0600 "${admission_tmp}"
-  mv --no-target-directory -- "${admission_tmp}" "${RELEASE_CANDIDATE_ADMISSION_FILE}"
+  if ! lock_transition_journal; then
+    rm -f -- "${admission_tmp}"
+    die "candidate runtime admission coordination lock could not be acquired"
+  fi
+  if [[ ! -e "${RELEASE_CANDIDATE_ADMISSION_FILE}" &&
+    ! -L "${RELEASE_CANDIDATE_ADMISSION_FILE}" ]] &&
+    mv --no-target-directory -- "${admission_tmp}" "${RELEASE_CANDIDATE_ADMISSION_FILE}"; then
+    admission_published=true
+  fi
+  if ! flock --unlock 8; then
+    exec 8>&-
+    rm -f -- "${admission_tmp}"
+    die "candidate runtime admission coordination lock could not be released"
+  fi
+  if [[ "${admission_published}" != "true" ]]; then
+    rm -f -- "${admission_tmp}"
+    die "candidate runtime admission could not be published atomically"
+  fi
+  assert_candidate_runtime_admission
   assert_release_fence_armed
 }
 
@@ -1448,21 +1515,8 @@ for control_plane_mapping in \
     "${REFUNDDESK_CONTROL_PLANE_LINK}/${control_plane_relative}"
 done
 
-TRANSITION_JOURNAL_LOCK="${REFUNDDESK_CONFIG_ROOT}/application-key-transition.lock"
-if [[ ! -e "${TRANSITION_JOURNAL_LOCK}" && ! -L "${TRANSITION_JOURNAL_LOCK}" ]]; then
-  (
-    set -o noclobber
-    : >"${TRANSITION_JOURNAL_LOCK}"
-  ) 2>/dev/null || true
-fi
-assert_root_secret_file "${TRANSITION_JOURNAL_LOCK}"
-[[ "$(stat --format='%u:%g:%a' -- "${TRANSITION_JOURNAL_LOCK}")" == "0:0:600" ]] ||
-  die "release transition coordination lock metadata is unsafe"
-exec 8<>"${TRANSITION_JOURNAL_LOCK}"
-[[ "$(stat --format='%d:%i' -- "${TRANSITION_JOURNAL_LOCK}")" == \
-  "$(stat --dereference --format='%d:%i' -- /proc/self/fd/8)" ]] ||
-  die "release transition coordination lock changed during secure open"
-flock --exclusive 8
+lock_transition_journal ||
+  die "release transition coordination lock could not be reacquired for commit"
 restore_runtime_restart_policies
 unset REFUNDDESK_RUNTIME_RESTART_POLICY
 systemctl daemon-reload ||

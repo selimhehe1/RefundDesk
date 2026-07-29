@@ -16,6 +16,9 @@ readonly EXPECTED_FENCE_LINK="${CONTROL_PLANE_LINK}/scripts/release-fence.sh"
 readonly TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
 readonly TRANSITION_JOURNAL_LOCK="${REFUNDDESK_CONFIG_ROOT}/application-key-transition.lock"
 readonly COMPOSE_PROJECT="refunddesk"
+readonly -a RUNTIME_SERVICES=(caddy web verifier worker)
+readonly RUNTIME_ADMISSION_MAX_ATTEMPTS=30
+readonly RUNTIME_ADMISSION_RETRY_DELAY_SECONDS="0.2"
 
 RELEASE_PID=""
 RELEASE_STARTTIME=""
@@ -183,7 +186,7 @@ done
 expected_admission_file="/run/refunddesk-release-candidate-${REVISION:0:12}-${RELEASE_PID}.admit"
 [[ "${ADMISSION_FILE}" == "${expected_admission_file}" ]] ||
   die "candidate admission path does not bind the exact revision and PID"
-for command in cmp docker flock jq readlink sleep stat systemctl; do
+for command in cmp docker flock jq readlink sleep sort stat systemctl; do
   command -v "${command}" >/dev/null 2>&1 ||
     die "required command is unavailable: ${command}"
 done
@@ -259,16 +262,59 @@ observed_process_starttime() {
 
 candidate_container_ids() {
   local service="$1"
-  local output
+  local container_id output
   local -a filters
 
   filters=(
     --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}"
     --filter "label=com.docker.compose.service=${service}"
   )
-  output="$(docker container ls --all --quiet "${filters[@]}")" || return 1
-  if [[ -n "${output}" ]]; then
-    printf '%s\n' "${output}"
+  output="$(docker container ls --all --quiet --no-trunc "${filters[@]}")" || return 1
+  [[ -n "${output}" ]] || return 0
+
+  while IFS= read -r container_id; do
+    [[ "${container_id}" =~ ^[0-9a-f]{64}$ ]] || return 1
+    printf '%s\n' "${container_id}"
+  done <<<"${output}"
+}
+
+container_id_is_proven_absent() {
+  local container_id="$1"
+  local listed_id output
+
+  [[ "${container_id}" =~ ^[0-9a-f]{64}$ ]] || return 2
+  output="$(
+    docker container ls --all --quiet --no-trunc \
+      --filter "id=${container_id}"
+  )" || return 2
+  [[ -n "${output}" ]] || return 0
+
+  while IFS= read -r listed_id; do
+    [[ "${listed_id}" =~ ^[0-9a-f]{64}$ ]] || return 2
+    [[ "${listed_id}" == "${container_id}" ]] || return 2
+  done <<<"${output}"
+  return 1
+}
+
+runtime_candidate_snapshot() {
+  local container_id ids_output service
+  local -a candidate_ids snapshot_lines
+
+  snapshot_lines=()
+  for service in "${RUNTIME_SERVICES[@]}"; do
+    ids_output="$(candidate_container_ids "${service}")" || return 1
+    candidate_ids=()
+    if [[ -n "${ids_output}" ]]; then
+      mapfile -t candidate_ids <<<"${ids_output}"
+    fi
+    for container_id in "${candidate_ids[@]}"; do
+      [[ -n "${container_id}" ]] || continue
+      snapshot_lines+=("${service}:${container_id}")
+    done
+  done
+
+  if (( ${#snapshot_lines[@]} > 0 )); then
+    printf '%s\n' "${snapshot_lines[@]}" | LC_ALL=C sort
   fi
 }
 
@@ -362,49 +408,119 @@ candidate_admission_is_valid() {
     [[ "${admission_lines[0]}" == "revision=${REVISION}" ]]
 }
 
-enforce_runtime_admission_once() {
-  local admitted=false container_id ids_output inspection observed_revision observed_running service
-  local -a candidate_ids
+enforce_runtime_admission_snapshot() {
+  local admitted="$1"
+  local snapshot="$2"
+  local churn_variable="$3"
+  local absence_status container_id inspection observed_restart_policy
+  local observed_revision observed_running service
+  local -n churn_ref="${churn_variable}"
 
-  if [[ -e "${ADMISSION_FILE}" || -L "${ADMISSION_FILE}" ]]; then
-    candidate_admission_is_valid || return 1
-    admitted=true
-  fi
+  while IFS=: read -r service container_id; do
+    [[ -n "${service}" && -n "${container_id}" ]] || continue
+    [[ " ${RUNTIME_SERVICES[*]} " == *" ${service} "* ]] || return 1
+    [[ "${container_id}" =~ ^[0-9a-f]{64}$ ]] || return 1
 
-  for service in caddy web verifier worker; do
-    ids_output="$(candidate_container_ids "${service}")" || return 1
-    candidate_ids=()
-    if [[ -n "${ids_output}" ]]; then
-      mapfile -t candidate_ids <<<"${ids_output}"
-    fi
-    for container_id in "${candidate_ids[@]}"; do
-      [[ -n "${container_id}" ]] || continue
-      inspection="$(docker inspect "${container_id}")" || return 1
-      observed_revision="$(
-        jq --exit-status --raw-output \
-          --arg project "${COMPOSE_PROJECT}" \
-          --arg service "${service}" '
-            select(
-              length == 1
-              and .[0].Config.Labels["com.docker.compose.project"] == $project
-              and .[0].Config.Labels["com.docker.compose.service"] == $service
-            )
-            | .[0].Config.Labels["com.refunddesk.revision"] // "unversioned"
-          ' <<<"${inspection}"
-      )" || return 1
-      observed_running="$(docker_running_state_from_inspection "${inspection}")" ||
-        return 1
-      docker update --restart=no "${container_id}" >/dev/null 2>&1 || return 1
-      if [[ "${admitted}" != "true" || "${observed_revision}" != "${REVISION}" ]]; then
-        if [[ "${observed_running}" == "true" ]]; then
-          docker stop --time 45 "${container_id}" >/dev/null 2>&1 ||
-            docker kill "${container_id}" >/dev/null 2>&1 ||
-            return 1
-        fi
-        container_is_fenced "${container_id}" "${service}" || return 1
+    if ! inspection="$(docker inspect "${container_id}" 2>/dev/null)"; then
+      if container_id_is_proven_absent "${container_id}"; then
+        churn_ref=true
+        continue
       fi
-    done
+      return 1
+    fi
+    observed_revision="$(
+      jq --exit-status --raw-output \
+        --arg project "${COMPOSE_PROJECT}" \
+        --arg service "${service}" '
+          select(
+            length == 1
+            and .[0].Config.Labels["com.docker.compose.project"] == $project
+            and .[0].Config.Labels["com.docker.compose.service"] == $service
+          )
+          | .[0].Config.Labels["com.refunddesk.revision"] // "unversioned"
+        ' <<<"${inspection}"
+    )" || return 1
+    observed_running="$(docker_running_state_from_inspection "${inspection}")" ||
+      return 1
+
+    observed_restart_policy="$(
+      jq --exit-status --raw-output \
+        --arg project "${COMPOSE_PROJECT}" \
+        --arg service "${service}" '
+          select(
+            length == 1
+            and .[0].Config.Labels["com.docker.compose.project"] == $project
+            and .[0].Config.Labels["com.docker.compose.service"] == $service
+            and (.[0].HostConfig.RestartPolicy.Name | type) == "string"
+          )
+          | .[0].HostConfig.RestartPolicy.Name
+        ' <<<"${inspection}"
+    )" || return 1
+
+    if [[ "${observed_restart_policy}" != "no" ]] &&
+      ! docker update --restart=no "${container_id}" >/dev/null 2>&1; then
+      if container_id_is_proven_absent "${container_id}"; then
+        churn_ref=true
+        continue
+      fi
+      return 1
+    fi
+
+    if [[ "${admitted}" != "true" || "${observed_revision}" != "${REVISION}" ]]; then
+      if [[ "${observed_running}" == "true" ]] &&
+        ! docker stop --time 45 "${container_id}" >/dev/null 2>&1; then
+        absence_status=0
+        container_id_is_proven_absent "${container_id}" || absence_status=$?
+        if (( absence_status == 0 )); then
+          churn_ref=true
+          continue
+        fi
+        (( absence_status == 1 )) || return 1
+        if ! docker kill "${container_id}" >/dev/null 2>&1; then
+          if container_id_is_proven_absent "${container_id}"; then
+            churn_ref=true
+            continue
+          fi
+          return 1
+        fi
+      fi
+      if ! container_is_fenced "${container_id}" "${service}"; then
+        if container_id_is_proven_absent "${container_id}"; then
+          churn_ref=true
+          continue
+        fi
+        return 1
+      fi
+    fi
+  done <<<"${snapshot}"
+}
+
+enforce_runtime_admission_once() {
+  local admitted attempt before_snapshot after_snapshot churn
+
+  for (( attempt = 1; attempt <= RUNTIME_ADMISSION_MAX_ATTEMPTS; attempt++ )); do
+    admitted=false
+    if [[ -e "${ADMISSION_FILE}" || -L "${ADMISSION_FILE}" ]]; then
+      candidate_admission_is_valid || return 1
+      admitted=true
+    fi
+
+    before_snapshot="$(runtime_candidate_snapshot)" || return 1
+    churn=false
+    enforce_runtime_admission_snapshot \
+      "${admitted}" "${before_snapshot}" churn ||
+      return 1
+    after_snapshot="$(runtime_candidate_snapshot)" || return 1
+
+    if [[ "${churn}" == "false" && "${before_snapshot}" == "${after_snapshot}" ]]; then
+      return 0
+    fi
+    if (( attempt < RUNTIME_ADMISSION_MAX_ATTEMPTS )); then
+      sleep "${RUNTIME_ADMISSION_RETRY_DELAY_SECONDS}"
+    fi
   done
+
+  return 1
 }
 
 remove_runtime_markers() {

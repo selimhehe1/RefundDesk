@@ -166,6 +166,388 @@ fi
   }
 });
 
+test("release fence tolerates only proven Compose recreation churn", async (t) => {
+  const prerequisites = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (prerequisites.error?.code === "ENOENT" || prerequisites.status !== 0) {
+    t.skip("bash is unavailable on this host; Linux CI executes this functional contract");
+    return;
+  }
+  const bashHasJq =
+    spawnSync("bash", ["-c", "command -v jq >/dev/null"], { encoding: "utf8" }).status === 0;
+
+  const fence = await read("scripts/release-fence.sh");
+  const revision = "b".repeat(40);
+  const oldContainerId = "a".repeat(64);
+  const newContainerId = "b".repeat(64);
+  const functions = [
+    "docker_running_state_from_inspection",
+    "candidate_container_ids",
+    "container_id_is_proven_absent",
+    "runtime_candidate_snapshot",
+    "container_is_fenced",
+    "candidate_admission_is_valid",
+    "enforce_runtime_admission_snapshot",
+    "enforce_runtime_admission_once",
+  ]
+    .map((name) => shellFunction(fence, name))
+    .join("\n\n");
+  const fakeDockerSource = [
+    "#!/usr/bin/env bash",
+    "set -Eeuo pipefail",
+    'state="${FAKE_DOCKER_STATE:?}"',
+    'scenario="${FAKE_DOCKER_SCENARIO:?}"',
+    'old_id="${FAKE_DOCKER_OLD_ID:?}"',
+    'new_id="${FAKE_DOCKER_NEW_ID:?}"',
+    'printf "%q " "$@" >>"${state}/operations.log"',
+    'printf "\\n" >>"${state}/operations.log"',
+    "current_id() {",
+    '  case "$(<"${state}/container")" in',
+    '    old) printf "%s\\n" "${old_id}" ;;',
+    '    new) printf "%s\\n" "${new_id}" ;;',
+    "    none) return 1 ;;",
+    "    *) exit 90 ;;",
+    "  esac",
+    "}",
+    "replace_with_new() {",
+    '  printf "new\\n" >"${state}/container"',
+    '  printf "false\\n" >"${state}/running"',
+    '  printf "always\\n" >"${state}/restart"',
+    '  : >"${state}/churn-triggered"',
+    "}",
+    'if [[ "${1:-}" == "container" && "${2:-}" == "ls" ]]; then',
+    '  if [[ "${scenario}" == "list-error" ]]; then',
+    "    exit 70",
+    "  fi",
+    '  service_filter=""',
+    '  id_filter=""',
+    '  previous=""',
+    '  for argument in "$@"; do',
+    '    if [[ "${previous}" == "--filter" ]]; then',
+    '      case "${argument}" in',
+    '        label=com.docker.compose.service=*) service_filter="${argument##*=}" ;;',
+    '        id=*) id_filter="${argument#id=}" ;;',
+    "      esac",
+    "    fi",
+    '    previous="${argument}"',
+    "  done",
+    '  if [[ -n "${id_filter}" ]]; then',
+    '    if active_id="$(current_id)" && [[ "${active_id}" == "${id_filter}" ]]; then',
+    '      printf "%s\\n" "${active_id}"',
+    "    fi",
+    "    exit 0",
+    "  fi",
+    '  [[ "${service_filter}" == "caddy" ]] || exit 0',
+    '  if [[ "${scenario}" == "snapshot-churn" ]]; then',
+    '    if [[ "$(<"${state}/container")" == "old" ]]; then',
+    '      printf "new\\n" >"${state}/container"',
+    "    else",
+    '      printf "old\\n" >"${state}/container"',
+    "    fi",
+    '    count_file="${state}/caddy-list-count"',
+    "    count=0",
+    '    [[ ! -f "${count_file}" ]] || count="$(<"${count_file}")"',
+    '    printf "%s\\n" "$((count + 1))" >"${count_file}"',
+    "  fi",
+    '  if active_id="$(current_id)"; then',
+    '    printf "%s\\n" "${active_id}"',
+    "  fi",
+    "  exit 0",
+    "fi",
+    'if [[ "${1:-}" == "inspect" ]]; then',
+    '  requested_id="${2:-}"',
+    '  active_id="$(current_id)" || exit 65',
+    '  [[ "${requested_id}" == "${active_id}" ]] || exit 65',
+    '  if [[ "${scenario}" == "inspect-absent" && ! -f "${state}/churn-triggered" ]]; then',
+    "    replace_with_new",
+    "    exit 65",
+    "  fi",
+    '  if [[ "${scenario}" == "inspect-error-present" ]]; then',
+    "    exit 70",
+    "  fi",
+    '  running="$(<"${state}/running")"',
+    '  restart="$(<"${state}/restart")"',
+    '  printf \'[{"Config":{"Labels":{"com.docker.compose.project":"refunddesk","com.docker.compose.service":"caddy","com.refunddesk.revision":"%s"}},"HostConfig":{"RestartPolicy":{"Name":"%s"}},"State":{"Running":%s}}]\\n\' "${FAKE_DOCKER_CONTAINER_REVISION:?}" "${restart}" "${running}"',
+    "  exit 0",
+    "fi",
+    'if [[ "${1:-}" == "update" ]]; then',
+    '  requested_id="${!#}"',
+    '  active_id="$(current_id)" || exit 65',
+    '  [[ "${requested_id}" == "${active_id}" ]] || exit 65',
+    '  if [[ "${scenario}" == "update-absent" && ! -f "${state}/churn-triggered" ]]; then',
+    "    replace_with_new",
+    "    exit 65",
+    "  fi",
+    '  if [[ "${scenario}" == "update-error-present" ]]; then',
+    "    exit 70",
+    "  fi",
+    '  if [[ "${scenario}" == "update-error-already-no" ]]; then',
+    "    exit 70",
+    "  fi",
+    '  printf "no\\n" >"${state}/restart"',
+    '  printf "%s\\n" "${active_id}"',
+    "  exit 0",
+    "fi",
+    'if [[ "${1:-}" == "stop" ]]; then',
+    '  requested_id="${!#}"',
+    '  active_id="$(current_id)" || exit 65',
+    '  [[ "${requested_id}" == "${active_id}" ]] || exit 65',
+    '  if [[ "${scenario}" == "stop-absent" && ! -f "${state}/churn-triggered" ]]; then',
+    "    replace_with_new",
+    "    exit 65",
+    "  fi",
+    '  if [[ "${scenario}" == "stop-error-present" || "${scenario}" == "stop-error-kill-success" ]]; then',
+    "    exit 70",
+    "  fi",
+    '  printf "false\\n" >"${state}/running"',
+    '  printf "%s\\n" "${active_id}"',
+    "  exit 0",
+    "fi",
+    'if [[ "${1:-}" == "kill" ]]; then',
+    '  requested_id="${2:-}"',
+    '  active_id="$(current_id)" || exit 65',
+    '  [[ "${requested_id}" == "${active_id}" ]] || exit 65',
+    '  if [[ "${scenario}" == "stop-error-kill-success" ]]; then',
+    '    printf "false\\n" >"${state}/running"',
+    '    printf "%s\\n" "${active_id}"',
+    "    exit 0",
+    "  fi",
+    "  exit 70",
+    "fi",
+    "exit 88",
+    "",
+  ].join("\n");
+  const fakeJqSource = [
+    "#!/usr/bin/env node",
+    'let input = "";',
+    'process.stdin.setEncoding("utf8");',
+    'process.stdin.on("data", (chunk) => { input += chunk; });',
+    'process.stdin.on("end", () => {',
+    "  try {",
+    "    const args = process.argv.slice(2);",
+    '    const filter = args.at(-1) ?? "";',
+    "    const values = {};",
+    "    for (let index = 0; index < args.length - 2; index += 1) {",
+    '      if (args[index] === "--arg") {',
+    "        values[args[index + 1]] = args[index + 2];",
+    "      }",
+    "    }",
+    "    const inspection = JSON.parse(input.trim());",
+    "    const candidate = Array.isArray(inspection) && inspection.length === 1 ? inspection[0] : null;",
+    '    if (filter.includes("invalid Docker running state")) {',
+    '      if (typeof candidate?.State?.Running !== "boolean") process.exit(1);',
+    "      process.stdout.write(`${String(candidate.State.Running)}\\n`);",
+    "      return;",
+    "    }",
+    "    const labels = candidate?.Config?.Labels;",
+    "    const labelsMatch =",
+    '      labels?.["com.docker.compose.project"] === values.project &&',
+    '      labels?.["com.docker.compose.service"] === values.service;',
+    "    if (!labelsMatch) process.exit(1);",
+    "    if (filter.includes('RestartPolicy.Name == \"no\"')) {",
+    '      if (candidate?.HostConfig?.RestartPolicy?.Name !== "no") process.exit(1);',
+    "      if (candidate?.State?.Running !== false) process.exit(1);",
+    "      return;",
+    "    }",
+    '    if (filter.includes("HostConfig.RestartPolicy.Name")) {',
+    "      const restart = candidate?.HostConfig?.RestartPolicy?.Name;",
+    '      if (typeof restart !== "string") process.exit(1);',
+    "      process.stdout.write(`${restart}\\n`);",
+    "      return;",
+    "    }",
+    '    if (filter.includes("com.refunddesk.revision")) {',
+    '      const revision = labels["com.refunddesk.revision"] ?? "unversioned";',
+    "      process.stdout.write(`${revision}\\n`);",
+    "      return;",
+    "    }",
+    "    process.exit(2);",
+    "  } catch {",
+    "    process.exit(4);",
+    "  }",
+    "});",
+    "",
+  ].join("\n");
+  const harness = [
+    "set -Eeuo pipefail",
+    'readonly COMPOSE_PROJECT="refunddesk"',
+    "readonly -a RUNTIME_SERVICES=(caddy web verifier worker)",
+    "readonly RUNTIME_ADMISSION_MAX_ATTEMPTS=4",
+    'readonly RUNTIME_ADMISSION_RETRY_DELAY_SECONDS="0.01"',
+    `readonly REVISION="${revision}"`,
+    'readonly ADMISSION_FILE="$1/admission"',
+    "secret_file_is_root_owned() {",
+    '  [[ -f "$1" && ! -L "$1" ]]',
+    "}",
+    functions,
+    "status=0",
+    "enforce_runtime_admission_once || status=$?",
+    'printf "status=%s\\n" "${status}"',
+    "",
+  ].join("\n");
+
+  async function runScenario({
+    admitted = false,
+    initialContainer = "new",
+    initialRestart = "always",
+    initialRunning = false,
+    name,
+  }) {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-release-fence-"));
+    try {
+      const fakeDocker = join(temporaryDirectory, "docker");
+      const fixtureWrites = [
+        writeFile(fakeDocker, fakeDockerSource, { mode: 0o700 }),
+        writeFile(join(temporaryDirectory, "container"), `${initialContainer}\n`),
+        writeFile(join(temporaryDirectory, "running"), `${String(initialRunning)}\n`),
+        writeFile(join(temporaryDirectory, "restart"), `${initialRestart}\n`),
+        writeFile(join(temporaryDirectory, "operations.log"), ""),
+      ];
+      if (!bashHasJq) {
+        fixtureWrites.push(
+          writeFile(join(temporaryDirectory, "jq"), fakeJqSource, { mode: 0o700 }),
+        );
+      }
+      await Promise.all(fixtureWrites);
+      if (admitted) {
+        await writeFile(join(temporaryDirectory, "admission"), `revision=${revision}\n`, {
+          mode: 0o600,
+        });
+      }
+      const result = spawnSync("bash", ["-c", harness, "bash", temporaryDirectory], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FAKE_DOCKER_CONTAINER_REVISION: revision,
+          FAKE_DOCKER_NEW_ID: newContainerId,
+          FAKE_DOCKER_OLD_ID: oldContainerId,
+          FAKE_DOCKER_SCENARIO: name,
+          FAKE_DOCKER_STATE: temporaryDirectory,
+          PATH: `${temporaryDirectory}${process.platform === "win32" ? ";" : ":"}${
+            process.env.PATH ?? ""
+          }`,
+        },
+      });
+      return {
+        caddyListCount: await readFile(join(temporaryDirectory, "caddy-list-count"), "utf8").catch(
+          () => "",
+        ),
+        container: await readFile(join(temporaryDirectory, "container"), "utf8"),
+        operations: await readFile(join(temporaryDirectory, "operations.log"), "utf8"),
+        restart: await readFile(join(temporaryDirectory, "restart"), "utf8"),
+        result,
+        running: await readFile(join(temporaryDirectory, "running"), "utf8"),
+      };
+    } finally {
+      await rm(temporaryDirectory, { force: true, recursive: true });
+    }
+  }
+
+  for (const name of ["inspect-absent", "update-absent"]) {
+    await t.test(`${name} is retried only after exact absence proof`, async () => {
+      const outcome = await runScenario({ initialContainer: "old", name });
+      assert.equal(outcome.result.status, 0, outcome.result.stderr);
+      assert.match(outcome.result.stdout, /^status=0$/mu);
+      assert.equal(outcome.container.trim(), "new");
+      assert.equal(outcome.restart.trim(), "no");
+      assert.equal(outcome.running.trim(), "false");
+      assert.match(outcome.operations, /container ls --all --quiet --no-trunc --filter id=/u);
+    });
+  }
+
+  await t.test(
+    "a disappearing running container is retried and its replacement is fenced",
+    async () => {
+      const outcome = await runScenario({
+        initialContainer: "old",
+        initialRunning: true,
+        name: "stop-absent",
+      });
+      assert.equal(outcome.result.status, 0, outcome.result.stderr);
+      assert.match(outcome.result.stdout, /^status=0$/mu);
+      assert.equal(outcome.container.trim(), "new");
+      assert.equal(outcome.restart.trim(), "no");
+      assert.equal(outcome.running.trim(), "false");
+    },
+  );
+
+  for (const name of ["inspect-error-present", "update-error-present", "stop-error-present"]) {
+    await t.test(`${name} fails closed while the exact container still exists`, async () => {
+      const outcome = await runScenario({
+        initialRunning: name === "stop-error-present",
+        name,
+      });
+      assert.equal(outcome.result.status, 0, outcome.result.stderr);
+      assert.match(outcome.result.stdout, /^status=1$/mu);
+      if (name === "stop-error-present") {
+        assert.equal(outcome.running.trim(), "true");
+      }
+    });
+  }
+
+  await t.test("an already fenced restart policy avoids a racy Docker update", async () => {
+    const outcome = await runScenario({
+      initialRestart: "no",
+      name: "update-error-already-no",
+    });
+    assert.equal(outcome.result.status, 0, outcome.result.stderr);
+    assert.match(outcome.result.stdout, /^status=0$/mu);
+    assert.equal(outcome.restart.trim(), "no");
+    assert.doesNotMatch(outcome.operations, /(?:^|\n)update /u);
+  });
+
+  await t.test("a failed graceful stop still kill-fences a present running container", async () => {
+    const outcome = await runScenario({
+      initialRunning: true,
+      name: "stop-error-kill-success",
+    });
+    assert.equal(outcome.result.status, 0, outcome.result.stderr);
+    assert.match(outcome.result.stdout, /^status=0$/mu);
+    assert.equal(outcome.running.trim(), "false");
+    assert.match(outcome.operations, /kill [0-9a-f]{64}/u);
+  });
+
+  await t.test("a Docker enumeration error fails closed", async () => {
+    const outcome = await runScenario({ name: "list-error" });
+    assert.equal(outcome.result.status, 0, outcome.result.stderr);
+    assert.match(outcome.result.stdout, /^status=1$/mu);
+  });
+
+  await t.test("a target-revision runtime is stopped before admission", async () => {
+    const outcome = await runScenario({ initialRunning: true, name: "normal" });
+    assert.equal(outcome.result.status, 0, outcome.result.stderr);
+    assert.match(outcome.result.stdout, /^status=0$/mu);
+    assert.equal(outcome.running.trim(), "false");
+    assert.match(outcome.operations, /stop --time 45/u);
+  });
+
+  await t.test(
+    "a target-revision runtime may remain running only after exact admission",
+    async () => {
+      const outcome = await runScenario({
+        admitted: true,
+        initialRunning: true,
+        name: "normal",
+      });
+      assert.equal(outcome.result.status, 0, outcome.result.stderr);
+      assert.match(outcome.result.stdout, /^status=0$/mu);
+      assert.equal(outcome.restart.trim(), "no");
+      assert.equal(outcome.running.trim(), "true");
+      assert.doesNotMatch(outcome.operations, /stop --time 45/u);
+    },
+  );
+
+  await t.test("continuous snapshot churn exhausts a bounded retry count", async () => {
+    const outcome = await runScenario({
+      initialContainer: "old",
+      name: "snapshot-churn",
+    });
+    assert.equal(outcome.result.status, 0, outcome.result.stderr);
+    assert.match(outcome.result.stdout, /^status=1$/mu);
+    assert.equal(outcome.caddyListCount.trim(), "8");
+  });
+
+  assert.doesNotMatch(fence, /No such (?:container|object)/iu);
+});
+
 test("runtime topology publishes only the public Caddy ports", async () => {
   const compose = await read("compose.yml");
   assert.match(compose, /^name: refunddesk$/mu);
@@ -633,9 +1015,40 @@ test("stable launchers reject pre-contract targets and bind retention to the act
   assert.match(releaseFence, /application-key-transition\.lock/u);
   assert.match(releaseFence, /flock --exclusive 8/u);
   assert.match(releaseFence, /flock --unlock 8/u);
+  const enableCandidateRuntime = shellFunction(release, "enable_candidate_runtime");
+  const admissionOpen = enableCandidateRuntime.indexOf("open_transition_journal_lock");
+  const admissionLock = enableCandidateRuntime.indexOf("lock_transition_journal");
+  const admissionPublish = enableCandidateRuntime.indexOf("mv --no-target-directory");
+  const admissionUnlock = enableCandidateRuntime.indexOf("flock --unlock 8");
+  const exactAdmissionProof = enableCandidateRuntime.indexOf("assert_candidate_runtime_admission");
+  const admissionFenceProof = enableCandidateRuntime.indexOf("assert_release_fence_armed");
+  assert.ok(
+    admissionOpen >= 0 &&
+      admissionLock > admissionOpen &&
+      admissionPublish > admissionLock &&
+      admissionUnlock > admissionPublish &&
+      exactAdmissionProof > admissionUnlock &&
+      admissionFenceProof > exactAdmissionProof,
+  );
+  assert.doesNotMatch(enableCandidateRuntime, /refunddesk_compose|docker/u);
+  assert.match(
+    shellFunction(release, "transition_journal_lock_descriptor_is_current"),
+    /stat --format='%u:%g:%a'[\s\S]*stat --format='%d:%i'[\s\S]*\/proc\/self\/fd\/8/u,
+  );
+  assert.match(
+    shellFunction(release, "lock_transition_journal"),
+    /transition_journal_lock_descriptor_is_current[\s\S]*flock --exclusive 8[\s\S]*transition_journal_lock_descriptor_is_current/u,
+  );
+  assert.equal((release.match(/exec 8<>"\$\{TRANSITION_JOURNAL_LOCK\}"/gu) ?? []).length, 1);
+  const finalCommitLock = release.lastIndexOf("lock_transition_journal");
+  const finalCommit = release.lastIndexOf('python3 "${TRANSITION_HELPER}" complete');
+  const finalCommitUnlock = release.lastIndexOf("flock --unlock 8");
+  assert.ok(
+    finalCommitLock >= 0 && finalCommit > finalCommitLock && finalCommitUnlock > finalCommit,
+  );
   assert.match(
     release,
-    /flock --exclusive 8[\s\S]*python3 "\$\{TRANSITION_HELPER\}" complete[\s\S]*TRANSITION_COMMITTED=true[\s\S]*flock --unlock 8/u,
+    /lock_transition_journal \|\|[\s\S]*python3 "\$\{TRANSITION_HELPER\}" complete[\s\S]*TRANSITION_COMMITTED=true[\s\S]*flock --unlock 8/u,
   );
   assert.match(
     releaseFence,
