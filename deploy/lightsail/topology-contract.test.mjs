@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -983,12 +995,17 @@ test("stable launchers reject pre-contract targets and bind retention to the act
     /--target "\$\{REFUNDDESK_CONTROL_PLANE_LINK\}"[\s\S]+--value "\$\{legacy_final\}"/u,
   );
   assert.doesNotMatch(installSource, /--value "\$\{target_generation\}"/u);
-  for (const source of [installSource, bootstrapHost]) {
-    assert.match(source, /\/usr\/local\/sbin\/refunddesk-release/u);
-    assert.match(source, /\/usr\/local\/sbin\/refunddesk-release-fence/u);
-    assert.match(source, /\/usr\/local\/sbin\/refunddesk-backup/u);
-    assert.match(source, /\/usr\/local\/sbin\/refunddesk-retention/u);
-    assert.match(source, /\/usr\/local\/sbin\/refunddesk-quiesce-recovery/u);
+  assert.match(installSource, /\/usr\/local\/sbin\/refunddesk-release/u);
+  assert.match(installSource, /\/usr\/local\/sbin\/refunddesk-release-fence/u);
+  assert.match(installSource, /\/usr\/local\/sbin\/refunddesk-quiesce-recovery/u);
+  for (const stablePath of [
+    "/usr/local/sbin/refunddesk-release",
+    "/usr/local/sbin/refunddesk-release-fence",
+    "/usr/local/sbin/refunddesk-backup",
+    "/usr/local/sbin/refunddesk-retention",
+    "/usr/local/sbin/refunddesk-quiesce-recovery",
+  ]) {
+    assert.ok(bootstrapHost.includes(stablePath));
   }
 
   assert.match(releaseLauncher, /^readonly RELEASE_CONTRACT_VERSION="2"$/mu);
@@ -1254,27 +1271,132 @@ test("stable control-plane files switch through one crash-safe generation pointe
   assert.ok(verifiedGeneration >= 0 && transitionCommit > verifiedGeneration);
 });
 
+test("release accepts only exact-depth controlled generation roots", async (t) => {
+  const release = await read("scripts/release.sh");
+  const validator = shellFunction(release, "assert_control_plane_generation_root");
+  assert.match(validator, /\^\[0-9a-f\]\{40\}\$/u);
+  assert.match(validator, /"\$\{generation\}" != \*\/\*/u);
+  assert.match(validator, /"\$\{revision\}\/source\/deploy\/lightsail"/u);
+
+  if (process.platform === "win32") {
+    t.skip("Linux CI executes the shell-function cases");
+    return;
+  }
+  const bash = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (bash.error?.code === "ENOENT" || bash.status !== 0) {
+    t.skip("bash is unavailable on this host; CI executes the shell-function cases");
+    return;
+  }
+
+  const runValidator = (candidate) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -Eeuo pipefail
+readonly REFUNDDESK_ROOT=/opt/refunddesk
+die() { exit 1; }
+${validator}
+assert_control_plane_generation_root "$1"`,
+        "bash",
+        candidate,
+      ],
+      { encoding: "utf8" },
+    );
+  const revision = "a".repeat(40);
+  for (const accepted of [
+    "/opt/refunddesk/control-plane-generations/bridge-test",
+    `/opt/refunddesk/releases/${revision}/source/deploy/lightsail`,
+  ]) {
+    assert.equal(runValidator(accepted).status, 0, accepted);
+  }
+  for (const rejected of [
+    "/opt/refunddesk/control-plane-generations/nested/escape",
+    "/opt/refunddesk/control-plane-generations/",
+    "/opt/refunddesk/releases/not-a-revision/source/deploy/lightsail",
+    `/opt/refunddesk/releases/${revision}/source/deploy/lightsail/extra`,
+    "/opt/refunddesk/outside",
+  ]) {
+    assert.notEqual(runValidator(rejected).status, 0, rejected);
+  }
+});
+
 test("backup scheduling activates only after strict configuration validation", async () => {
-  const [bootstrapHost, release, helper] = await Promise.all([
+  const [bootstrapHost, installSource, release, helper] = await Promise.all([
     read("scripts/bootstrap-host.sh"),
+    read("scripts/install-source.sh"),
     read("scripts/release.sh"),
     read("scripts/release-transition-journal.py"),
   ]);
   for (const source of [bootstrapHost, release]) {
     assert.match(source, /validate-backup/u);
-    assert.match(source, /systemctl enable --now refunddesk-backup\.timer/u);
-    assert.match(source, /systemctl is-enabled --quiet refunddesk-backup\.timer/u);
-    assert.match(source, /systemctl is-active --quiet refunddesk-backup\.timer/u);
-    assert.match(source, /systemctl disable --now refunddesk-backup\.timer/u);
+    assert.match(source, /sync-systemd-wants/u);
+    assert.match(source, /systemctl start refunddesk-backup\.timer/u);
+    assert.match(source, /systemctl stop refunddesk-backup\.timer/u);
   }
+  for (const source of [bootstrapHost, installSource, release]) {
+    assert.doesNotMatch(
+      source,
+      /systemctl (?:enable|disable)(?: --now)? refunddesk-/u,
+      "RefundDesk unit activation must not let systemctl recanonicalize a stable wants link",
+    );
+    assert.doesNotMatch(source, /systemctl is-enabled[^\n]*refunddesk-/u);
+  }
+  const wantsDirectoryContract = shellFunction(
+    bootstrapHost,
+    "bootstrap_ensure_systemd_wants_directory",
+  );
+  assert.match(wantsDirectoryContract, /! -e "\$\{wants_directory\}"/u);
+  assert.match(wantsDirectoryContract, /! -L "\$\{wants_directory\}"/u);
+  assert.match(wantsDirectoryContract, /install -d -o root -g root -m 0755/u);
+  assert.match(wantsDirectoryContract, /fsync-directory/u);
+  assert.match(wantsDirectoryContract, /8#022/u);
+  const firstWantsDirectory = bootstrapHost.indexOf(
+    "bootstrap_ensure_systemd_wants_directory",
+    bootstrapHost.indexOf("BOOTSTRAP_QUIESCE_WANTS="),
+  );
+  const firstBootstrapWantsMutation = bootstrapHost.indexOf(
+    "bootstrap_sync_systemd_wants",
+    firstWantsDirectory,
+  );
+  assert.ok(firstWantsDirectory >= 0 && firstBootstrapWantsMutation > firstWantsDirectory);
+
+  assert.match(bootstrapHost, /bootstrap_systemd_unit_property FragmentPath/u);
+  assert.match(bootstrapHost, /bootstrap_systemd_unit_property NeedDaemonReload/u);
+  assert.match(installSource, /--property=FragmentPath --value/u);
+  assert.match(installSource, /--property=NeedDaemonReload --value/u);
+  for (const source of [bootstrapHost, installSource]) {
+    assert.match(source, /stat --dereference --format='%u:%g:%a'/u);
+  }
+  const bootstrapReload = bootstrapHost.lastIndexOf("systemctl daemon-reload");
+  const bootstrapPostReload = bootstrapHost.slice(bootstrapReload);
+  assert.match(bootstrapPostReload, /refunddesk-backup\.service/u);
+  assert.match(bootstrapPostReload, /refunddesk-retention\.service/u);
+  assert.equal((bootstrapPostReload.match(/bootstrap_prove_systemd_unit_state/gu) ?? []).length, 4);
+  for (const managedUnit of [
+    "BOOTSTRAP_QUIESCE_UNIT",
+    "BOOTSTRAP_RETENTION_UNIT",
+    "BOOTSTRAP_BACKUP_UNIT",
+  ]) {
+    assert.match(bootstrapPostReload, new RegExp(`\\$\\{${managedUnit}\\}`, "u"));
+  }
+  const installReload = installSource.lastIndexOf("systemctl daemon-reload");
+  const installPostReload = installSource.slice(installReload);
+  assert.match(installPostReload, /for mapping in "\$\{control_plane_mappings\[@\]\}"/u);
+  assert.match(installPostReload, /systemd\/\*/u);
+  assert.match(installPostReload, /installed systemd fragment state is unproven/u);
   assert.match(helper, /def validate_backup\(/u);
+  assert.match(helper, /def sync_systemd_wants\(/u);
+  assert.match(helper, /def assert_controlled_generation_unit\(/u);
+  assert.match(helper, /predecessor differs from the active stable unit/u);
+  assert.match(helper, /stable systemd unit changed while removing wants entry/u);
   assert.match(helper, /set\(values\) != expected_names/u);
   assert.match(helper, /backup environment binding is invalid/u);
   const finalizationLock = release.lastIndexOf("flock --exclusive 8");
   const restartProof = release.indexOf("restore_runtime_restart_policies", finalizationLock);
   const systemdReload = release.indexOf("systemctl daemon-reload", restartProof);
   const backupActivation = release.indexOf(
-    "systemctl enable --now refunddesk-backup.timer",
+    "systemctl start refunddesk-backup.timer",
     systemdReload,
   );
   const durableCommit = release.indexOf(
@@ -1336,6 +1458,180 @@ test("backup scheduling activates only after strict configuration validation", a
     const executableConfiguration = runHelper();
     assert.notEqual(executableConfiguration.status, 0);
     assert.match(executableConfiguration.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test("systemd wants synchronization survives a control-plane switch and rejects unsafe predecessors", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows symlink ownership differs; Linux CI executes this contract");
+    return;
+  }
+  const python = spawnSync("python3", ["--version"], { encoding: "utf8" });
+  if (python.error?.code === "ENOENT" || python.status !== 0) {
+    t.skip("python3 is unavailable on this host; CI executes this functional contract");
+    return;
+  }
+
+  const helper = resolve(directory, "scripts/release-transition-journal.py");
+  const temporaryDirectory = await realpath(
+    await mkdtemp(join(tmpdir(), "refunddesk-systemd-wants-")),
+  );
+  const controlRoot = join(temporaryDirectory, "refunddesk");
+  const generationRoot = join(controlRoot, "control-plane-generations");
+  const legacyGeneration = join(generationRoot, "legacy-test");
+  const bridgeGeneration = join(generationRoot, "bridge-test");
+  const targetGeneration = join(generationRoot, "target-test");
+  const controlPlaneLink = join(controlRoot, "control-plane-current");
+  const systemdRoot = join(temporaryDirectory, "etc", "systemd", "system");
+  const wantsRoot = join(systemdRoot, "timers.target.wants");
+  const unitName = "refunddesk-retention.timer";
+  const stableUnit = join(systemdRoot, unitName);
+  const wantsPath = join(wantsRoot, unitName);
+  const stableTarget = join(controlPlaneLink, "systemd", unitName);
+  const legacyUnit = join(legacyGeneration, "systemd", unitName);
+  const bridgeUnit = join(bridgeGeneration, "systemd", unitName);
+  const targetUnit = join(targetGeneration, "systemd", unitName);
+  const unitBytes = "[Unit]\nDescription=RefundDesk test timer\n";
+
+  const runHelper = (activeUnit, state, restoreTarget) => {
+    const arguments_ = [
+      helper,
+      "sync-systemd-wants",
+      "--wants",
+      wantsPath,
+      "--stable-unit",
+      stableUnit,
+      "--stable-target",
+      stableTarget,
+      "--active-unit",
+      activeUnit,
+      "--control-root",
+      controlRoot,
+      "--state",
+      state,
+    ];
+    if (restoreTarget !== undefined) {
+      arguments_.push("--restore-target", restoreTarget);
+    }
+    return spawnSync("python3", arguments_, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  };
+
+  try {
+    for (const path of [
+      join(legacyGeneration, "systemd"),
+      join(bridgeGeneration, "systemd"),
+      join(targetGeneration, "systemd"),
+      wantsRoot,
+    ]) {
+      await mkdir(path, { mode: 0o755, recursive: true });
+    }
+    for (const unit of [legacyUnit, bridgeUnit, targetUnit]) {
+      await writeFile(unit, unitBytes, { mode: 0o644 });
+    }
+    await symlink(bridgeGeneration, controlPlaneLink, "dir");
+    await symlink(stableTarget, stableUnit);
+    await symlink(legacyUnit, wantsPath);
+
+    const verifiedPredecessor = runHelper(bridgeUnit, "unchanged");
+    assert.equal(verifiedPredecessor.status, 0, verifiedPredecessor.stderr);
+    const synchronized = runHelper(bridgeUnit, "present");
+    assert.equal(synchronized.status, 0, synchronized.stderr);
+    assert.equal(await readlink(wantsPath), stableUnit);
+    assert.equal(await realpath(wantsPath), bridgeUnit);
+
+    await unlink(controlPlaneLink);
+    await symlink(targetGeneration, controlPlaneLink, "dir");
+    assert.equal(await realpath(wantsPath), targetUnit);
+
+    const restoredPredecessor = runHelper(targetUnit, "restore-present", legacyUnit);
+    assert.equal(restoredPredecessor.status, 0, restoredPredecessor.stderr);
+    assert.equal(await readlink(wantsPath), legacyUnit);
+    assert.equal(await realpath(wantsPath), legacyUnit);
+
+    const restoredAbsent = runHelper(targetUnit, "restore-absent");
+    assert.equal(restoredAbsent.status, 0, restoredAbsent.stderr);
+    await assert.rejects(lstat(wantsPath), { code: "ENOENT" });
+    assert.equal((await lstat(stableUnit)).isSymbolicLink(), true);
+    assert.equal(await realpath(stableUnit), targetUnit);
+
+    const synchronizedAgain = runHelper(targetUnit, "present");
+    assert.equal(synchronizedAgain.status, 0, synchronizedAgain.stderr);
+    const removed = runHelper(targetUnit, "absent");
+    assert.equal(removed.status, 0, removed.stderr);
+    await assert.rejects(lstat(wantsPath), { code: "ENOENT" });
+    assert.equal((await lstat(stableUnit)).isSymbolicLink(), true);
+    assert.equal(await realpath(stableUnit), targetUnit);
+
+    const foreignUnit = join(temporaryDirectory, "foreign", unitName);
+    await mkdir(dirname(foreignUnit), { mode: 0o755, recursive: true });
+    await writeFile(foreignUnit, unitBytes, { mode: 0o644 });
+    await symlink(foreignUnit, wantsPath);
+    const escaped = runHelper(targetUnit, "unchanged");
+    assert.notEqual(escaped.status, 0);
+    assert.match(escaped.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), foreignUnit);
+    await unlink(wantsPath);
+
+    const divergentGeneration = join(generationRoot, "divergent-test");
+    const divergentUnit = join(divergentGeneration, "systemd", unitName);
+    await mkdir(dirname(divergentUnit), { mode: 0o755, recursive: true });
+    await writeFile(divergentUnit, `${unitBytes}OnFailure=unsafe.service\n`, { mode: 0o644 });
+    await symlink(divergentUnit, wantsPath);
+    const divergent = runHelper(targetUnit, "unchanged");
+    assert.notEqual(divergent.status, 0);
+    assert.match(divergent.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), divergentUnit);
+    await unlink(wantsPath);
+
+    const nestedGeneration = join(generationRoot, "nested", "invalid-test");
+    const nestedUnit = join(nestedGeneration, "systemd", unitName);
+    await mkdir(dirname(nestedUnit), { mode: 0o755, recursive: true });
+    await writeFile(nestedUnit, unitBytes, { mode: 0o644 });
+    await symlink(nestedUnit, wantsPath);
+    const nested = runHelper(targetUnit, "unchanged");
+    assert.notEqual(nested.status, 0);
+    assert.match(nested.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), nestedUnit);
+    await unlink(wantsPath);
+
+    const unsafeModeGeneration = join(generationRoot, "unsafe-mode-test");
+    const unsafeModeUnit = join(unsafeModeGeneration, "systemd", unitName);
+    await mkdir(dirname(unsafeModeUnit), { mode: 0o755, recursive: true });
+    await writeFile(unsafeModeUnit, unitBytes, { mode: 0o644 });
+    await chmod(unsafeModeUnit, 0o600);
+    await symlink(unsafeModeUnit, wantsPath);
+    const unsafeMode = runHelper(targetUnit, "unchanged");
+    assert.notEqual(unsafeMode.status, 0);
+    assert.match(unsafeMode.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), unsafeModeUnit);
+    await unlink(wantsPath);
+
+    const relativeTarget = "relative-refunddesk-retention.timer";
+    await symlink(relativeTarget, wantsPath);
+    const relative = runHelper(targetUnit, "unchanged");
+    assert.notEqual(relative.status, 0);
+    assert.match(relative.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), relativeTarget);
+    await unlink(wantsPath);
+
+    const danglingTarget = join(generationRoot, "missing-test", "systemd", unitName);
+    await symlink(danglingTarget, wantsPath);
+    const dangling = runHelper(targetUnit, "unchanged");
+    assert.notEqual(dangling.status, 0);
+    assert.match(dangling.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readlink(wantsPath), danglingTarget);
+    await unlink(wantsPath);
+
+    await writeFile(wantsPath, unitBytes, { mode: 0o644 });
+    const regularEntry = runHelper(targetUnit, "unchanged");
+    assert.notEqual(regularEntry.status, 0);
+    assert.match(regularEntry.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+    assert.equal(await readFile(wantsPath, "utf8"), unitBytes);
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
@@ -1425,20 +1721,30 @@ test("release rollback preserves the recoverable metadata lattice", async () => 
   assert.match(rollback, /local metadata_rollback_ok=true/u);
   assert.equal(
     (rollback.match(/\[\[ "\$\{metadata_rollback_ok\}" == "true" \]\]/gu) ?? []).length,
-    4,
+    7,
   );
-  assert.ok((rollback.match(/metadata_rollback_ok=false/gu) ?? []).length >= 4);
+  assert.ok((rollback.match(/metadata_rollback_ok=false/gu) ?? []).length >= 7);
 
+  const controlPlaneRollback = rollback.indexOf('--target "${REFUNDDESK_CONTROL_PLANE_LINK}"');
+  const wantsRollback = rollback.indexOf("restore_release_systemd_wants");
+  const daemonReloadRollback = rollback.indexOf("systemctl daemon-reload", wantsRollback);
   const rotationRollback = rollback.indexOf('--target "${ROTATION_STATE_FILE}"');
   const currentRollback = rollback.indexOf('--target "${REFUNDDESK_ROOT}/current"');
   const activeRollback = rollback.indexOf('--target "${REFUNDDESK_ROOT}/ACTIVE_REVISION"');
   const environmentRollback = rollback.indexOf('--target "${REFUNDDESK_RELEASE_ENV}"');
   assert.ok(
-    rotationRollback >= 0 &&
+    controlPlaneRollback >= 0 &&
+      wantsRollback > controlPlaneRollback &&
+      daemonReloadRollback > wantsRollback &&
+      rotationRollback > daemonReloadRollback &&
       currentRollback > rotationRollback &&
       activeRollback > currentRollback &&
       environmentRollback > activeRollback,
   );
+  assert.match(rollback, /SYSTEMD_DAEMON_RELOAD_ATTEMPTED/u);
+  assert.match(rollback, /PREVIOUS_QUIESCE_WANTS_TARGET/u);
+  assert.match(rollback, /PREVIOUS_RETENTION_WANTS_TARGET/u);
+  assert.match(rollback, /PREVIOUS_BACKUP_WANTS_TARGET/u);
   assert.match(rollback, /preserving root-only recovery artifact after incomplete rollback/u);
   assert.match(
     rollback,
@@ -1451,6 +1757,16 @@ test("release rollback preserves the recoverable metadata lattice", async () => 
   const admission = release.indexOf("enable_candidate_runtime", journalPrepare);
   const runtimeStart = release.indexOf("refunddesk_compose start worker web verifier", admission);
   const restartRestoration = release.indexOf("restore_runtime_restart_policies", runtimeStart);
+  const wantsCapture = release.indexOf("capture_release_systemd_wants", runtimeStart);
+  const wantsChanged = release.indexOf("SYSTEMD_WANTS_CHANGED=true", wantsCapture);
+  const firstWantsMutation = release.indexOf("sync_release_systemd_wants", wantsChanged);
+  const pointerChanged = release.indexOf("CONTROL_PLANE_LINK_CHANGED=true", firstWantsMutation);
+  const pointerSwitch = release.indexOf(
+    '--target "${REFUNDDESK_CONTROL_PLANE_LINK}"',
+    pointerChanged,
+  );
+  const reloadAttempted = release.indexOf("SYSTEMD_DAEMON_RELOAD_ATTEMPTED=true", pointerSwitch);
+  const systemdReload = release.indexOf("systemctl daemon-reload", reloadAttempted);
   const journalComplete = release.indexOf(
     'python3 "${TRANSITION_HELPER}" complete',
     restartRestoration,
@@ -1461,8 +1777,20 @@ test("release rollback preserves the recoverable metadata lattice", async () => 
       journalPrepare > quiescence &&
       admission > journalPrepare &&
       runtimeStart > admission &&
-      restartRestoration > runtimeStart &&
-      journalComplete > restartRestoration,
+      wantsCapture > runtimeStart &&
+      wantsChanged > wantsCapture &&
+      firstWantsMutation > wantsChanged &&
+      pointerChanged > firstWantsMutation &&
+      pointerSwitch > pointerChanged &&
+      restartRestoration > pointerSwitch &&
+      reloadAttempted > pointerSwitch &&
+      reloadAttempted > restartRestoration &&
+      systemdReload > reloadAttempted &&
+      journalComplete > systemdReload,
+  );
+  assert.match(
+    rollback,
+    /systemd_rollback_reload_required=true[\s\S]*restore_release_systemd_wants[\s\S]*systemctl daemon-reload/u,
   );
 });
 
@@ -2038,12 +2366,14 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     assert.match(source, /refunddesk-retention\.timer/u);
   }
   for (const source of [bootstrapHost, release]) {
-    assert.match(source, /systemctl enable --now refunddesk-retention\.timer/u);
+    assert.match(source, /systemctl start refunddesk-retention\.timer/u);
   }
+  assert.match(bootstrapHost, /timers\.target\.wants\/refunddesk-retention\.timer/u);
+  assert.match(release, /RETENTION_WANTS_PATH/u);
   assert.match(installSource, /deploy\/lightsail\/scripts\/run-retention\.sh/u);
   assert.match(installSource, /deploy\/lightsail\/systemd\/refunddesk-retention\.service/u);
   const promotion = release.lastIndexOf('--target "${REFUNDDESK_ROOT}/current"');
-  const activation = release.indexOf("systemctl enable --now refunddesk-retention.timer");
+  const activation = release.indexOf("systemctl start refunddesk-retention.timer");
   assert.ok(promotion >= 0 && activation > promotion);
 });
 

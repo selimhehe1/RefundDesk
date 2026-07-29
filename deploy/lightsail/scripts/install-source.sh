@@ -20,8 +20,6 @@ CONTROL_PLANE_DURABILITY_HELPER=""
 readonly RELEASE_CONTRACT_VERSION="2"
 readonly STABLE_RELEASE_LAUNCHER="/usr/local/sbin/refunddesk-release"
 readonly STABLE_RELEASE_FENCE="/usr/local/sbin/refunddesk-release-fence"
-readonly STABLE_BACKUP_LAUNCHER="/usr/local/sbin/refunddesk-backup"
-readonly STABLE_RETENTION_LAUNCHER="/usr/local/sbin/refunddesk-retention"
 readonly STABLE_RECOVERY_LAUNCHER="/usr/local/sbin/refunddesk-quiesce-recovery"
 readonly TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
 readonly QUIESCE_JOURNAL="${REFUNDDESK_CONTROL_ROOT}/runtime-quiesce-in-progress.json"
@@ -104,7 +102,8 @@ install_stable_control_plane() {
   local source_root="$1"
   local bridge_release_fence bridge_release_launcher contract_marker control_plane_source
   local effective_source expected_link generation_parent legacy_final legacy_staging
-  local mapping mode relative_path stable_path target_file
+  local mapping mode quiesce_active_unit quiesce_stable_unit quiesce_wants_path
+  local relative_path stable_path target_file
   local -a contract_lines
   local -a control_plane_mappings
   local requires_legacy_snapshot=false
@@ -237,12 +236,53 @@ install_stable_control_plane() {
     grep --fixed-strings 'enforce_runtime_admission_once' "${bridge_release_fence}" >/dev/null &&
     grep --fixed-strings 'application-key-transition.lock' "${bridge_release_fence}" >/dev/null ||
     die "active release-fence bridge cannot protect a contract-2 transition"
+  quiesce_stable_unit=/etc/systemd/system/refunddesk-quiesce-recovery.service
+  quiesce_wants_path=/etc/systemd/system/multi-user.target.wants/refunddesk-quiesce-recovery.service
+  quiesce_active_unit="$(
+    readlink --canonicalize-existing -- "${quiesce_stable_unit}"
+  )" || die "stable runtime-quiescence unit cannot be resolved"
+  python3 "${CONTROL_PLANE_DURABILITY_HELPER}" sync-systemd-wants \
+    --wants "${quiesce_wants_path}" \
+    --stable-unit "${quiesce_stable_unit}" \
+    --stable-target \
+      "${REFUNDDESK_CONTROL_PLANE_LINK}/systemd/refunddesk-quiesce-recovery.service" \
+    --active-unit "${quiesce_active_unit}" \
+    --control-root "${REFUNDDESK_ROOT}" \
+    --state present >/dev/null ||
+    die "runtime-quiescence boot recovery wants link could not be synchronized"
+  [[ -L "${quiesce_wants_path}" &&
+    "$(stat --format='%u:%g' -- "${quiesce_wants_path}")" == "0:0" &&
+    "$(readlink -- "${quiesce_wants_path}")" == "${quiesce_stable_unit}" &&
+    "$(readlink --canonicalize-existing -- "${quiesce_wants_path}")" == \
+    "${quiesce_active_unit}" ]] ||
+    die "runtime-quiescence boot recovery wants link is unproven"
   systemctl daemon-reload ||
     die "systemd could not reload the stable RefundDesk control plane"
-  systemctl enable refunddesk-quiesce-recovery.service ||
-    die "runtime-quiescence boot recovery could not be enabled"
-  systemctl is-enabled --quiet refunddesk-quiesce-recovery.service ||
-    die "runtime-quiescence boot recovery is not enabled"
+
+  for mapping in "${control_plane_mappings[@]}"; do
+    relative_path="${mapping%%|*}"
+    case "${relative_path}" in
+      systemd/*)
+        stable_path="${mapping#*|}"
+        stable_path="${stable_path%%|*}"
+        mode="${mapping##*|}"
+        expected_link="${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+        assert_root_control_symlink "${stable_path}" "${expected_link}"
+        [[ "$(stat --dereference --format='%u:%g:%a' -- "${stable_path}")" == \
+          "0:0:${mode#0}" &&
+          "$(systemctl show "${stable_path##*/}" \
+            --property=FragmentPath --value)" == "${stable_path}" &&
+          "$(systemctl show "${stable_path##*/}" \
+            --property=NeedDaemonReload --value)" == "no" ]] ||
+          die "installed systemd fragment state is unproven: ${stable_path}"
+        ;;
+    esac
+  done
+  [[ "$(systemctl show refunddesk-quiesce-recovery.service \
+    --property=ActiveState --value)" == "inactive" &&
+    "$(systemctl show refunddesk-quiesce-recovery.service \
+      --property=UnitFileState --value)" == "enabled" ]] ||
+    die "runtime-quiescence boot recovery systemd state is unproven"
 }
 
 usage() {

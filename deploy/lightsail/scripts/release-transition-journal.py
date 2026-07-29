@@ -256,6 +256,258 @@ def durable_unlink(target: Path) -> None:
         raise ContractError("durable unlink failed") from error
 
 
+def resolve_existing(path: Path, label: str) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ContractError(f"{label} cannot be resolved") from error
+
+
+def assert_owned_symlink(path: Path, label: str) -> str:
+    try:
+        metadata = path.lstat()
+        value = os.readlink(path)
+    except OSError as error:
+        raise ContractError(f"{label} cannot be inspected") from error
+    if not stat.S_ISLNK(metadata.st_mode):
+        raise ContractError(f"{label} is not a symlink")
+    if os.name != "nt" and (
+        metadata.st_uid != os.geteuid() or metadata.st_gid != os.getegid()
+    ):
+        raise ContractError(f"{label} has unsafe ownership")
+    if not os.path.isabs(value):
+        raise ContractError(f"{label} target must be absolute")
+    return value
+
+
+def assert_systemd_unit_file(path: Path, label: str) -> os.stat_result:
+    metadata = assert_root_control_path(path)
+    if stat.S_IMODE(metadata.st_mode) != 0o644:
+        raise ContractError(f"{label} must have mode 0644")
+    if os.name != "nt" and (
+        metadata.st_uid != os.geteuid() or metadata.st_gid != os.getegid()
+    ):
+        raise ContractError(f"{label} must have control-owner uid and gid")
+    return metadata
+
+
+def assert_controlled_generation_unit(
+    path: Path, control_root: Path, unit_name: str
+) -> None:
+    try:
+        relative = path.relative_to(control_root)
+    except ValueError as error:
+        raise ContractError("systemd predecessor escaped the controlled root") from error
+    parts = relative.parts
+    is_generated = (
+        len(parts) == 4
+        and parts[0] == "control-plane-generations"
+        and bool(parts[1])
+        and parts[2] == "systemd"
+        and parts[3] == unit_name
+    )
+    is_release = (
+        len(parts) == 7
+        and parts[0] == "releases"
+        and REVISION.fullmatch(parts[1]) is not None
+        and parts[2:6] == ("source", "deploy", "lightsail", "systemd")
+        and parts[6] == unit_name
+    )
+    if not is_generated and not is_release:
+        raise ContractError("systemd predecessor is outside a controlled generation")
+
+
+def files_match(first: Path, second: Path) -> bool:
+    try:
+        with first.open("rb") as first_file, second.open("rb") as second_file:
+            return hashlib.file_digest(
+                first_file, "sha256"
+            ).digest() == hashlib.file_digest(second_file, "sha256").digest()
+    except OSError as error:
+        raise ContractError("systemd unit bytes cannot be compared") from error
+
+
+def assert_safe_systemd_wants_target(
+    target: str,
+    stable_unit_path: Path,
+    active_unit_path: Path,
+    active_metadata: os.stat_result,
+    active_resolved: Path,
+    stable_target: str | None,
+    control_root: Path | None,
+    label: str,
+) -> Path:
+    if not os.path.isabs(target):
+        raise ContractError(f"{label} target must be absolute")
+    resolved_target = resolve_existing(Path(target), label)
+    allowed_values = {str(stable_unit_path), str(active_unit_path)}
+    if stable_target is not None:
+        allowed_values.add(stable_target)
+    if target in allowed_values:
+        if resolved_target != active_resolved:
+            raise ContractError(f"{label} does not resolve to the active unit")
+        return resolved_target
+
+    if control_root is None:
+        raise ContractError(f"{label} has an unrecognized target")
+    target_path = Path(target)
+    if resolved_target != target_path:
+        raise ContractError(f"{label} predecessor target is not canonical")
+    predecessor_metadata = assert_systemd_unit_file(
+        target_path, f"{label} predecessor"
+    )
+    assert_controlled_generation_unit(
+        target_path, control_root, stable_unit_path.name
+    )
+    if (
+        stat.S_IMODE(predecessor_metadata.st_mode)
+        != stat.S_IMODE(active_metadata.st_mode)
+        or not files_match(target_path, active_unit_path)
+    ):
+        raise ContractError(f"{label} predecessor differs from the active stable unit")
+    return resolved_target
+
+
+def sync_systemd_wants(
+    wants_path: Path,
+    stable_unit_path: Path,
+    active_unit_path: Path,
+    stable_target: str | None,
+    control_root: Path | None,
+    state: str,
+    restore_target: str | None,
+) -> None:
+    for path, label in (
+        (wants_path, "systemd wants path"),
+        (stable_unit_path, "stable systemd unit"),
+        (active_unit_path, "active systemd unit"),
+    ):
+        if not path.is_absolute():
+            raise ContractError(f"{label} must be absolute")
+    if wants_path.name != stable_unit_path.name:
+        raise ContractError("systemd wants and stable unit names differ")
+
+    assert_root_control_directory(wants_path.parent)
+    active_metadata = assert_systemd_unit_file(
+        active_unit_path, "active systemd unit"
+    )
+    if not stat.S_ISREG(active_metadata.st_mode):
+        raise ContractError("active systemd unit is not a regular file")
+    active_resolved = resolve_existing(active_unit_path, "active systemd unit")
+    if active_resolved != active_unit_path:
+        raise ContractError("active systemd unit path is not canonical")
+    if control_root is not None:
+        if not control_root.is_absolute():
+            raise ContractError("systemd controlled root must be absolute")
+        assert_root_control_directory(control_root)
+        if resolve_existing(control_root, "systemd controlled root") != control_root:
+            raise ContractError("systemd controlled root path is not canonical")
+
+    try:
+        stable_metadata = stable_unit_path.lstat()
+    except OSError as error:
+        raise ContractError("stable systemd unit cannot be inspected") from error
+    if stat.S_ISLNK(stable_metadata.st_mode):
+        if stable_target is None or not os.path.isabs(stable_target):
+            raise ContractError("stable systemd unit target is required and must be absolute")
+        observed_stable_target = assert_owned_symlink(
+            stable_unit_path, "stable systemd unit"
+        )
+        if observed_stable_target != stable_target:
+            raise ContractError("stable systemd unit target differs")
+    elif stat.S_ISREG(stable_metadata.st_mode):
+        if stable_target is not None:
+            raise ContractError("regular stable systemd unit cannot have a symlink target")
+        assert_systemd_unit_file(stable_unit_path, "stable systemd unit")
+    else:
+        raise ContractError("stable systemd unit has an unsafe type")
+
+    if (
+        resolve_existing(stable_unit_path, "stable systemd unit")
+        != active_resolved
+    ):
+        raise ContractError("stable systemd unit does not resolve to the active unit")
+
+    wants_exists = wants_path.exists() or wants_path.is_symlink()
+    if wants_exists:
+        observed_wants_target = assert_owned_symlink(
+            wants_path, "systemd wants entry"
+        )
+        observed_wants_resolved = assert_safe_systemd_wants_target(
+            observed_wants_target,
+            stable_unit_path,
+            active_unit_path,
+            active_metadata,
+            active_resolved,
+            stable_target,
+            control_root,
+            "systemd wants entry",
+        )
+        if resolve_existing(wants_path, "systemd wants entry") != observed_wants_resolved:
+            raise ContractError("systemd wants symlink resolution is inconsistent")
+
+    if state == "present":
+        if restore_target is not None:
+            raise ContractError("present systemd wants state cannot restore a target")
+        durable_symlink(wants_path, str(stable_unit_path))
+        if (
+            assert_owned_symlink(wants_path, "synchronized systemd wants entry")
+            != str(stable_unit_path)
+            or resolve_existing(wants_path, "synchronized systemd wants entry")
+            != active_resolved
+        ):
+            raise ContractError("systemd wants entry synchronization is unproven")
+    elif state == "absent":
+        if restore_target is not None:
+            raise ContractError("absent systemd wants state cannot restore a target")
+        durable_unlink(wants_path)
+        if wants_path.exists() or wants_path.is_symlink():
+            raise ContractError("systemd wants entry removal is unproven")
+        if (
+            resolve_existing(stable_unit_path, "stable systemd unit after unlink")
+            != active_resolved
+        ):
+            raise ContractError("stable systemd unit changed while removing wants entry")
+    elif state == "unchanged":
+        if restore_target is not None:
+            raise ContractError("unchanged systemd wants state cannot restore a target")
+        return
+    elif state == "restore-present":
+        if restore_target is None:
+            raise ContractError("restored systemd wants target is required")
+        expected_restored_resolution = assert_safe_systemd_wants_target(
+            restore_target,
+            stable_unit_path,
+            active_unit_path,
+            active_metadata,
+            active_resolved,
+            stable_target,
+            control_root,
+            "restored systemd wants entry",
+        )
+        durable_symlink(wants_path, restore_target)
+        if (
+            assert_owned_symlink(wants_path, "restored systemd wants entry")
+            != restore_target
+            or resolve_existing(wants_path, "restored systemd wants entry")
+            != expected_restored_resolution
+        ):
+            raise ContractError("restored systemd wants entry is unproven")
+    elif state == "restore-absent":
+        if restore_target is not None:
+            raise ContractError("absent restored systemd wants cannot have a target")
+        durable_unlink(wants_path)
+        if wants_path.exists() or wants_path.is_symlink():
+            raise ContractError("restored systemd wants absence is unproven")
+        if (
+            resolve_existing(stable_unit_path, "stable systemd unit after restore")
+            != active_resolved
+        ):
+            raise ContractError("stable systemd unit changed while restoring wants")
+    else:
+        raise ContractError("systemd wants state is invalid")
+
+
 def fsync_paths(paths: list[Path], directories: list[Path]) -> None:
     seen_directories: set[Path] = set()
     for path in paths:
@@ -914,6 +1166,25 @@ def build_parser() -> argparse.ArgumentParser:
     unlink_parser = subcommands.add_parser("durable-unlink")
     unlink_parser.add_argument("--target", required=True, type=Path)
 
+    systemd_wants_parser = subcommands.add_parser("sync-systemd-wants")
+    systemd_wants_parser.add_argument("--wants", required=True, type=Path)
+    systemd_wants_parser.add_argument("--stable-unit", required=True, type=Path)
+    systemd_wants_parser.add_argument("--active-unit", required=True, type=Path)
+    systemd_wants_parser.add_argument("--stable-target")
+    systemd_wants_parser.add_argument("--control-root", type=Path)
+    systemd_wants_parser.add_argument("--restore-target")
+    systemd_wants_parser.add_argument(
+        "--state",
+        required=True,
+        choices=(
+            "absent",
+            "present",
+            "restore-absent",
+            "restore-present",
+            "unchanged",
+        ),
+    )
+
     paths_parser = subcommands.add_parser("fsync-paths")
     paths_parser.add_argument("--path", action="append", default=[], type=Path)
     paths_parser.add_argument("--directory", action="append", default=[], type=Path)
@@ -1029,6 +1300,25 @@ def main() -> int:
             print(
                 json.dumps(
                     {"component": "release-transition", "status": "durable-unlink"}
+                )
+            )
+        elif arguments.command == "sync-systemd-wants":
+            sync_systemd_wants(
+                arguments.wants,
+                arguments.stable_unit,
+                arguments.active_unit,
+                arguments.stable_target,
+                arguments.control_root,
+                arguments.state,
+                arguments.restore_target,
+            )
+            print(
+                json.dumps(
+                    {
+                        "component": "release-transition",
+                        "state": arguments.state,
+                        "status": "systemd-wants-synchronized",
+                    }
                 )
             )
         elif arguments.command == "fsync-paths":

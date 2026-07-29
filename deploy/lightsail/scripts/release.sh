@@ -37,6 +37,20 @@ CURRENT_LINK_CHANGED=false
 PREVIOUS_CURRENT_PRESENT=false
 PREVIOUS_CURRENT_TARGET=""
 CURRENT_LINK_TMP=""
+CONTROL_PLANE_LINK_CHANGED=false
+PREVIOUS_CONTROL_PLANE_TARGET=""
+PREVIOUS_CONTROL_PLANE_CANONICAL=""
+SYSTEMD_WANTS_CHANGED=false
+PREVIOUS_QUIESCE_WANTS_PRESENT=false
+PREVIOUS_QUIESCE_WANTS_TARGET=""
+PREVIOUS_QUIESCE_WANTS_CANONICAL=""
+PREVIOUS_RETENTION_WANTS_PRESENT=false
+PREVIOUS_RETENTION_WANTS_TARGET=""
+PREVIOUS_RETENTION_WANTS_CANONICAL=""
+PREVIOUS_BACKUP_WANTS_PRESENT=false
+PREVIOUS_BACKUP_WANTS_TARGET=""
+PREVIOUS_BACKUP_WANTS_CANONICAL=""
+SYSTEMD_DAEMON_RELOAD_ATTEMPTED=false
 ACTIVE_REVISION_CHANGED=false
 PREVIOUS_ACTIVE_REVISION_PRESENT=false
 PREVIOUS_ACTIVE_REVISION_BACKUP=""
@@ -1148,10 +1162,219 @@ wait_for_release_fence_disarm() {
   die "release fence did not disarm after durable journal closure"
 }
 
+assert_control_plane_generation_root() {
+  local candidate="$1"
+  local generation revision suffix
+
+  case "${candidate}" in
+    "${REFUNDDESK_ROOT}/control-plane-generations/"*)
+      generation="${candidate#"${REFUNDDESK_ROOT}/control-plane-generations/"}"
+      [[ -n "${generation}" && "${generation}" != */* ]] ||
+        die "control-plane generation path has an invalid depth"
+      ;;
+    "${REFUNDDESK_ROOT}/releases/"*)
+      suffix="${candidate#"${REFUNDDESK_ROOT}/releases/"}"
+      revision="${suffix%%/*}"
+      [[ "${revision}" =~ ^[0-9a-f]{40}$ &&
+        "${suffix}" == "${revision}/source/deploy/lightsail" ]] ||
+        die "release control-plane path has an invalid revision or depth"
+      ;;
+    *)
+      die "control-plane generation escaped its root-controlled namespace"
+      ;;
+  esac
+}
+
+systemd_unit_property() {
+  local property="$1"
+  local unit="$2"
+  local value
+
+  value="$(systemctl show "${unit}" --property="${property}" --value)" ||
+    die "systemd property ${property} is unavailable for ${unit}"
+  [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] ||
+    die "systemd property ${property} has an invalid shape for ${unit}"
+  printf '%s\n' "${value}"
+}
+
+assert_systemd_fragment_contract() {
+  local active_control_plane="$1"
+  local relative_path="$2"
+  local stable_unit="$3"
+  local unit="$4"
+
+  assert_root_control_symlink \
+    "${stable_unit}" \
+    "${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+  [[ "$(readlink --canonicalize-existing -- "${stable_unit}")" == \
+    "${active_control_plane}/${relative_path}" ]] ||
+    die "stable systemd unit escaped the active control plane: ${unit}"
+  [[ "$(systemd_unit_property FragmentPath "${unit}")" == "${stable_unit}" ]] ||
+    die "systemd loaded an unexpected fragment path for ${unit}"
+  [[ "$(systemd_unit_property NeedDaemonReload "${unit}")" == "no" ]] ||
+    die "systemd still requires a daemon reload for ${unit}"
+}
+
+sync_release_systemd_wants() {
+  local active_control_plane="$1"
+  local relative_path="$2"
+  local stable_unit="$3"
+  local wants_path="$4"
+  local desired_state="$5"
+  local expected_active_unit
+
+  expected_active_unit="${active_control_plane}/${relative_path}"
+  assert_root_control_symlink \
+    "${stable_unit}" \
+    "${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+  [[ "$(readlink --canonicalize-existing -- "${stable_unit}")" == \
+    "${expected_active_unit}" ]] ||
+    die "stable systemd unit differs from the active control plane: ${stable_unit}"
+  python3 "${TRANSITION_HELPER}" sync-systemd-wants \
+    --wants "${wants_path}" \
+    --stable-unit "${stable_unit}" \
+    --stable-target "${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}" \
+    --active-unit "${expected_active_unit}" \
+    --control-root "${REFUNDDESK_ROOT}" \
+    --state "${desired_state}" >/dev/null ||
+    die "systemd wants synchronization failed for ${stable_unit}"
+  case "${desired_state}" in
+    present)
+      [[ -L "${wants_path}" &&
+        "$(stat --format='%u' -- "${wants_path}")" == "0" &&
+        "$(readlink -- "${wants_path}")" == "${stable_unit}" &&
+        "$(readlink --canonicalize-existing -- "${wants_path}")" == \
+        "${expected_active_unit}" ]] ||
+        die "durable systemd wants activation is unproven: ${wants_path}"
+      ;;
+    absent)
+      [[ ! -e "${wants_path}" && ! -L "${wants_path}" ]] ||
+        die "durable systemd wants removal is unproven: ${wants_path}"
+      [[ -L "${stable_unit}" ]] ||
+        die "stable systemd unit was removed with its wants entry: ${stable_unit}"
+      ;;
+    unchanged)
+      ;;
+    *)
+      die "unsupported release systemd wants state: ${desired_state}"
+      ;;
+  esac
+}
+
+capture_release_systemd_wants() {
+  local wants_path="$1"
+  local -n present_result="$2"
+  local -n target_result="$3"
+  local -n canonical_result="$4"
+
+  if [[ -L "${wants_path}" ]]; then
+    [[ "$(stat --format='%u:%g' -- "${wants_path}")" == "0:0" ]] ||
+      die "systemd wants link must be owned by root:root: ${wants_path}"
+    present_result=true
+    target_result="$(readlink -- "${wants_path}")"
+    [[ "${target_result}" == /* ]] ||
+      die "systemd wants link must use an absolute target: ${wants_path}"
+    canonical_result="$(readlink --canonicalize-existing -- "${wants_path}")" ||
+      die "systemd wants link cannot be resolved: ${wants_path}"
+  elif [[ -e "${wants_path}" ]]; then
+    die "systemd wants entry must be absent or a symlink: ${wants_path}"
+  else
+    # shellcheck disable=SC2034 # nameref output is consumed by the caller.
+    present_result=false
+    target_result=""
+    # shellcheck disable=SC2034 # nameref output is consumed by the caller.
+    canonical_result=""
+  fi
+}
+
+restore_release_systemd_wants() {
+  local active_control_plane="$1"
+  local relative_path="$2"
+  local stable_unit="$3"
+  local wants_path="$4"
+  local previous_present="$5"
+  local previous_target="$6"
+  local previous_canonical="$7"
+  local -a restore_arguments=(--state restore-absent)
+
+  if [[ "${previous_present}" == "true" ]]; then
+    restore_arguments=(
+      --state restore-present
+      --restore-target "${previous_target}"
+    )
+  fi
+  python3 "${TRANSITION_HELPER}" sync-systemd-wants \
+    --wants "${wants_path}" \
+    --stable-unit "${stable_unit}" \
+    --stable-target "${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}" \
+    --active-unit "${active_control_plane}/${relative_path}" \
+    --control-root "${REFUNDDESK_ROOT}" \
+    "${restore_arguments[@]}" >/dev/null ||
+    return 1
+  if [[ "${previous_present}" == "true" ]]; then
+    [[ -L "${wants_path}" &&
+      "$(stat --format='%u:%g' -- "${wants_path}")" == "0:0" &&
+      "$(readlink -- "${wants_path}")" == "${previous_target}" &&
+      "$(readlink --canonicalize-existing -- "${wants_path}")" == \
+      "${previous_canonical}" ]]
+  else
+    [[ ! -e "${wants_path}" && ! -L "${wants_path}" ]]
+  fi
+}
+
+prove_systemd_unit_state() {
+  local active_control_plane="$1"
+  local relative_path="$2"
+  local stable_unit="$3"
+  local wants_path="$4"
+  local wants_state="$5"
+  local expected_active_state="$6"
+  local expected_unit_file_state="$7"
+  local unit="${stable_unit##*/}"
+
+  assert_systemd_fragment_contract \
+    "${active_control_plane}" "${relative_path}" "${stable_unit}" "${unit}"
+  if [[ "${wants_state}" == "present" ]]; then
+    [[ -L "${wants_path}" &&
+      "$(stat --format='%u' -- "${wants_path}")" == "0" &&
+      "$(readlink -- "${wants_path}")" == "${stable_unit}" &&
+      "$(readlink --canonicalize-existing -- "${wants_path}")" == \
+      "${active_control_plane}/${relative_path}" ]] ||
+      die "active systemd wants link is unproven: ${wants_path}"
+  else
+    [[ ! -e "${wants_path}" && ! -L "${wants_path}" ]] ||
+      die "inactive systemd wants link remained present: ${wants_path}"
+  fi
+  [[ "$(systemd_unit_property ActiveState "${unit}")" == \
+    "${expected_active_state}" ]] ||
+    die "systemd active state differs for ${unit}"
+  [[ "$(systemd_unit_property UnitFileState "${unit}")" == \
+    "${expected_unit_file_state}" ]] ||
+    die "systemd unit-file state differs for ${unit}"
+}
+
+prove_systemd_fragments_after_reload() {
+  local active_control_plane="$1"
+  local installed_control_path relative_path _
+
+  while IFS='|' read -r relative_path installed_control_path _; do
+    case "${relative_path}" in
+      systemd/*)
+        assert_systemd_fragment_contract \
+          "${active_control_plane}" \
+          "${relative_path}" \
+          "${installed_control_path}" \
+          "${installed_control_path##*/}"
+        ;;
+    esac
+  done < <(refunddesk_control_plane_mappings)
+}
+
 fail_closed() {
   local status=$?
   local ids_output
   local metadata_rollback_ok=true
+  local systemd_rollback_reload_required=false
   local -a failed_runtime_ids
   trap - EXIT
 
@@ -1165,6 +1388,13 @@ fail_closed() {
     TRANSITION_COMMITTED=true
     log "durable transition commit marker recovered the post-commit failure state"
   fi
+  if (( status != 0 )) &&
+    [[ "${TRANSITION_COMMITTED}" != "true" ]] &&
+    [[ "${SYSTEMD_DAEMON_RELOAD_ATTEMPTED}" == "true" ||
+      "${CONTROL_PLANE_LINK_CHANGED}" == "true" ||
+      "${SYSTEMD_WANTS_CHANGED}" == "true" ]]; then
+    systemd_rollback_reload_required=true
+  fi
 
   [[ -z "${RELEASE_ENV_TMP}" ]] || rm -f -- "${RELEASE_ENV_TMP}"
   [[ -z "${CURRENT_LINK_TMP}" ]] || rm -f -- "${CURRENT_LINK_TMP}"
@@ -1174,6 +1404,87 @@ fail_closed() {
   [[ -z "${TRANSITION_CANDIDATE_FILE}" ]] || rm -f -- "${TRANSITION_CANDIDATE_FILE}"
   [[ -z "${TARGET_FINGERPRINTS_FILE}" ]] || rm -f -- "${TARGET_FINGERPRINTS_FILE}"
   [[ -z "${PREVIOUS_FINGERPRINTS_FILE}" ]] || rm -f -- "${PREVIOUS_FINGERPRINTS_FILE}"
+
+  if (( status != 0 )) &&
+    [[ "${TRANSITION_COMMITTED}" != "true" &&
+      "${systemd_rollback_reload_required}" == "true" ]]; then
+    systemctl stop refunddesk-backup.timer refunddesk-retention.timer >/dev/null 2>&1 ||
+      status=1
+  fi
+
+  if (( status != 0 )) &&
+    [[ "${metadata_rollback_ok}" == "true" ]] &&
+    [[ "${TRANSITION_COMMITTED}" != "true" &&
+      "${CONTROL_PLANE_LINK_CHANGED}" == "true" ]]; then
+    log "restoring the previously active stable control plane"
+    if python3 "${TRANSITION_HELPER}" durable-symlink \
+      --target "${REFUNDDESK_CONTROL_PLANE_LINK}" \
+      --value "${PREVIOUS_CONTROL_PLANE_TARGET}" >/dev/null &&
+      [[ -L "${REFUNDDESK_CONTROL_PLANE_LINK}" &&
+        "$(stat --format='%u:%g' -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == "0:0" &&
+        "$(readlink -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == \
+        "${PREVIOUS_CONTROL_PLANE_TARGET}" &&
+        "$(readlink --canonicalize-existing -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == \
+        "${PREVIOUS_CONTROL_PLANE_CANONICAL}" ]]; then
+      CONTROL_PLANE_LINK_CHANGED=false
+    else
+      status=1
+      metadata_rollback_ok=false
+    fi
+  fi
+
+  if (( status != 0 )) &&
+    [[ "${metadata_rollback_ok}" == "true" ]] &&
+    [[ "${TRANSITION_COMMITTED}" != "true" &&
+      "${SYSTEMD_WANTS_CHANGED}" == "true" ]]; then
+    log "restoring the previous exact systemd wants topology"
+    if restore_release_systemd_wants \
+      "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+      systemd/refunddesk-quiesce-recovery.service \
+      "${QUIESCE_STABLE_UNIT}" \
+      "${QUIESCE_WANTS_PATH}" \
+      "${PREVIOUS_QUIESCE_WANTS_PRESENT}" \
+      "${PREVIOUS_QUIESCE_WANTS_TARGET}" \
+      "${PREVIOUS_QUIESCE_WANTS_CANONICAL}" &&
+      restore_release_systemd_wants \
+        "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+        systemd/refunddesk-retention.timer \
+        "${RETENTION_STABLE_UNIT}" \
+        "${RETENTION_WANTS_PATH}" \
+        "${PREVIOUS_RETENTION_WANTS_PRESENT}" \
+        "${PREVIOUS_RETENTION_WANTS_TARGET}" \
+        "${PREVIOUS_RETENTION_WANTS_CANONICAL}" &&
+      restore_release_systemd_wants \
+        "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+        systemd/refunddesk-backup.timer \
+        "${BACKUP_STABLE_UNIT}" \
+        "${BACKUP_WANTS_PATH}" \
+        "${PREVIOUS_BACKUP_WANTS_PRESENT}" \
+        "${PREVIOUS_BACKUP_WANTS_TARGET}" \
+        "${PREVIOUS_BACKUP_WANTS_CANONICAL}"; then
+      SYSTEMD_WANTS_CHANGED=false
+    else
+      status=1
+      metadata_rollback_ok=false
+    fi
+  fi
+
+  if (( status != 0 )) &&
+    [[ "${metadata_rollback_ok}" == "true" ]] &&
+    [[ "${TRANSITION_COMMITTED}" != "true" &&
+      "${systemd_rollback_reload_required}" == "true" ]]; then
+    if systemctl daemon-reload &&
+      (
+        prove_systemd_fragments_after_reload \
+          "${PREVIOUS_CONTROL_PLANE_CANONICAL}"
+      ) >/dev/null 2>&1; then
+      SYSTEMD_DAEMON_RELOAD_ATTEMPTED=false
+      systemd_rollback_reload_required=false
+    else
+      status=1
+      metadata_rollback_ok=false
+    fi
+  fi
 
   if (( status != 0 )) &&
     [[ "${metadata_rollback_ok}" == "true" ]] &&
@@ -1491,6 +1802,102 @@ while IFS='|' read -r control_plane_relative _ control_plane_mode; do
       ;;
   esac
 done < <(refunddesk_control_plane_mappings)
+
+[[ -L "${REFUNDDESK_CONTROL_PLANE_LINK}" &&
+  "$(stat --format='%u:%g' -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == "0:0" ]] ||
+  die "active control-plane generation pointer is not a root:root symlink"
+PREVIOUS_CONTROL_PLANE_TARGET="$(readlink -- "${REFUNDDESK_CONTROL_PLANE_LINK}")"
+[[ "${PREVIOUS_CONTROL_PLANE_TARGET}" == /* ]] ||
+  die "active control-plane generation pointer must use an absolute target"
+PREVIOUS_CONTROL_PLANE_CANONICAL="$(
+  readlink --canonicalize-existing -- "${REFUNDDESK_CONTROL_PLANE_LINK}"
+)" || die "active control-plane generation cannot be resolved before promotion"
+[[ "${PREVIOUS_CONTROL_PLANE_TARGET}" == "${PREVIOUS_CONTROL_PLANE_CANONICAL}" ]] ||
+  die "active control-plane generation pointer target is not canonical"
+assert_control_plane_generation_root "${PREVIOUS_CONTROL_PLANE_CANONICAL}"
+assert_safe_directory "${PREVIOUS_CONTROL_PLANE_CANONICAL}"
+previous_control_plane_mode="$(
+  stat --format='%a' -- "${PREVIOUS_CONTROL_PLANE_CANONICAL}"
+)"
+[[ "$(stat --format='%u:%g' -- "${PREVIOUS_CONTROL_PLANE_CANONICAL}")" == "0:0" ]] &&
+  (( (8#${previous_control_plane_mode} & 022) == 0 )) ||
+  die "active control-plane generation ownership or mode is unsafe"
+
+QUIESCE_STABLE_UNIT="/etc/systemd/system/refunddesk-quiesce-recovery.service"
+QUIESCE_WANTS_PATH="/etc/systemd/system/multi-user.target.wants/refunddesk-quiesce-recovery.service"
+RETENTION_STABLE_UNIT="/etc/systemd/system/refunddesk-retention.timer"
+RETENTION_WANTS_PATH="/etc/systemd/system/timers.target.wants/refunddesk-retention.timer"
+BACKUP_STABLE_UNIT="/etc/systemd/system/refunddesk-backup.timer"
+BACKUP_WANTS_PATH="/etc/systemd/system/timers.target.wants/refunddesk-backup.timer"
+
+sync_release_systemd_wants \
+  "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+  systemd/refunddesk-quiesce-recovery.service \
+  "${QUIESCE_STABLE_UNIT}" \
+  "${QUIESCE_WANTS_PATH}" \
+  unchanged
+sync_release_systemd_wants \
+  "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+  systemd/refunddesk-retention.timer \
+  "${RETENTION_STABLE_UNIT}" \
+  "${RETENTION_WANTS_PATH}" \
+  unchanged
+sync_release_systemd_wants \
+  "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+  systemd/refunddesk-backup.timer \
+  "${BACKUP_STABLE_UNIT}" \
+  "${BACKUP_WANTS_PATH}" \
+  unchanged
+capture_release_systemd_wants \
+  "${QUIESCE_WANTS_PATH}" \
+  PREVIOUS_QUIESCE_WANTS_PRESENT \
+  PREVIOUS_QUIESCE_WANTS_TARGET \
+  PREVIOUS_QUIESCE_WANTS_CANONICAL
+capture_release_systemd_wants \
+  "${RETENTION_WANTS_PATH}" \
+  PREVIOUS_RETENTION_WANTS_PRESENT \
+  PREVIOUS_RETENTION_WANTS_TARGET \
+  PREVIOUS_RETENTION_WANTS_CANONICAL
+capture_release_systemd_wants \
+  "${BACKUP_WANTS_PATH}" \
+  PREVIOUS_BACKUP_WANTS_PRESENT \
+  PREVIOUS_BACKUP_WANTS_TARGET \
+  PREVIOUS_BACKUP_WANTS_CANONICAL
+
+SYSTEMD_WANTS_CHANGED=true
+sync_release_systemd_wants \
+  "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+  systemd/refunddesk-quiesce-recovery.service \
+  "${QUIESCE_STABLE_UNIT}" \
+  "${QUIESCE_WANTS_PATH}" \
+  present
+sync_release_systemd_wants \
+  "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+  systemd/refunddesk-retention.timer \
+  "${RETENTION_STABLE_UNIT}" \
+  "${RETENTION_WANTS_PATH}" \
+  present
+if [[ "${BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
+  sync_release_systemd_wants \
+    "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+    systemd/refunddesk-backup.timer \
+    "${BACKUP_STABLE_UNIT}" \
+    "${BACKUP_WANTS_PATH}" \
+    present
+else
+  systemctl stop refunddesk-backup.timer ||
+    die "unconfigured backup schedule could not be stopped"
+  [[ "$(systemd_unit_property ActiveState refunddesk-backup.timer)" == "inactive" ]] ||
+    die "unconfigured backup schedule did not become inactive"
+  sync_release_systemd_wants \
+    "${PREVIOUS_CONTROL_PLANE_CANONICAL}" \
+    systemd/refunddesk-backup.timer \
+    "${BACKUP_STABLE_UNIT}" \
+    "${BACKUP_WANTS_PATH}" \
+    absent
+fi
+
+CONTROL_PLANE_LINK_CHANGED=true
 python3 "${TRANSITION_HELPER}" durable-symlink \
   --target "${REFUNDDESK_CONTROL_PLANE_LINK}" \
   --value "${CONTROL_PLANE_TARGET}" >/dev/null ||
@@ -1523,28 +1930,53 @@ lock_transition_journal ||
   die "release transition coordination lock could not be reacquired for commit"
 restore_runtime_restart_policies
 unset REFUNDDESK_RUNTIME_RESTART_POLICY
+SYSTEMD_DAEMON_RELOAD_ATTEMPTED=true
 systemctl daemon-reload ||
   die "systemd could not reload the verified control-plane generation"
-systemctl enable refunddesk-quiesce-recovery.service ||
-  die "runtime-quiescence boot recovery could not be enabled"
-systemctl is-enabled --quiet refunddesk-quiesce-recovery.service ||
-  die "runtime-quiescence boot recovery is not enabled"
-systemctl enable --now refunddesk-retention.timer ||
+prove_systemd_fragments_after_reload "${CONTROL_PLANE_TARGET}"
+systemctl start refunddesk-retention.timer ||
   die "retention schedule could not be activated"
-systemctl is-enabled --quiet refunddesk-retention.timer &&
-  systemctl is-active --quiet refunddesk-retention.timer ||
-  die "retention schedule activation is unproven"
 if [[ "${BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
-  systemctl enable --now refunddesk-backup.timer ||
+  systemctl start refunddesk-backup.timer ||
     die "valid backup schedule could not be activated"
-  systemctl is-enabled --quiet refunddesk-backup.timer &&
-    systemctl is-active --quiet refunddesk-backup.timer ||
-    die "backup schedule activation is unproven"
 else
-  systemctl disable --now refunddesk-backup.timer ||
-    die "unconfigured backup schedule could not be disabled"
-  ! systemctl is-enabled --quiet refunddesk-backup.timer ||
-    die "unconfigured backup schedule remained enabled"
+  systemctl stop refunddesk-backup.timer ||
+    die "unconfigured backup schedule could not be kept inactive"
+fi
+prove_systemd_unit_state \
+  "${CONTROL_PLANE_TARGET}" \
+  systemd/refunddesk-quiesce-recovery.service \
+  "${QUIESCE_STABLE_UNIT}" \
+  "${QUIESCE_WANTS_PATH}" \
+  present \
+  inactive \
+  enabled
+prove_systemd_unit_state \
+  "${CONTROL_PLANE_TARGET}" \
+  systemd/refunddesk-retention.timer \
+  "${RETENTION_STABLE_UNIT}" \
+  "${RETENTION_WANTS_PATH}" \
+  present \
+  active \
+  enabled
+if [[ "${BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
+  prove_systemd_unit_state \
+    "${CONTROL_PLANE_TARGET}" \
+    systemd/refunddesk-backup.timer \
+    "${BACKUP_STABLE_UNIT}" \
+    "${BACKUP_WANTS_PATH}" \
+    present \
+    active \
+    enabled
+else
+  prove_systemd_unit_state \
+    "${CONTROL_PLANE_TARGET}" \
+    systemd/refunddesk-backup.timer \
+    "${BACKUP_STABLE_UNIT}" \
+    "${BACKUP_WANTS_PATH}" \
+    absent \
+    inactive \
+    linked
 fi
 if ! python3 "${TRANSITION_HELPER}" complete \
   --path "${TRANSITION_JOURNAL_FILE}" \

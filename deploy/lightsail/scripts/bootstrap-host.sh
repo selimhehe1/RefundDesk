@@ -336,6 +336,145 @@ atomic_bootstrap_install() {
   cmp --silent "${source_path}" "${target_path}" ||
     die "bootstrap control-plane bytes differ after activation: ${target_path}"
 }
+
+bootstrap_systemd_unit_property() {
+  local property="$1"
+  local unit="$2"
+  local value
+
+  value="$(systemctl show "${unit}" --property="${property}" --value)" ||
+    die "systemd property ${property} is unavailable for ${unit}"
+  [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] ||
+    die "systemd property ${property} has an invalid shape for ${unit}"
+  printf '%s\n' "${value}"
+}
+
+bootstrap_ensure_systemd_wants_directory() {
+  local wants_directory="$1"
+  local directory_mode directory_parent
+  local created=false
+
+  directory_parent="$(dirname -- "${wants_directory}")"
+  assert_safe_directory "${directory_parent}"
+  if [[ ! -e "${wants_directory}" && ! -L "${wants_directory}" ]]; then
+    install -d -o root -g root -m 0755 -- "${wants_directory}"
+    created=true
+    python3 "${BOOTSTRAP_DURABILITY_HELPER}" fsync-directory \
+      --path "${wants_directory}" >/dev/null &&
+      python3 "${BOOTSTRAP_DURABILITY_HELPER}" fsync-directory \
+        --path "${directory_parent}" >/dev/null ||
+      die "new systemd wants directory could not be synchronized"
+  fi
+
+  assert_safe_directory "${wants_directory}"
+  directory_mode="$(stat --format='%a' -- "${wants_directory}")"
+  [[ "$(stat --format='%u:%g' -- "${wants_directory}")" == "0:0" &&
+    "${directory_mode}" =~ ^[0-7]{3,4}$ ]] ||
+    die "systemd wants directory ownership or mode is invalid: ${wants_directory}"
+  (( (8#${directory_mode} & 8#022) == 0 )) ||
+    die "systemd wants directory is writable outside root: ${wants_directory}"
+  if [[ "${created}" == "true" ]]; then
+    [[ "${directory_mode}" == "755" ]] ||
+      die "new systemd wants directory does not have mode 0755: ${wants_directory}"
+  fi
+}
+
+bootstrap_sync_systemd_wants() {
+  local stable_unit="$1"
+  local wants_path="$2"
+  local desired_state="$3"
+  local active_unit relative_path stable_target
+  local -a stable_target_arguments=()
+
+  if [[ -L "${stable_unit}" ]]; then
+    relative_path="systemd/${stable_unit##*/}"
+    stable_target="${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+    assert_root_control_symlink "${stable_unit}" "${stable_target}"
+    active_unit="$(readlink --canonicalize-existing -- "${stable_unit}")" ||
+      die "stable systemd unit cannot be resolved: ${stable_unit}"
+    stable_target_arguments=(--stable-target "${stable_target}")
+  else
+    assert_root_control_file "${stable_unit}"
+    active_unit="$(readlink --canonicalize-existing -- "${stable_unit}")" ||
+      die "bootstrap systemd unit cannot be resolved: ${stable_unit}"
+    [[ "${active_unit}" == "${stable_unit}" ]] ||
+      die "bootstrap systemd unit path is not canonical: ${stable_unit}"
+  fi
+
+  python3 "${BOOTSTRAP_DURABILITY_HELPER}" sync-systemd-wants \
+    --wants "${wants_path}" \
+    --stable-unit "${stable_unit}" \
+    --active-unit "${active_unit}" \
+    "${stable_target_arguments[@]}" \
+    --control-root "${REFUNDDESK_ROOT}" \
+    --state "${desired_state}" >/dev/null ||
+    die "bootstrap systemd wants synchronization failed: ${wants_path}"
+  if [[ "${desired_state}" == "present" ]]; then
+    [[ -L "${wants_path}" &&
+      "$(stat --format='%u' -- "${wants_path}")" == "0" &&
+      "$(readlink -- "${wants_path}")" == "${stable_unit}" &&
+      "$(readlink --canonicalize-existing -- "${wants_path}")" == \
+      "${active_unit}" ]] ||
+      die "bootstrap systemd wants activation is unproven: ${wants_path}"
+  else
+    [[ ! -e "${wants_path}" && ! -L "${wants_path}" ]] ||
+      die "bootstrap systemd wants removal is unproven: ${wants_path}"
+    [[ -e "${stable_unit}" || -L "${stable_unit}" ]] ||
+      die "stable unit was removed with its wants entry: ${stable_unit}"
+  fi
+}
+
+bootstrap_prove_systemd_fragment() {
+  local stable_unit="$1"
+  local relative_path
+  local unit="${stable_unit##*/}"
+
+  if [[ -L "${stable_unit}" ]]; then
+    relative_path="systemd/${unit}"
+    assert_root_control_symlink \
+      "${stable_unit}" \
+      "${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+  else
+    assert_root_control_file "${stable_unit}"
+  fi
+  [[ "$(stat --dereference --format='%u:%g:%a' -- "${stable_unit}")" == \
+    "0:0:644" ]] ||
+    die "systemd fragment ownership or mode differs: ${unit}"
+  [[ "$(bootstrap_systemd_unit_property FragmentPath "${unit}")" == \
+    "${stable_unit}" ]] ||
+    die "systemd loaded an unexpected fragment path for ${unit}"
+  [[ "$(bootstrap_systemd_unit_property NeedDaemonReload "${unit}")" == "no" ]] ||
+    die "systemd still requires a daemon reload for ${unit}"
+}
+
+bootstrap_prove_systemd_unit_state() {
+  local stable_unit="$1"
+  local wants_path="$2"
+  local wants_state="$3"
+  local expected_active_state="$4"
+  local expected_unit_file_state="$5"
+  local unit="${stable_unit##*/}"
+
+  bootstrap_prove_systemd_fragment "${stable_unit}"
+  if [[ "${wants_state}" == "present" ]]; then
+    [[ -L "${wants_path}" &&
+      "$(stat --format='%u' -- "${wants_path}")" == "0" &&
+      "$(readlink -- "${wants_path}")" == "${stable_unit}" &&
+      "$(readlink --canonicalize-existing -- "${wants_path}")" == \
+      "$(readlink --canonicalize-existing -- "${stable_unit}")" ]] ||
+      die "active systemd wants mapping is unproven: ${wants_path}"
+  else
+    [[ ! -e "${wants_path}" && ! -L "${wants_path}" ]] ||
+      die "inactive systemd wants mapping remained: ${wants_path}"
+  fi
+  [[ "$(bootstrap_systemd_unit_property ActiveState "${unit}")" == \
+    "${expected_active_state}" ]] ||
+    die "systemd active state differs for ${unit}"
+  [[ "$(bootstrap_systemd_unit_property UnitFileState "${unit}")" == \
+    "${expected_unit_file_state}" ]] ||
+    die "systemd unit-file state differs for ${unit}"
+}
+
 atomic_bootstrap_install \
   "${SCRIPT_DIR}/release-launcher.sh" /usr/local/sbin/refunddesk-release 0755
 atomic_bootstrap_install \
@@ -449,32 +588,87 @@ if [[ "${INSTALL_UNITS}" == "true" ]]; then
     atomic_bootstrap_install \
       "${SYSTEMD_SOURCE}/refunddesk-quiesce-recovery.service" \
       /etc/systemd/system/refunddesk-quiesce-recovery.service 0644
-    systemctl daemon-reload
-    systemctl enable refunddesk-quiesce-recovery.service
-    systemctl is-enabled --quiet refunddesk-quiesce-recovery.service ||
-      die "runtime-quiescence boot recovery is not enabled"
-    systemctl enable --now refunddesk-retention.timer
-    systemctl is-enabled --quiet refunddesk-retention.timer &&
-      systemctl is-active --quiet refunddesk-retention.timer ||
-      die "retention schedule activation is unproven"
+
+    BOOTSTRAP_QUIESCE_UNIT=/etc/systemd/system/refunddesk-quiesce-recovery.service
+    BOOTSTRAP_QUIESCE_WANTS=/etc/systemd/system/multi-user.target.wants/refunddesk-quiesce-recovery.service
+    BOOTSTRAP_RETENTION_UNIT=/etc/systemd/system/refunddesk-retention.timer
+    BOOTSTRAP_RETENTION_WANTS=/etc/systemd/system/timers.target.wants/refunddesk-retention.timer
+    BOOTSTRAP_BACKUP_UNIT=/etc/systemd/system/refunddesk-backup.timer
+    BOOTSTRAP_BACKUP_WANTS=/etc/systemd/system/timers.target.wants/refunddesk-backup.timer
+    bootstrap_ensure_systemd_wants_directory \
+      /etc/systemd/system/multi-user.target.wants
+    bootstrap_ensure_systemd_wants_directory \
+      /etc/systemd/system/timers.target.wants
     BOOTSTRAP_BACKUP_ENVIRONMENT="${REFUNDDESK_CONFIG_ROOT}/backup.env"
     BOOTSTRAP_BACKUP_AWS_CONFIG="${REFUNDDESK_CONFIG_ROOT}/aws/config"
+    BOOTSTRAP_BACKUP_CONFIGURATION_VALID=false
     if [[ -e "${BOOTSTRAP_BACKUP_ENVIRONMENT}" ||
       -L "${BOOTSTRAP_BACKUP_ENVIRONMENT}" ]]; then
       python3 "${BOOTSTRAP_DURABILITY_HELPER}" validate-backup \
         --environment "${BOOTSTRAP_BACKUP_ENVIRONMENT}" \
         --aws-config "${BOOTSTRAP_BACKUP_AWS_CONFIG}" >/dev/null ||
         die "backup scheduling configuration is invalid"
-      systemctl enable --now refunddesk-backup.timer
-      systemctl is-enabled --quiet refunddesk-backup.timer &&
-        systemctl is-active --quiet refunddesk-backup.timer ||
-        die "backup schedule activation is unproven"
+      BOOTSTRAP_BACKUP_CONFIGURATION_VALID=true
+    fi
+
+    bootstrap_sync_systemd_wants \
+      "${BOOTSTRAP_QUIESCE_UNIT}" "${BOOTSTRAP_QUIESCE_WANTS}" present
+    bootstrap_sync_systemd_wants \
+      "${BOOTSTRAP_RETENTION_UNIT}" "${BOOTSTRAP_RETENTION_WANTS}" present
+    if [[ "${BOOTSTRAP_BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
+      bootstrap_sync_systemd_wants \
+        "${BOOTSTRAP_BACKUP_UNIT}" "${BOOTSTRAP_BACKUP_WANTS}" present
+    else
+      BOOTSTRAP_BACKUP_LOAD_STATE="$(
+        systemctl show refunddesk-backup.timer --property=LoadState --value 2>/dev/null ||
+          true
+      )"
+      if [[ -n "${BOOTSTRAP_BACKUP_LOAD_STATE}" &&
+        "${BOOTSTRAP_BACKUP_LOAD_STATE}" != "not-found" ]]; then
+        systemctl stop refunddesk-backup.timer ||
+          die "loaded unconfigured backup schedule could not be stopped"
+      fi
+      bootstrap_sync_systemd_wants \
+        "${BOOTSTRAP_BACKUP_UNIT}" "${BOOTSTRAP_BACKUP_WANTS}" absent
+    fi
+
+    systemctl daemon-reload
+    bootstrap_prove_systemd_fragment \
+      /etc/systemd/system/refunddesk-backup.service
+    bootstrap_prove_systemd_fragment \
+      /etc/systemd/system/refunddesk-retention.service
+    systemctl start refunddesk-retention.timer
+    if [[ "${BOOTSTRAP_BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
+      systemctl start refunddesk-backup.timer
+    else
+      systemctl stop refunddesk-backup.timer
+    fi
+
+    bootstrap_prove_systemd_unit_state \
+      "${BOOTSTRAP_QUIESCE_UNIT}" \
+      "${BOOTSTRAP_QUIESCE_WANTS}" \
+      present inactive enabled
+    bootstrap_prove_systemd_unit_state \
+      "${BOOTSTRAP_RETENTION_UNIT}" \
+      "${BOOTSTRAP_RETENTION_WANTS}" \
+      present active enabled
+    if [[ "${BOOTSTRAP_BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
+      bootstrap_prove_systemd_unit_state \
+        "${BOOTSTRAP_BACKUP_UNIT}" \
+        "${BOOTSTRAP_BACKUP_WANTS}" \
+        present active enabled
       log "valid backup schedule enabled and active"
     else
-      systemctl disable --now refunddesk-backup.timer
-      ! systemctl is-enabled --quiet refunddesk-backup.timer ||
-        die "unconfigured backup schedule remained enabled"
-      log "backup units installed but disabled until strict backup configuration exists"
+      if [[ -L "${BOOTSTRAP_BACKUP_UNIT}" ]]; then
+        BOOTSTRAP_BACKUP_DISABLED_STATE=linked
+      else
+        BOOTSTRAP_BACKUP_DISABLED_STATE=disabled
+      fi
+      bootstrap_prove_systemd_unit_state \
+        "${BOOTSTRAP_BACKUP_UNIT}" \
+        "${BOOTSTRAP_BACKUP_WANTS}" \
+        absent inactive "${BOOTSTRAP_BACKUP_DISABLED_STATE}"
+      log "backup units installed but inactive until strict backup configuration exists"
     fi
     log "retention timer and runtime-quiescence boot recovery enabled"
   fi
