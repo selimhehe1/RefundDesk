@@ -206,7 +206,10 @@ def durable_replace(source: Path, target: Path, mode: int) -> None:
     assert_root_control_directory(target.parent)
     assert_root_control_path(source)
     try:
-        if os.name != "nt":
+        # Production launchers run this helper as root and normalize both
+        # ownership fields. Contract tests exercise the same durability path
+        # unprivileged, where the precondition already binds the source to euid.
+        if os.name != "nt" and os.geteuid() == 0:
             os.chown(source, 0, 0)
         os.chmod(source, mode)
         fsync_regular_file(source)

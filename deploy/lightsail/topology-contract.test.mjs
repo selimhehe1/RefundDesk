@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -836,6 +836,12 @@ test("transition journal blocks divergence after a simulated kill before commit"
     );
     assert.equal(committed.status, 0, committed.stderr);
     await assert.rejects(readFile(journal), { code: "ENOENT" });
+    const committedMetadata = await lstat(commitMarker);
+    assert.equal(committedMetadata.isFile(), true);
+    if (process.platform !== "win32") {
+      assert.equal(committedMetadata.uid, process.geteuid());
+      assert.equal(committedMetadata.mode & 0o777, 0o600);
+    }
     const committedState = JSON.parse(await readFile(commitMarker, "utf8"));
     assert.equal(committedState.status, "committed");
     assert.equal(committedState.to.revision, revisionB);
