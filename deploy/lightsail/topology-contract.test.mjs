@@ -30,6 +30,97 @@ function environmentNames(source) {
   );
 }
 
+function shellFunction(source, name) {
+  const normalized = source.replaceAll("\r\n", "\n");
+  const start = normalized.indexOf(`${name}() {`);
+  assert.notEqual(start, -1, `missing ${name}`);
+  const end = normalized.indexOf("\n}\n", start);
+  assert.notEqual(end, -1, `unterminated ${name}`);
+  return normalized.slice(start, end + 2);
+}
+
+test("release recovery parses Docker running state as a strict boolean", async () => {
+  const common = await read("scripts/_common.sh");
+  const fence = await read("scripts/release-fence.sh");
+  const release = await read("scripts/release.sh");
+  const rootMount = await read("scripts/prepare-postgres-root-mount.sh");
+  const helper = shellFunction(common, "docker_running_state_from_inspection");
+
+  assert.equal(shellFunction(fence, "docker_running_state_from_inspection"), helper);
+  assert.match(
+    helper,
+    /jq --exit-status --raw-output --slurp[\s\S]*if length == 1[\s\S]*and \(\.\[0\] \| type\) == "array"[\s\S]*and \(\.\[0\] \| length\) == 1[\s\S]*and \(\.\[0\]\[0\]\.State\.Running \| type\) == "boolean"[\s\S]*then \(\.\[0\]\[0\]\.State\.Running \| tostring\)[\s\S]*else error\("invalid Docker running state"\)/u,
+  );
+  assert.equal(
+    (common.match(/docker_running_state_from_inspection "\$\{inspection\}"/gu) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (release.match(/docker_running_state_from_inspection "\$\{inspection\}"/gu) ?? []).length,
+    1,
+  );
+  assert.equal(
+    (fence.match(/docker_running_state_from_inspection "\$\{inspection\}"/gu) ?? []).length,
+    2,
+  );
+  assert.equal(
+    (
+      rootMount.match(
+        /docker_running_state_from_inspection "\$\{(?:inspection|postgres_inspection)\}"/gu,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.doesNotMatch(
+    [common, fence, release, rootMount].join("\n"),
+    /jq --(?:exit-status --)?raw-output '\.\[0\]\.State\.Running'/u,
+  );
+});
+
+test("Docker running-state filter accepts false and rejects malformed inspections", async (t) => {
+  const common = await read("scripts/_common.sh");
+  const helper = shellFunction(common, "docker_running_state_from_inspection");
+  const filterMatch = helper.match(
+    /jq --exit-status --raw-output --slurp '([\s\S]*?)' <<<"\$\{inspection\}"/u,
+  );
+  assert.ok(filterMatch);
+
+  const version = spawnSync("jq", ["--version"], { encoding: "utf8" });
+  if (version.error?.code === "ENOENT") {
+    t.skip("jq is unavailable on this host; CI executes this functional contract");
+    return;
+  }
+  assert.equal(version.status, 0, version.stderr);
+
+  for (const running of [false, true]) {
+    const result = spawnSync("jq", ["--exit-status", "--raw-output", "--slurp", filterMatch[1]], {
+      encoding: "utf8",
+      input: JSON.stringify([{ State: { Running: running } }]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), String(running));
+  }
+
+  for (const input of [
+    "[]",
+    "{}",
+    "null",
+    "{",
+    JSON.stringify([{ State: {} }]),
+    JSON.stringify([{ State: { Running: "false" } }]),
+    JSON.stringify([{ State: { Running: false } }, { State: { Running: true } }]),
+    `${JSON.stringify([{ State: { Running: false } }])}\n${JSON.stringify([
+      { State: { Running: true } },
+    ])}`,
+  ]) {
+    const result = spawnSync("jq", ["--exit-status", "--raw-output", "--slurp", filterMatch[1]], {
+      encoding: "utf8",
+      input,
+    });
+    assert.notEqual(result.status, 0);
+  }
+});
+
 test("runtime topology publishes only the public Caddy ports", async () => {
   const compose = await read("compose.yml");
   assert.match(compose, /^name: refunddesk$/mu);

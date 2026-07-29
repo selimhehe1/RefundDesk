@@ -781,7 +781,7 @@ fence_target_candidates() {
         die "candidate ${service} restart policy could not be fenced"
       inspection="$(docker inspect "${container_id}")" ||
         die "candidate ${service} state could not be inspected before fencing"
-      running="$(jq --exit-status --raw-output '.[0].State.Running' <<<"${inspection}")" ||
+      running="$(docker_running_state_from_inspection "${inspection}")" ||
         die "candidate ${service} running state is invalid"
       if [[ "${running}" == "true" ]]; then
         docker stop --time 45 "${container_id}" >/dev/null ||

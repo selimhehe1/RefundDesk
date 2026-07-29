@@ -37,6 +37,20 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command is unavailable: $1"
 }
 
+docker_running_state_from_inspection() {
+  local inspection="$1"
+
+  jq --exit-status --raw-output --slurp '
+    if length == 1
+      and (.[0] | type) == "array"
+      and (.[0] | length) == 1
+      and (.[0][0].State.Running | type) == "boolean"
+    then (.[0][0].State.Running | tostring)
+    else error("invalid Docker running state")
+    end
+  ' <<<"${inspection}"
+}
+
 assert_regular_file() {
   local path="$1"
   [[ -f "${path}" && ! -L "${path}" ]] || die "expected a regular non-symlink file: ${path}"
@@ -447,7 +461,8 @@ recover_retention_database_owner_job() {
         and all(.[0].Mounts[]?; .Type == "bind")
       ' <<<"${inspection}" >/dev/null ||
       die "retention recovery refuses an unexpected maintenance container"
-    running="$(jq --raw-output '.[0].State.Running' <<<"${inspection}")"
+    running="$(docker_running_state_from_inspection "${inspection}")" ||
+      die "retention recovery job running state is invalid"
     if [[ "${running}" == "true" ]]; then
       docker stop --time 35 "${container_id}" >/dev/null ||
         die "active retention maintenance job could not be stopped"

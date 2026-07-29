@@ -235,7 +235,7 @@ recover_stale_helper_container() {
       die "deterministic PostgreSQL volume-check name is occupied outside the recovery contract"
     VOLUME_CHECK_OWNED=true
   fi
-  running="$(jq --exit-status --raw-output '.[0].State.Running' <<<"${inspection}")" ||
+  running="$(docker_running_state_from_inspection "${inspection}")" ||
     die "stale PostgreSQL helper state cannot be read"
   if [[ "${running}" == "true" ]]; then
     docker stop --time 60 "${container_name}" >/dev/null ||
@@ -364,7 +364,9 @@ resolved_pgdata="$(readlink --canonicalize-existing -- "${REFUNDDESK_POSTGRES_HO
   die "host PostgreSQL data directory is not canonical"
 
 if [[ -n "${postgres_container}" ]]; then
-  if [[ "$(jq --raw-output '.[0].State.Running' <<<"${postgres_inspection}")" == "true" ]]; then
+  postgres_running="$(docker_running_state_from_inspection "${postgres_inspection}")" ||
+    die "existing PostgreSQL container running state is invalid"
+  if [[ "${postgres_running}" == "true" ]]; then
     docker stop --time 60 "${postgres_container}" >/dev/null ||
       die "existing PostgreSQL container did not stop cleanly"
   fi

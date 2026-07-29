@@ -33,6 +33,20 @@ die() {
   exit 1
 }
 
+docker_running_state_from_inspection() {
+  local inspection="$1"
+
+  jq --exit-status --raw-output --slurp '
+    if length == 1
+      and (.[0] | type) == "array"
+      and (.[0] | length) == 1
+      and (.[0][0].State.Running | type) == "boolean"
+    then (.[0][0].State.Running | tostring)
+    else error("invalid Docker running state")
+    end
+  ' <<<"${inspection}"
+}
+
 control_file_is_root_owned() {
   local path="$1"
   local mode owner
@@ -301,7 +315,7 @@ fence_candidates_once() {
         all_fenced=false
         continue
       }
-      running="$(jq --exit-status --raw-output '.[0].State.Running' <<<"${inspection}")" || {
+      running="$(docker_running_state_from_inspection "${inspection}")" || {
         all_fenced=false
         continue
       }
@@ -378,7 +392,7 @@ enforce_runtime_admission_once() {
             | .[0].Config.Labels["com.refunddesk.revision"] // "unversioned"
           ' <<<"${inspection}"
       )" || return 1
-      observed_running="$(jq --exit-status --raw-output '.[0].State.Running' <<<"${inspection}")" ||
+      observed_running="$(docker_running_state_from_inspection "${inspection}")" ||
         return 1
       docker update --restart=no "${container_id}" >/dev/null 2>&1 || return 1
       if [[ "${admitted}" != "true" || "${observed_revision}" != "${REVISION}" ]]; then
