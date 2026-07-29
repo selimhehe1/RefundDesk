@@ -411,10 +411,9 @@ candidate_admission_is_valid() {
 enforce_runtime_admission_snapshot() {
   local admitted="$1"
   local snapshot="$2"
-  local churn_variable="$3"
   local absence_status container_id inspection observed_restart_policy
   local observed_revision observed_running service
-  local -n churn_ref="${churn_variable}"
+  local churn=false
 
   while IFS=: read -r service container_id; do
     [[ -n "${service}" && -n "${container_id}" ]] || continue
@@ -423,7 +422,7 @@ enforce_runtime_admission_snapshot() {
 
     if ! inspection="$(docker inspect "${container_id}" 2>/dev/null)"; then
       if container_id_is_proven_absent "${container_id}"; then
-        churn_ref=true
+        churn=true
         continue
       fi
       return 1
@@ -460,7 +459,7 @@ enforce_runtime_admission_snapshot() {
     if [[ "${observed_restart_policy}" != "no" ]] &&
       ! docker update --restart=no "${container_id}" >/dev/null 2>&1; then
       if container_id_is_proven_absent "${container_id}"; then
-        churn_ref=true
+        churn=true
         continue
       fi
       return 1
@@ -472,13 +471,13 @@ enforce_runtime_admission_snapshot() {
         absence_status=0
         container_id_is_proven_absent "${container_id}" || absence_status=$?
         if (( absence_status == 0 )); then
-          churn_ref=true
+          churn=true
           continue
         fi
         (( absence_status == 1 )) || return 1
         if ! docker kill "${container_id}" >/dev/null 2>&1; then
           if container_id_is_proven_absent "${container_id}"; then
-            churn_ref=true
+            churn=true
             continue
           fi
           return 1
@@ -486,17 +485,19 @@ enforce_runtime_admission_snapshot() {
       fi
       if ! container_is_fenced "${container_id}" "${service}"; then
         if container_id_is_proven_absent "${container_id}"; then
-          churn_ref=true
+          churn=true
           continue
         fi
         return 1
       fi
     fi
   done <<<"${snapshot}"
+
+  [[ "${churn}" == "false" ]] || return 2
 }
 
 enforce_runtime_admission_once() {
-  local admitted attempt before_snapshot after_snapshot churn
+  local admitted attempt before_snapshot after_snapshot snapshot_status
 
   for (( attempt = 1; attempt <= RUNTIME_ADMISSION_MAX_ATTEMPTS; attempt++ )); do
     admitted=false
@@ -506,13 +507,16 @@ enforce_runtime_admission_once() {
     fi
 
     before_snapshot="$(runtime_candidate_snapshot)" || return 1
-    churn=false
-    enforce_runtime_admission_snapshot \
-      "${admitted}" "${before_snapshot}" churn ||
+    snapshot_status=0
+    enforce_runtime_admission_snapshot "${admitted}" "${before_snapshot}" ||
+      snapshot_status=$?
+    if (( snapshot_status != 0 && snapshot_status != 2 )); then
       return 1
+    fi
     after_snapshot="$(runtime_candidate_snapshot)" || return 1
 
-    if [[ "${churn}" == "false" && "${before_snapshot}" == "${after_snapshot}" ]]; then
+    if (( snapshot_status == 0 )) &&
+      [[ "${before_snapshot}" == "${after_snapshot}" ]]; then
       return 0
     fi
     if (( attempt < RUNTIME_ADMISSION_MAX_ATTEMPTS )); then

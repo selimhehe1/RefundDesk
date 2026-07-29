@@ -191,6 +191,17 @@ test("release fence tolerates only proven Compose recreation churn", async (t) =
   ]
     .map((name) => shellFunction(fence, name))
     .join("\n\n");
+  const admissionSnapshot = shellFunction(fence, "enforce_runtime_admission_snapshot");
+  const admissionLoop = shellFunction(fence, "enforce_runtime_admission_once");
+  assert.doesNotMatch(admissionSnapshot, /local -n/u);
+  assert.match(
+    admissionSnapshot,
+    /local churn=false[\s\S]*\[\[ "\$\{churn\}" == "false" \]\] \|\| return 2/u,
+  );
+  assert.match(
+    admissionLoop,
+    /snapshot_status=0[\s\S]*snapshot_status=\$\?[\s\S]*snapshot_status != 0 && snapshot_status != 2/u,
+  );
   const fakeDockerSource = [
     "#!/usr/bin/env bash",
     "set -Eeuo pipefail",
