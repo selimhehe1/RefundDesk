@@ -323,7 +323,7 @@ done
 
 refunddesk_compose exec \
   --env "REFUNDDESK_EXPECTED_REVISION=${EXPECTED_REVISION}" \
-  --no-TTY web node -e '
+  --no-TTY web node --input-type=module -e '
     const { createHmac } = await import("node:crypto");
     const timestamp = Math.floor(Date.now() / 1000);
     const eventId = `evt_RefundDeskReleaseProbe${timestamp}`;
@@ -389,14 +389,14 @@ viewer_options_status="$(
 [[ "${viewer_options_status}" == "${local_options_status}" ]] ||
   die "CloudFront did not relay OPTIONS to the Caddy origin"
 
-refunddesk_compose exec --no-TTY web node -e '
+refunddesk_compose exec --no-TTY web node --input-type=module -e '
   const response = await fetch("http://127.0.0.1:3000/api/ready", {
     signal: AbortSignal.timeout(5000),
   });
   if (!response.ok) process.exit(1);
 '
 
-refunddesk_compose exec --no-TTY worker node -e '
+refunddesk_compose exec --no-TTY worker node --input-type=module -e '
   const check = async (path) => {
     const response = await fetch(`http://127.0.0.1:3101${path}`, {
       signal: AbortSignal.timeout(5000),
@@ -407,7 +407,7 @@ refunddesk_compose exec --no-TTY worker node -e '
   await check("/ready");
 '
 
-refunddesk_compose exec --no-TTY web node -e '
+refunddesk_compose exec --no-TTY web node --input-type=module -e '
   const response = await fetch(process.env.REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL, {
     method: "POST",
     headers: {"content-type": "application/json"},
@@ -471,7 +471,7 @@ if "${GRACEFUL_STOP_TEST}"; then
     wait_for_container_health "${service}" 180 ||
       die "${service} did not recover after graceful-stop verification"
   done
-  refunddesk_compose exec --no-TTY web node -e '
+  refunddesk_compose exec --no-TTY web node --input-type=module -e '
     const response = await fetch("http://127.0.0.1:3000/api/ready", {
       signal: AbortSignal.timeout(5000),
     });

@@ -753,6 +753,32 @@ test("deployment verification normalizes HTTP CRLF before exact header checks", 
   );
 });
 
+test("deployment verification compiles every await-based Node eval as an ES module", async () => {
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+  const inlineEvalPattern =
+    /\bnode (?<options>(?:--[a-z-]+(?:=[a-z]+)?\s+)*)-e '\n(?<source>[\s\S]*?)\n\s*'/gu;
+  const awaitProbes = [...verifyDeployment.matchAll(inlineEvalPattern)].filter(({ groups }) =>
+    /\bawait\b/u.test(groups.source),
+  );
+
+  assert.equal(awaitProbes.length, 5, "all five await-based deployment probes must be covered");
+  for (const { groups } of awaitProbes) {
+    const options = groups.options.trim().split(/\s+/u).filter(Boolean);
+    assert.ok(
+      options.includes("--input-type=module"),
+      "top-level await requires Node's module eval mode",
+    );
+    const syntaxCheck = spawnSync(
+      process.execPath,
+      [...options, "--eval", `if (false) {\n${groups.source}\n}`],
+      {
+        encoding: "utf8",
+      },
+    );
+    assert.equal(syntaxCheck.status, 0, syntaxCheck.stderr);
+  }
+});
+
 test("environment examples preserve authority separation and disable live", async () => {
   const [
     compose,
