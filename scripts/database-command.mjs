@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
 
-import { loadMigrationConfig } from "../packages/config/src/index.ts";
-
 import { assertDatabaseMutationAllowed } from "./database-command-policy.mjs";
 import {
   assertRuntimePrincipalsAreSeparated,
@@ -110,6 +108,7 @@ async function checkAccess() {
 }
 
 async function prepareRelease() {
+  const { loadMigrationConfig } = await import("../packages/config/dist/index.js");
   const config = loadMigrationConfig(process.env);
   if (config.nodeEnv !== "production") {
     throw new Error("PRODUCTION_MIGRATION_CONFIGURATION_REQUIRED");

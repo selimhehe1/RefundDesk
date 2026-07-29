@@ -1,8 +1,11 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = new URL("../../../", import.meta.url);
+const repositoryRootPath = fileURLToPath(repositoryRoot);
 
 async function readRepositoryFile(path: string): Promise<string> {
   return readFile(new URL(path, repositoryRoot), "utf8");
@@ -17,6 +20,21 @@ function environmentValue(source: string, name: string): string {
 }
 
 describe("local PostgreSQL tooling", () => {
+  it("starts pre-build database commands without importing the TypeScript config graph", () => {
+    const result = spawnSync(process.execPath, ["scripts/database-command.mjs", "unknown"], {
+      cwd: repositoryRootPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_ENV: "production",
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('"code":"UNKNOWN_DATABASE_COMMAND"');
+    expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+  });
+
   it("binds PostgreSQL to loopback and initializes unprivileged login roles", async () => {
     const [compose, bootstrap] = await Promise.all([
       readRepositoryFile("docker-compose.yml"),
@@ -74,6 +92,10 @@ describe("local PostgreSQL tooling", () => {
     );
     expect(orchestrator).toMatch(
       /checkDatabaseTargets\("preflight"\)[\s\S]+migratePrisma\("deploy"\)/u,
+    );
+    expect(orchestrator).not.toContain("../packages/config/src/index.ts");
+    expect(orchestrator).toMatch(
+      /async function prepareRelease\(\) \{\s+const \{ loadMigrationConfig \} = await import\("\.\.\/packages\/config\/dist\/index\.js"\);/u,
     );
     expect(targetCheck).toContain("readPostflightQueueBaseIdentity");
     expect(targetCheck).not.toContain('readPostflightRuntimeIdentity("queue"');
