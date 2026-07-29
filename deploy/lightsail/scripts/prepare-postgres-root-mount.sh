@@ -140,6 +140,56 @@ volume_inventory() {
   docker volume ls --quiet | LC_ALL=C sort
 }
 
+assert_legacy_volume_identity() {
+  local volume_name="$1"
+  local inspection
+
+  inspection="$(docker volume inspect "${volume_name}")" ||
+    die "legacy PostgreSQL parent volume cannot be inspected"
+  jq --exit-status --arg name "${volume_name}" '
+    length == 1
+    and .[0].Name == $name
+    and .[0].Driver == "local"
+    and .[0].Scope == "local"
+  ' <<<"${inspection}" >/dev/null ||
+    die "legacy PostgreSQL parent volume identity is outside the local migration contract"
+}
+
+assert_legacy_volume_empty() {
+  local volume_name="$1"
+  local volume_check_id
+
+  volume_check_id="$(
+    docker create \
+      --pull=never \
+      --name "${VOLUME_CHECK_CONTAINER}" \
+      --label com.refunddesk.postgres-root-mount-helper=true \
+      --label "com.refunddesk.postgres-root-mount-project=${REFUNDDESK_COMPOSE_PROJECT}" \
+      --label com.refunddesk.postgres-root-mount-role=volume-check \
+      --network none \
+      --read-only \
+      --cap-drop ALL \
+      --security-opt no-new-privileges:true \
+      --pids-limit 16 \
+      --memory 32m \
+      --tmpfs /var/lib/postgresql:rw,nosuid,nodev,noexec,size=65536 \
+      --mount "type=volume,source=${volume_name},target=/mnt/legacy,readonly" \
+      --entrypoint /bin/sh \
+      "${postgres_image_id}" \
+      -ec 'result=/var/lib/postgresql/legacy-entries
+find /mnt/legacy -xdev -mindepth 1 ! -type d -print -quit >"${result}"
+test ! -s "${result}"'
+  )" || die "legacy PostgreSQL parent volume inspection could not be created"
+  [[ -n "${volume_check_id}" ]] ||
+    die "Docker returned no legacy volume inspection container ID"
+  VOLUME_CHECK_OWNED=true
+  docker start --attach "${VOLUME_CHECK_CONTAINER}" >/dev/null ||
+    die "legacy PostgreSQL parent volume contains data and requires human recovery"
+  docker rm "${VOLUME_CHECK_CONTAINER}" >/dev/null ||
+    die "legacy PostgreSQL parent volume inspection container could not be removed"
+  VOLUME_CHECK_OWNED=false
+}
+
 recover_stale_helper_container() {
   local container_name="$1"
   local role="$2"
@@ -207,7 +257,10 @@ recover_stale_helper_container() {
         and (.[0].Config.User // "") == ""
         and .[0].Config.Entrypoint == ["/bin/sh"]
         and .[0].Config.Cmd
-          == ["-ec", "test -z \"$(find /mnt/legacy -xdev -mindepth 1 ! -type d -print -quit)\""]
+          == [
+            "-ec",
+            "result=/var/lib/postgresql/legacy-entries\nfind /mnt/legacy -xdev -mindepth 1 ! -type d -print -quit >\"${result}\"\ntest ! -s \"${result}\""
+          ]
         and .[0].HostConfig.NetworkMode == "none"
         and .[0].HostConfig.RestartPolicy.Name == "no"
         and .[0].HostConfig.ReadonlyRootfs == true
@@ -227,9 +280,7 @@ recover_stale_helper_container() {
             and .RW == false
             and (.Name | test("^[0-9a-f]{64}$"))
           )] | length == 1)
-        and ([.[0].Mounts[] |
-          select(.Type == "tmpfs" and .Destination == "/var/lib/postgresql")] | length == 1)
-        and (.[0].Mounts | length) == 2
+        and (.[0].Mounts | length) == 1
         and all(.[0].Mounts[]?; .Type != "bind")
       ' <<<"${inspection}" >/dev/null ||
       die "deterministic PostgreSQL volume-check name is occupied outside the recovery contract"
@@ -344,14 +395,17 @@ if (( ${#postgres_ids[@]} == 1 )); then
       and ([.[0].Mounts[] | select(.Type == "volume")] | length <= 1)
     ' <<<"${postgres_inspection}" >/dev/null ||
     die "existing PostgreSQL container matches neither the old nor new storage contract"
-  mapfile -t old_volume_names < <(
+  old_volume_names_output="$(
     jq --raw-output \
       --arg target "${REFUNDDESK_POSTGRES_CONTAINER_PGDATA}" '
         .[0].Mounts[]
         | select(.Type == "volume" and .Destination == $target)
         | .Name
       ' <<<"${postgres_inspection}"
-  )
+  )" || die "legacy PostgreSQL parent volume names cannot be extracted"
+  if [[ -n "${old_volume_names_output}" ]]; then
+    mapfile -t old_volume_names <<<"${old_volume_names_output}"
+  fi
 fi
 
 if [[ ! -e "${REFUNDDESK_POSTGRES_HOST_PGDATA}/PG_VERSION" ]]; then
@@ -393,48 +447,30 @@ fi
   die "host PGDATA retains postmaster.pid after the clean stop"
 [[ "$(stat --format='%u:%g:%a' -- "${resolved_pgdata}")" == "999:999:700" ]] ||
   die "host PGDATA must remain UID:GID 999:999 mode 0700"
-if find "${resolved_pgdata}" -xdev \( \
-  -type l -o -type b -o -type c -o -type p -o -type s \
-  \) -print -quit | grep --quiet .; then
+special_entry="$(
+  find "${resolved_pgdata}" -xdev \( \
+    -type l -o -type b -o -type c -o -type p -o -type s \
+    \) -print -quit
+)" || die "host PGDATA special-file inventory failed"
+[[ -z "${special_entry}" ]] ||
   die "host PGDATA contains a link or special file"
-fi
 
 for old_volume_name in "${old_volume_names[@]}"; do
+  volume_users_output=""
   [[ "${old_volume_name}" =~ ^[0-9a-f]{64}$ ]] ||
     die "legacy PostgreSQL parent volume name is not an anonymous Docker ID"
-  mapfile -t volume_users < <(
+  assert_legacy_volume_identity "${old_volume_name}"
+  volume_users_output="$(
     docker container ls --all --quiet --filter "volume=${old_volume_name}"
-  )
+  )" || die "legacy PostgreSQL parent volume references cannot be enumerated"
+  volume_users=()
+  if [[ -n "${volume_users_output}" ]]; then
+    mapfile -t volume_users <<<"${volume_users_output}"
+  fi
   (( ${#volume_users[@]} == 1 )) &&
     [[ "${volume_users[0]}" == "${postgres_container}" ]] ||
     die "legacy PostgreSQL parent volume is referenced outside its exact container"
-  volume_check_id="$(
-    docker create \
-      --pull=never \
-      --name "${VOLUME_CHECK_CONTAINER}" \
-      --label com.refunddesk.postgres-root-mount-helper=true \
-      --label "com.refunddesk.postgres-root-mount-project=${REFUNDDESK_COMPOSE_PROJECT}" \
-      --label com.refunddesk.postgres-root-mount-role=volume-check \
-      --network none \
-      --read-only \
-      --cap-drop ALL \
-      --security-opt no-new-privileges:true \
-      --pids-limit 16 \
-      --memory 32m \
-      --tmpfs /var/lib/postgresql:rw,nosuid,nodev,noexec,size=65536 \
-      --mount "type=volume,source=${old_volume_name},target=/mnt/legacy,readonly" \
-      --entrypoint /bin/sh \
-      "${postgres_image_id}" \
-      -ec 'test -z "$(find /mnt/legacy -xdev -mindepth 1 ! -type d -print -quit)"'
-  )" || die "legacy PostgreSQL parent volume inspection could not be created"
-  [[ -n "${volume_check_id}" ]] ||
-    die "Docker returned no legacy volume inspection container ID"
-  VOLUME_CHECK_OWNED=true
-  docker start --attach "${VOLUME_CHECK_CONTAINER}" >/dev/null ||
-    die "legacy PostgreSQL parent volume contains data and requires human recovery"
-  docker rm "${VOLUME_CHECK_CONTAINER}" >/dev/null ||
-    die "legacy PostgreSQL parent volume inspection container could not be removed"
-  VOLUME_CHECK_OWNED=false
+  assert_legacy_volume_empty "${old_volume_name}"
 done
 
 install -d -o root -g root -m 0700 "${WORK_DIRECTORY}"
@@ -607,8 +643,34 @@ if [[ -n "${postgres_container}" ]]; then
     die "old PostgreSQL container could not be removed with its anonymous volumes"
 fi
 for old_volume_name in "${old_volume_names[@]}"; do
-  if docker volume inspect "${old_volume_name}" >/dev/null 2>&1; then
-    die "legacy PostgreSQL anonymous parent volume survived exact container removal"
+  volumes_after_container_removal="$(volume_inventory)" ||
+    die "Docker volume inventory failed after old PostgreSQL container removal"
+  if grep --fixed-strings --line-regexp --quiet \
+    "${old_volume_name}" <<<"${volumes_after_container_removal}"; then
+    assert_legacy_volume_identity "${old_volume_name}"
+    volume_users_output="$(
+      docker container ls --all --quiet --filter "volume=${old_volume_name}"
+    )" || die "surviving legacy PostgreSQL parent volume references cannot be enumerated"
+    volume_users=()
+    if [[ -n "${volume_users_output}" ]]; then
+      mapfile -t volume_users <<<"${volume_users_output}"
+    fi
+    (( ${#volume_users[@]} == 0 )) ||
+      die "legacy PostgreSQL anonymous parent volume remained referenced after container removal"
+    assert_legacy_volume_empty "${old_volume_name}"
+    volume_users_output="$(
+      docker container ls --all --quiet --filter "volume=${old_volume_name}"
+    )" || die "legacy PostgreSQL parent volume references cannot be rechecked"
+    [[ -z "${volume_users_output}" ]] ||
+      die "legacy PostgreSQL anonymous parent volume gained a reference during final inspection"
+    docker volume rm "${old_volume_name}" >/dev/null ||
+      die "unreferenced legacy PostgreSQL anonymous parent volume could not be removed explicitly"
+    volumes_after_explicit_removal="$(volume_inventory)" ||
+      die "Docker volume inventory failed after explicit parent-volume removal"
+    if grep --fixed-strings --line-regexp --quiet \
+      "${old_volume_name}" <<<"${volumes_after_explicit_removal}"; then
+      die "legacy PostgreSQL anonymous parent volume survived explicit removal"
+    fi
   fi
 done
 

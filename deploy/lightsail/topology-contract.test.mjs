@@ -332,6 +332,22 @@ test("TLS names and ingress deny rules are explicit", async () => {
   );
 });
 
+test("deployment verification normalizes HTTP CRLF before exact header checks", async () => {
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+
+  assert.match(verifyDeployment, /normalize_http_headers\(\) \{\s+tr --delete '\\r'\s+\}/u);
+  assert.equal(
+    (verifyDeployment.match(/\|\s+normalize_http_headers/gu) ?? []).length,
+    2,
+    "both local-origin and CloudFront header blocks must be normalized",
+  );
+  assert.doesNotMatch(
+    verifyDeployment,
+    /\\r\?\$/u,
+    "GNU grep ERE does not interpret \\r as a carriage return",
+  );
+});
+
 test("environment examples preserve authority separation and disable live", async () => {
   const [
     compose,
@@ -1533,6 +1549,10 @@ test("PostgreSQL 18 root-mount migration proves a cold clone before deleting the
     "to_regclass('public._prisma_migrations') IS NOT NULL",
     "--entrypoint /usr/lib/postgresql/18/bin/pg_checksums",
     "docker rm --volumes",
+    'docker volume rm "${old_volume_name}"',
+    "assert_legacy_volume_identity",
+    "assert_legacy_volume_empty",
+    "result=/var/lib/postgresql/legacy-entries",
     "legacy PostgreSQL anonymous parent volume survived",
     "cold PostgreSQL root-mount probe leaked a Docker volume",
   ]) {
@@ -1552,8 +1572,21 @@ test("PostgreSQL 18 root-mount migration proves a cold clone before deleting the
   assert.match(migrationTest, /select\(\.Type == "volume"/u);
   assert.match(migrationTest, /all\(\.\[0\]\.Mounts\[\]\?; \.Type != "volume"\)/u);
   assert.match(migrationTest, /BASELINE_VOLUMES/u);
+  assert.match(migrationTest, /REUSED_PARENT_VOLUME/u);
+  assert.match(migrationTest, /unreadable/u);
+  assert.match(
+    migrationTest,
+    /type=volume,source=\$\{REUSED_PARENT_VOLUME\},target=\/var\/lib\/postgresql/u,
+  );
   assert.match(migrationTest, /interrupted-clone/u);
   assert.match(migration, /recover_stale_helper_container/u);
+  assert.doesNotMatch(migration, /test -z "\$\(find \/mnt\/legacy/u);
+  const finalEmptyProof = migration.lastIndexOf('assert_legacy_volume_empty "${old_volume_name}"');
+  const explicitVolumeRemoval = migration.indexOf(
+    'docker volume rm "${old_volume_name}"',
+    finalEmptyProof,
+  );
+  assert.ok(finalEmptyProof >= 0 && explicitVolumeRemoval > finalEmptyProof);
   assert.match(
     migration,
     /source_fingerprint="\$\(tree_fingerprint "\$\{resolved_pgdata\}"\)" \|\|\s+die "source PostgreSQL tree fingerprint could not be computed"/u,

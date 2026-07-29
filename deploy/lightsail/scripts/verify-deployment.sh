@@ -41,6 +41,7 @@ require_command docker
 require_command jq
 require_command readlink
 require_command ss
+require_command tr
 
 TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
 VERIFY_CONTRACT="${REFUNDDESK_VERIFY_CONTRACT:-standalone}"
@@ -180,6 +181,10 @@ curl_public_viewer() {
     "$@"
 }
 
+normalize_http_headers() {
+  tr --delete '\r'
+}
+
 refunddesk_compose config --quiet
 
 for service in postgres verifier worker web caddy; do
@@ -242,13 +247,14 @@ local_health_headers="$(
     --fail --silent --show-error \
     --dump-header - --output /dev/null \
     --connect-timeout 5 --max-time 15 \
-    "${CADDY_ORIGIN}/api/health"
+    "${CADDY_ORIGIN}/api/health" |
+    normalize_http_headers
 )" || die "local origin health headers are unavailable"
 grep -Eiq \
-  "^x-refunddesk-revision:[[:space:]]*${EXPECTED_REVISION}\r?$" \
+  "^x-refunddesk-revision:[[:space:]]*${EXPECTED_REVISION}$" \
   <<<"${local_health_headers}" ||
   die "local Caddy origin does not identify the exact verified revision"
-grep -Eiq '^cache-control:[[:space:]]*no-store\r?$' <<<"${local_health_headers}" ||
+grep -Eiq '^cache-control:[[:space:]]*no-store$' <<<"${local_health_headers}" ||
   die "local Caddy origin does not disable response storage"
 
 public_ready_status="$(
@@ -300,17 +306,18 @@ for viewer_probe in 1 2; do
       --fail --silent --show-error \
       --dump-header - --output /dev/null \
       --connect-timeout 5 --max-time 20 \
-      "${PUBLIC_ORIGIN}/api/health?revision=${EXPECTED_REVISION}&probe=release-${viewer_probe}"
+      "${PUBLIC_ORIGIN}/api/health?revision=${EXPECTED_REVISION}&probe=release-${viewer_probe}" |
+      normalize_http_headers
   )" || die "CloudFront viewer health request failed"
   grep -Eiq '^x-amz-cf-id:' <<<"${viewer_health_headers}" ||
     die "public health response did not traverse CloudFront"
   grep -Eiq \
-    "^x-refunddesk-revision:[[:space:]]*${EXPECTED_REVISION}\r?$" \
+    "^x-refunddesk-revision:[[:space:]]*${EXPECTED_REVISION}$" \
     <<<"${viewer_health_headers}" ||
     die "CloudFront viewer is not bound to the exact verified revision"
-  grep -Eiq '^cache-control:[[:space:]]*no-store\r?$' <<<"${viewer_health_headers}" ||
+  grep -Eiq '^cache-control:[[:space:]]*no-store$' <<<"${viewer_health_headers}" ||
     die "CloudFront viewer omitted the no-store response contract"
-  grep -Eiq '^x-cache:[[:space:]]*Miss from cloudfront\r?$' <<<"${viewer_health_headers}" ||
+  grep -Eiq '^x-cache:[[:space:]]*Miss from cloudfront$' <<<"${viewer_health_headers}" ||
     die "CloudFront viewer returned a cache state outside the disabled-cache contract"
 done
 

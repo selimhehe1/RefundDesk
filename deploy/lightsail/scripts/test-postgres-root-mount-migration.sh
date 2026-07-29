@@ -26,6 +26,7 @@ readonly NEW_CONTAINER="refunddesk-ci-postgres-root"
 TEST_ROOT=""
 BASELINE_VOLUMES=""
 BASELINE_CAPTURED=false
+REUSED_PARENT_VOLUME=""
 
 project_container_ids() {
   docker container ls --all --quiet \
@@ -61,9 +62,29 @@ safe_remove_test_root() {
 
 finish() {
   local status=$?
+  local ids_output
+  local -a volume_users
 
   trap - EXIT
   remove_project_containers || status=1
+  if [[ -n "${REUSED_PARENT_VOLUME}" ]] &&
+    docker volume inspect "${REUSED_PARENT_VOLUME}" >/dev/null 2>&1; then
+    ids_output="$(
+      docker container ls --all --quiet --filter "volume=${REUSED_PARENT_VOLUME}"
+    )" || {
+      ids_output=""
+      status=1
+    }
+    volume_users=()
+    if [[ -n "${ids_output}" ]]; then
+      mapfile -t volume_users <<<"${ids_output}"
+    fi
+    if (( ${#volume_users[@]} == 0 )); then
+      docker volume rm "${REUSED_PARENT_VOLUME}" >/dev/null 2>&1 || status=1
+    else
+      status=1
+    fi
+  fi
   safe_remove_test_root || status=1
   if [[ "${BASELINE_CAPTURED}" == "true" &&
     "$(docker volume ls --quiet | LC_ALL=C sort)" != "${BASELINE_VOLUMES}" ]]; then
@@ -72,6 +93,22 @@ finish() {
   exit "${status}"
 }
 trap finish EXIT
+
+run_root_mount_migration() {
+  env \
+    REFUNDDESK_ROOT="${GITHUB_WORKSPACE}" \
+    REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
+    REFUNDDESK_COMPOSE_FILE="${GITHUB_WORKSPACE}/deploy/lightsail/compose.yml" \
+    REFUNDDESK_COMPOSE_PROJECT="${PROJECT}" \
+    REFUNDDESK_POSTGRES_HOST_PGDATA="${HOST_PGDATA}" \
+    REFUNDDESK_POSTGRES_MIGRATION_PARENT="${MIGRATION_PARENT}" \
+    REFUNDDESK_POSTGRES_ROOT_MIGRATION_CONTRACT=ci-v2 \
+    CI=true \
+    GITHUB_ACTIONS=true \
+    GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+    RUNNER_TEMP="${RUNNER_TEMP}" \
+    bash "${GITHUB_WORKSPACE}/deploy/lightsail/scripts/prepare-postgres-root-mount.sh"
+}
 
 remove_project_containers
 BASELINE_VOLUMES="$(docker volume ls --quiet | LC_ALL=C sort)"
@@ -133,6 +170,70 @@ jq --exit-status \
     and ([.[0].Mounts[] |
       select(.Type == "volume" and .Destination == "/var/lib/postgresql")] | length == 1)
   ' <<<"${old_inspection}" >/dev/null
+REUSED_PARENT_VOLUME="$(
+  jq --exit-status --raw-output '
+    [.[0].Mounts[] |
+      select(.Type == "volume" and .Destination == "/var/lib/postgresql")]
+    | select(length == 1)
+    | .[0].Name
+    | select(test("^[0-9a-f]{64}$"))
+  ' <<<"${old_inspection}"
+)"
+[[ "${REUSED_PARENT_VOLUME}" =~ ^[0-9a-f]{64}$ ]] || exit 1
+
+# Recreate the legacy container with the formerly anonymous parent volume as
+# an explicit source. Compose does this when it carries the mount forward,
+# causing Docker to treat the volume as named and skip it during `rm -v`.
+docker stop --time 60 "${OLD_CONTAINER}" >/dev/null
+docker rm "${OLD_CONTAINER}" >/dev/null
+docker run \
+  --detach \
+  --pull never \
+  --name "${OLD_CONTAINER}" \
+  --label "com.docker.compose.project=${PROJECT}" \
+  --label "com.docker.compose.service=postgres" \
+  --network none \
+  --restart=no \
+  --pids-limit 128 \
+  --memory 256m \
+  --env POSTGRES_DB=refunddesk \
+  --env POSTGRES_USER=refunddesk_owner \
+  --env POSTGRES_PASSWORD=ci_root_mount_password \
+  --env POSTGRES_INITDB_ARGS=--data-checksums \
+  --env PGDATA=/var/lib/postgresql/data \
+  --mount "type=volume,source=${REUSED_PARENT_VOLUME},target=/var/lib/postgresql" \
+  --mount "type=bind,source=${HOST_PGDATA},target=/var/lib/postgresql/data" \
+  "${POSTGRES_IMAGE}" >/dev/null
+
+recreated_ready=false
+for _ in {1..60}; do
+  if docker exec "${OLD_CONTAINER}" \
+    pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk; then
+    recreated_ready=true
+    break
+  fi
+  [[ "$(docker inspect --format='{{.State.Running}}' "${OLD_CONTAINER}")" == "true" ]] ||
+    exit 1
+  sleep 1
+done
+[[ "${recreated_ready}" == "true" ]] || exit 1
+recreated_inspection="$(docker inspect "${OLD_CONTAINER}")"
+jq --exit-status \
+  --arg source "${HOST_PGDATA}" \
+  --arg volume "${REUSED_PARENT_VOLUME}" '
+    ([.[0].Mounts[] |
+      select(
+        .Type == "bind"
+        and .Source == $source
+        and .Destination == "/var/lib/postgresql/data"
+      )] | length == 1)
+    and ([.[0].Mounts[] |
+      select(
+        .Type == "volume"
+        and .Name == $volume
+        and .Destination == "/var/lib/postgresql"
+      )] | length == 1)
+  ' <<<"${recreated_inspection}" >/dev/null
 
 install -d -o root -g root -m 0700 "${MIGRATION_PARENT}/check"
 install -d -o 999 -g 999 -m 0700 "${MIGRATION_PARENT}/check/pgdata"
@@ -148,19 +249,7 @@ docker create \
   --entrypoint /bin/true \
   "${POSTGRES_IMAGE}" >/dev/null
 
-if env \
-  REFUNDDESK_ROOT="${GITHUB_WORKSPACE}" \
-  REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
-  REFUNDDESK_COMPOSE_FILE="${GITHUB_WORKSPACE}/deploy/lightsail/compose.yml" \
-  REFUNDDESK_COMPOSE_PROJECT="${PROJECT}" \
-  REFUNDDESK_POSTGRES_HOST_PGDATA="${HOST_PGDATA}" \
-  REFUNDDESK_POSTGRES_MIGRATION_PARENT="${MIGRATION_PARENT}" \
-  REFUNDDESK_POSTGRES_ROOT_MIGRATION_CONTRACT=ci-v2 \
-  CI=true \
-  GITHUB_ACTIONS=true \
-  GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
-  RUNNER_TEMP="${RUNNER_TEMP}" \
-  bash "${GITHUB_WORKSPACE}/deploy/lightsail/scripts/prepare-postgres-root-mount.sh"; then
+if run_root_mount_migration; then
   exit 1
 fi
 docker container inspect "${PROJECT}-postgres-root-probe" >/dev/null
@@ -192,19 +281,53 @@ docker create \
   -c "ssl=off" \
   -c "logging_collector=off" >/dev/null
 
-env \
-  REFUNDDESK_ROOT="${GITHUB_WORKSPACE}" \
-  REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
-  REFUNDDESK_COMPOSE_FILE="${GITHUB_WORKSPACE}/deploy/lightsail/compose.yml" \
-  REFUNDDESK_COMPOSE_PROJECT="${PROJECT}" \
-  REFUNDDESK_POSTGRES_HOST_PGDATA="${HOST_PGDATA}" \
-  REFUNDDESK_POSTGRES_MIGRATION_PARENT="${MIGRATION_PARENT}" \
-  REFUNDDESK_POSTGRES_ROOT_MIGRATION_CONTRACT=ci-v2 \
-  CI=true \
-  GITHUB_ACTIONS=true \
-  GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
-  RUNNER_TEMP="${RUNNER_TEMP}" \
-  bash "${GITHUB_WORKSPACE}/deploy/lightsail/scripts/prepare-postgres-root-mount.sh"
+docker run \
+  --rm \
+  --pull never \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 16 \
+  --memory 32m \
+  --tmpfs /var/lib/postgresql:rw,nosuid,nodev,noexec,size=65536 \
+  --mount "type=volume,source=${REUSED_PARENT_VOLUME},target=/mnt/legacy" \
+  --entrypoint /bin/sh \
+  "${POSTGRES_IMAGE}" \
+  -ec 'mkdir /mnt/legacy/unreadable
+chmod 000 /mnt/legacy/unreadable'
+
+if run_root_mount_migration; then
+  exit 1
+fi
+docker container inspect "${OLD_CONTAINER}" >/dev/null
+[[ "$(docker inspect --format='{{.State.Running}}' "${OLD_CONTAINER}")" == "false" ]] ||
+  exit 1
+docker volume inspect "${REUSED_PARENT_VOLUME}" >/dev/null
+[[ ! -e "${MIGRATION_PARENT}/check" && ! -L "${MIGRATION_PARENT}/check" ]] ||
+  exit 1
+! docker container inspect "${PROJECT}-postgres-root-probe" >/dev/null 2>&1 ||
+  exit 1
+! docker container inspect "${PROJECT}-postgres-volume-check" >/dev/null 2>&1 ||
+  exit 1
+
+docker run \
+  --rm \
+  --pull never \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --pids-limit 16 \
+  --memory 32m \
+  --tmpfs /var/lib/postgresql:rw,nosuid,nodev,noexec,size=65536 \
+  --mount "type=volume,source=${REUSED_PARENT_VOLUME},target=/mnt/legacy" \
+  --entrypoint /bin/sh \
+  "${POSTGRES_IMAGE}" \
+  -ec 'chmod 700 /mnt/legacy/unreadable
+rmdir /mnt/legacy/unreadable'
+
+run_root_mount_migration
 
 [[ -f "${HOST_PGDATA}/PG_VERSION" && "$(<"${HOST_PGDATA}/PG_VERSION")" == "18" ]] ||
   exit 1
