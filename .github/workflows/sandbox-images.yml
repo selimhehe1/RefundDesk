@@ -157,10 +157,11 @@ jobs:
               .[0].Config.Healthcheck.Timeout == 10000000000 and
               .[0].Config.Healthcheck.StartPeriod == 20000000000 and
               .[0].Config.Healthcheck.Retries == 3 and
-              .[0].Config.Healthcheck.Test[0:2] == ["CMD", "node"] and
-              (.[0].Config.Healthcheck.Test[2] | contains("127.0.0.1:")) and
-              (.[0].Config.Healthcheck.Test[2] | contains("/api/health")) and
-              (.[0].Config.Healthcheck.Test[2] | contains("/api/ready") | not)
+              (.[0].Config.Healthcheck.Test | length) == 4 and
+              .[0].Config.Healthcheck.Test[0:3] == ["CMD", "node", "-e"] and
+              (.[0].Config.Healthcheck.Test[3] | contains("127.0.0.1:")) and
+              (.[0].Config.Healthcheck.Test[3] | contains("/api/health")) and
+              (.[0].Config.Healthcheck.Test[3] | contains("/api/ready") | not)
             ' >/dev/null
           docker image inspect "$WORKER_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3101/tcp"]' >/dev/null
