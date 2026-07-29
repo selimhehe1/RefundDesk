@@ -1273,7 +1273,7 @@ export REFUNDDESK_RUNTIME_RESTART_POLICY=no
 
 refunddesk_compose config --quiet
 assert_release_fence_armed
-refunddesk_compose create --no-deps --no-build --pull never verifier worker web caddy
+refunddesk_compose up --no-start --no-deps --no-build --pull never verifier worker web caddy
 prove_candidate_created_contract
 
 log "proving the PostgreSQL 18 root-mount storage contract"

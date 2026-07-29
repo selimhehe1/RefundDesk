@@ -495,7 +495,7 @@ test("release promotion requires revision-bound application key rotation history
   const release = await read("scripts/release.sh");
   const transitionCheck = release.indexOf("check-key-rotation-transition.js");
   const candidateCreation = release.indexOf(
-    "refunddesk_compose create --no-deps --no-build --pull never verifier worker web caddy",
+    "refunddesk_compose up --no-start --no-deps --no-build --pull never verifier worker web caddy",
   );
   const effectWorkerStart = release.indexOf("refunddesk_compose start worker web verifier");
   const deploymentVerification = release.indexOf(
