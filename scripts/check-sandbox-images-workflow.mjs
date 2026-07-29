@@ -76,6 +76,40 @@ if (
   throw new Error("SANDBOX_IMAGE_NONROOT_CHECK_MISSING");
 }
 
+const workerInspectPrefix = 'docker image inspect "$WORKER_IMAGE" |';
+const workerInspectBlocks = workflow
+  .split(workerInspectPrefix)
+  .slice(1)
+  .map((suffix) => {
+    const terminator = suffix.indexOf(">/dev/null");
+    return terminator === -1 ? null : suffix.slice(0, terminator);
+  })
+  .filter((block) => block !== null);
+const workerHealthContract = workerInspectBlocks.find((block) =>
+  block.includes(".Config.Healthcheck"),
+);
+const expectedWorkerHealthCommand =
+  `expected_worker_health_command="const port=process.env.WORKER_HEALTH_PORT||'3101';` +
+  `const host=(process.env.WORKER_HEALTH_HOST||'127.0.0.1').includes(':')?'[::1]':'127.0.0.1';` +
+  `fetch('http://'+host+':'+port+'/health').then(r=>{if(!r.ok)process.exit(1)})` +
+  `.catch(()=>process.exit(1))"`;
+const requiredWorkerHealthFragments = [
+  '--arg expected_command "$expected_worker_health_command"',
+  ".[0].Config.Healthcheck.Interval == 30000000000",
+  ".[0].Config.Healthcheck.Timeout == 10000000000",
+  ".[0].Config.Healthcheck.StartPeriod == 20000000000",
+  ".[0].Config.Healthcheck.Retries == 3",
+  "(.[0].Config.Healthcheck.Test | length) == 4",
+  '.[0].Config.Healthcheck.Test == ["CMD", "node", "-e", $expected_command]',
+];
+if (
+  !workflow.includes(expectedWorkerHealthCommand) ||
+  workerHealthContract === undefined ||
+  requiredWorkerHealthFragments.some((fragment) => !workerHealthContract.includes(fragment))
+) {
+  throw new Error("SANDBOX_WORKER_HEALTHCHECK_CONTRACT_MISSING");
+}
+
 const prefixEmptyGuard = workflow.indexOf('if [[ "$existing_count" != "0" ]]');
 const partialCleanupTrap = workflow.indexOf("trap cleanup_partial_upload EXIT");
 if (prefixEmptyGuard < 0 || partialCleanupTrap < 0 || partialCleanupTrap < prefixEmptyGuard) {

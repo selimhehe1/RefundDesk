@@ -165,6 +165,16 @@ jobs:
             ' >/dev/null
           docker image inspect "$WORKER_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3101/tcp"]' >/dev/null
+          expected_worker_health_command="const port=process.env.WORKER_HEALTH_PORT||'3101';const host=(process.env.WORKER_HEALTH_HOST||'127.0.0.1').includes(':')?'[::1]':'127.0.0.1';fetch('http://'+host+':'+port+'/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+          docker image inspect "$WORKER_IMAGE" |
+            jq --arg expected_command "$expected_worker_health_command" --exit-status '
+              .[0].Config.Healthcheck.Interval == 30000000000 and
+              .[0].Config.Healthcheck.Timeout == 10000000000 and
+              .[0].Config.Healthcheck.StartPeriod == 20000000000 and
+              .[0].Config.Healthcheck.Retries == 3 and
+              (.[0].Config.Healthcheck.Test | length) == 4 and
+              .[0].Config.Healthcheck.Test == ["CMD", "node", "-e", $expected_command]
+            ' >/dev/null
           docker image inspect "$MIGRATE_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts // {} | length) == 0' >/dev/null
 
