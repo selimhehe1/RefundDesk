@@ -73,6 +73,17 @@ if (
 ) {
   throw new Error("CONTAINER_WEB_LIVENESS_CONTRACT_INVALID");
 }
+const workerStage = dockerStage("worker");
+if (
+  workerStage === undefined ||
+  !workerStage.includes(
+    "HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3",
+  ) ||
+  !workerStage.includes("'/health'") ||
+  workerStage.includes("/ready")
+) {
+  throw new Error("CONTAINER_WORKER_LIVENESS_CONTRACT_INVALID");
+}
 if (!/^FROM web AS default\r?$/mu.test(dockerfile)) {
   throw new Error("CONTAINER_SAFE_DEFAULT_TARGET_MISSING");
 }
