@@ -300,7 +300,7 @@ for viewer_probe in 1 2; do
       --fail --silent --show-error \
       --dump-header - --output /dev/null \
       --connect-timeout 5 --max-time 20 \
-      "${PUBLIC_ORIGIN}/api/health?revision=${EXPECTED_REVISION}&probe=release"
+      "${PUBLIC_ORIGIN}/api/health?revision=${EXPECTED_REVISION}&probe=release-${viewer_probe}"
   )" || die "CloudFront viewer health request failed"
   grep -Eiq '^x-amz-cf-id:' <<<"${viewer_health_headers}" ||
     die "public health response did not traverse CloudFront"

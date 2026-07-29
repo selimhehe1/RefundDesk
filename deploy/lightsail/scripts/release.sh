@@ -57,7 +57,6 @@ RELEASE_FENCE_UNIT=""
 RELEASE_FENCE_READY_FILE=""
 RELEASE_CANDIDATE_ADMISSION_FILE=""
 RELEASE_PROCESS_STARTTIME=""
-RESUMING_TRANSITION=false
 BACKUP_CONFIGURATION_VALID=false
 readonly RELEASE_CONTRACT_VERSION="2"
 readonly STABLE_RELEASE_FENCE="/usr/local/sbin/refunddesk-release-fence"
@@ -493,7 +492,6 @@ fingerprint_active_containers() {
 }
 
 if [[ -e "${TRANSITION_JOURNAL_FILE}" || -L "${TRANSITION_JOURNAL_FILE}" ]]; then
-  RESUMING_TRANSITION=true
   assert_root_secret_file "${TRANSITION_JOURNAL_FILE}"
   python3 "${TRANSITION_HELPER}" prepare \
     --path "${TRANSITION_JOURNAL_FILE}" \
