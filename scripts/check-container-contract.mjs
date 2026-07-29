@@ -64,6 +64,15 @@ for (const [target, parent] of [
     throw new Error("CONTAINER_NONROOT_TARGET_CONTRACT_MISSING");
   }
 }
+const webStage = dockerStage("web");
+if (
+  webStage === undefined ||
+  !webStage.includes("HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3") ||
+  !webStage.includes("'/api/health'") ||
+  webStage.includes("/api/ready")
+) {
+  throw new Error("CONTAINER_WEB_LIVENESS_CONTRACT_INVALID");
+}
 if (!/^FROM web AS default\r?$/mu.test(dockerfile)) {
   throw new Error("CONTAINER_SAFE_DEFAULT_TARGET_MISSING");
 }

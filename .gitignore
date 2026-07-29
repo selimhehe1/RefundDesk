@@ -1,5 +1,6 @@
 node_modules/
 .build/
+.tmp/
 apps/stripe-app/stripe-app.local.json
 .next/
 dist/

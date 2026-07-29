@@ -2,5 +2,6 @@ node_modules
 .next
 dist
 coverage
+.tmp
 pnpm-lock.yaml
 packages/db/prisma/migrations

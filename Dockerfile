@@ -41,7 +41,7 @@ COPY --from=build --chown=node:node \
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/usr/bin/tini", "--"]
-HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
   CMD ["node", "-e", "const port=process.env.PORT||'3000';fetch('http://127.0.0.1:'+port+'/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 CMD ["node", "apps/platform/server.js"]
 

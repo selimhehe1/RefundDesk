@@ -151,6 +151,17 @@ jobs:
           )" = '["node","scripts/database-command.mjs","release-prepare"]'
           docker image inspect "$WEB_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3000/tcp"]' >/dev/null
+          docker image inspect "$WEB_IMAGE" |
+            jq --exit-status '
+              .[0].Config.Healthcheck.Interval == 30000000000 and
+              .[0].Config.Healthcheck.Timeout == 10000000000 and
+              .[0].Config.Healthcheck.StartPeriod == 20000000000 and
+              .[0].Config.Healthcheck.Retries == 3 and
+              .[0].Config.Healthcheck.Test[0:2] == ["CMD", "node"] and
+              (.[0].Config.Healthcheck.Test[2] | contains("127.0.0.1:")) and
+              (.[0].Config.Healthcheck.Test[2] | contains("/api/health")) and
+              (.[0].Config.Healthcheck.Test[2] | contains("/api/ready") | not)
+            ' >/dev/null
           docker image inspect "$WORKER_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts | keys) == ["3101/tcp"]' >/dev/null
           docker image inspect "$MIGRATE_IMAGE" |
@@ -186,6 +197,71 @@ jobs:
           test "$(
             docker run --rm --network none --entrypoint pnpm "$MIGRATE_IMAGE" --version
           )" = "11.17.0"
+
+      - name: Exercise the constrained web liveness contract
+        run: |
+          set -euo pipefail
+          container_name="refunddesk-web-health-${SHORT_REVISION}"
+          cleanup_health_container() {
+            status=$?
+            trap - EXIT
+            docker rm --force "$container_name" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup_health_container EXIT
+
+          docker run \
+            --detach \
+            --name "$container_name" \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --pids-limit 128 \
+            --memory 256m \
+            --cpus 0.75 \
+            --env NODE_OPTIONS=--max-old-space-size=192 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            "$WEB_IMAGE" >/dev/null
+
+          health_status=starting
+          for _ in {1..60}; do
+            health_status="$(
+              docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+                "$container_name"
+            )"
+            running="$(
+              docker inspect --format '{{.State.Running}}' "$container_name"
+            )"
+            [[ "$running" == true ]] || break
+            [[ "$health_status" == healthy ]] && break
+            sleep 2
+          done
+          if [[ "$health_status" != healthy ]]; then
+            docker inspect "$container_name" |
+              jq '.[0] | {
+                running: .State.Running,
+                exitCode: .State.ExitCode,
+                oomKilled: .State.OOMKilled,
+                health: (.State.Health.Status // "missing"),
+                healthLog: [
+                  .State.Health.Log[]? |
+                  {start: .Start, end: .End, exitCode: .ExitCode, output: .Output}
+                ]
+              }'
+            docker logs --tail 50 "$container_name"
+            exit 1
+          fi
+          docker inspect "$container_name" |
+            jq --exit-status '
+              .[0].State.Running == true and
+              .[0].State.OOMKilled == false and
+              .[0].State.Health.Status == "healthy"
+            ' >/dev/null
+
+          docker rm --force "$container_name" >/dev/null
+          trap - EXIT
 
       - name: Create one checksummed image bundle
         run: |
