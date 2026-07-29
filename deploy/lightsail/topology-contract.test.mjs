@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -1140,6 +1140,88 @@ test("stable control-plane files switch through one crash-safe generation pointe
       `missing generation member ${requiredControlPath}`,
     );
   }
+  for (const requiredMode of [
+    "scripts/release-launcher.sh|/usr/local/sbin/refunddesk-release|0755",
+    "scripts/release-fence.sh|/usr/local/sbin/refunddesk-release-fence|0755",
+    "scripts/backup-launcher.sh|/usr/local/sbin/refunddesk-backup|0755",
+    "scripts/retention-launcher.sh|/usr/local/sbin/refunddesk-retention|0755",
+    "scripts/quiesce-recovery-launcher.sh|/usr/local/sbin/refunddesk-quiesce-recovery|0755",
+    "systemd/refunddesk-backup.service|/etc/systemd/system/refunddesk-backup.service|0644",
+    "systemd/refunddesk-backup.timer|/etc/systemd/system/refunddesk-backup.timer|0644",
+    "systemd/refunddesk-retention.service|/etc/systemd/system/refunddesk-retention.service|0644",
+    "systemd/refunddesk-retention.timer|/etc/systemd/system/refunddesk-retention.timer|0644",
+    "systemd/refunddesk-quiesce-recovery.service|/etc/systemd/system/refunddesk-quiesce-recovery.service|0644",
+  ]) {
+    assert.ok(
+      common.includes(`"${requiredMode}"`),
+      `missing exact source mode contract ${requiredMode}`,
+    );
+  }
+  for (const consumer of [installSource, release]) {
+    assert.match(consumer, /refunddesk_control_plane_mappings/u);
+  }
+  const sourceNormalization = installSource.indexOf(
+    'normalize_source_control_plane_modes "${TEMP_SOURCE}"',
+  );
+  const sourceModeProof = installSource.indexOf(
+    'assert_source_control_plane_modes "${TEMP_SOURCE}"',
+    sourceNormalization,
+  );
+  const sourceDurability = installSource.indexOf(
+    'python3 "${TEMP_DURABILITY_HELPER}" fsync-tree',
+    sourceModeProof,
+  );
+  const sourcePublication = installSource.indexOf(
+    'mv --no-target-directory -- "${TEMP_SOURCE}" "${FINAL_SOURCE}"',
+    sourceDurability,
+  );
+  assert.ok(
+    sourceNormalization >= 0 &&
+      sourceModeProof > sourceNormalization &&
+      sourceDurability > sourceModeProof &&
+      sourcePublication > sourceDurability,
+    "source modes must be normalized and proved before durability and publication",
+  );
+  const existingSourceBranch = installSource.indexOf(
+    'if [[ -e "${FINAL_SOURCE}" || -L "${FINAL_SOURCE}" ]]; then',
+  );
+  const existingSourceModeProof = installSource.indexOf(
+    'assert_source_control_plane_modes "${FINAL_SOURCE}"',
+    existingSourceBranch,
+  );
+  const existingSourceHelper = installSource.indexOf(
+    'DURABILITY_HELPER="${FINAL_SOURCE}/deploy/lightsail/scripts/release-transition-journal.py"',
+    existingSourceModeProof,
+  );
+  const existingSourceReturn = installSource.indexOf("\n  exit 0", existingSourceHelper);
+  assert.ok(
+    existingSourceBranch >= 0 &&
+      existingSourceModeProof > existingSourceBranch &&
+      existingSourceHelper > existingSourceModeProof &&
+      existingSourceReturn > existingSourceHelper,
+    "an existing source must be validation-only and mode-proved before executing its helper",
+  );
+  assert.doesNotMatch(
+    installSource.slice(existingSourceBranch, existingSourceReturn),
+    /normalize_source_control_plane_modes/u,
+  );
+  const releaseModeProof = release.indexOf(
+    'die "verified control-plane source ownership or mode differs: ${control_plane_relative}"',
+  );
+  const releasePointerSwitch = release.indexOf(
+    '--target "${REFUNDDESK_CONTROL_PLANE_LINK}"',
+    releaseModeProof,
+  );
+  const activeModeProof = release.indexOf(
+    'die "active control-plane ownership or mode differs: ${installed_control_path}"',
+    releasePointerSwitch,
+  );
+  assert.ok(
+    releaseModeProof >= 0 &&
+      releasePointerSwitch > releaseModeProof &&
+      activeModeProof > releasePointerSwitch,
+    "release must prove exact source modes before and after the control-plane pointer switch",
+  );
   const snapshotSync = installSource.indexOf(
     'python3 "${CONTROL_PLANE_DURABILITY_HELPER}" fsync-tree',
   );
@@ -1254,6 +1336,80 @@ test("backup scheduling activates only after strict configuration validation", a
     const executableConfiguration = runHelper();
     assert.notEqual(executableConfiguration.status, 0);
     assert.match(executableConfiguration.stderr, /RELEASE_TRANSITION_CONTRACT_INVALID/u);
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test("source installation restores executable control-plane modes after restrictive extraction", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows does not preserve POSIX chmod bits; Linux CI executes this contract");
+    return;
+  }
+  const version = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (version.error?.code === "ENOENT" || version.status !== 0) {
+    t.skip("bash is unavailable on this host; CI executes this functional contract");
+    return;
+  }
+
+  const [common, installSource] = await Promise.all([
+    read("scripts/_common.sh"),
+    read("scripts/install-source.sh"),
+  ]);
+  const mappings = shellFunction(common, "refunddesk_control_plane_mappings");
+  const normalize = shellFunction(installSource, "normalize_source_control_plane_modes");
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-source-modes-"));
+  const expectedModes = new Map([
+    ["scripts/release-launcher.sh", 0o755],
+    ["scripts/release-fence.sh", 0o755],
+    ["scripts/backup-launcher.sh", 0o755],
+    ["scripts/retention-launcher.sh", 0o755],
+    ["scripts/quiesce-recovery-launcher.sh", 0o755],
+    ["systemd/refunddesk-backup.service", 0o644],
+    ["systemd/refunddesk-backup.timer", 0o644],
+    ["systemd/refunddesk-retention.service", 0o644],
+    ["systemd/refunddesk-retention.timer", 0o644],
+    ["systemd/refunddesk-quiesce-recovery.service", 0o644],
+  ]);
+
+  try {
+    for (const relativePath of expectedModes.keys()) {
+      const target = join(temporaryDirectory, "deploy", "lightsail", relativePath);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, "fixture\n", { mode: 0o600 });
+    }
+
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `set -Eeuo pipefail
+umask 077
+STABLE_RELEASE_LAUNCHER=/tmp/refunddesk-release
+STABLE_RELEASE_FENCE=/tmp/refunddesk-release-fence
+STABLE_BACKUP_LAUNCHER=/tmp/refunddesk-backup
+STABLE_RETENTION_LAUNCHER=/tmp/refunddesk-retention
+STABLE_RECOVERY_LAUNCHER=/tmp/refunddesk-quiesce-recovery
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+assert_regular_file() { [[ -f "$1" && ! -L "$1" ]] || die "not a regular file: $1"; }
+${mappings}
+${normalize}
+normalize_source_control_plane_modes "$1"`,
+        "bash",
+        temporaryDirectory,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+
+    for (const [relativePath, expectedMode] of expectedModes) {
+      const metadata = await lstat(join(temporaryDirectory, "deploy", "lightsail", relativePath));
+      assert.equal(
+        metadata.mode & 0o777,
+        expectedMode,
+        `${relativePath} did not receive its exact operational mode`,
+      );
+    }
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
@@ -1735,6 +1891,7 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     bootstrapHost,
     installSource,
     release,
+    common,
     purge,
   ] = await Promise.all([
     read("compose.yml"),
@@ -1745,6 +1902,7 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     read("scripts/bootstrap-host.sh"),
     read("scripts/install-source.sh"),
     read("scripts/release.sh"),
+    read("scripts/_common.sh"),
     read("../../packages/db/scripts/retention-purge.mjs"),
   ]);
   const maintenance = serviceBlock(compose, "maintenance");
@@ -1875,9 +2033,11 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
   assert.match(retentionTimer, /^RandomizedDelaySec=5min$/mu);
   assert.match(retentionTimer, /^Persistent=true$/mu);
 
-  for (const source of [bootstrapHost, release]) {
+  for (const source of [bootstrapHost, common]) {
     assert.match(source, /refunddesk-retention\.service/u);
     assert.match(source, /refunddesk-retention\.timer/u);
+  }
+  for (const source of [bootstrapHost, release]) {
     assert.match(source, /systemctl enable --now refunddesk-retention\.timer/u);
   }
   assert.match(installSource, /deploy\/lightsail\/scripts\/run-retention\.sh/u);

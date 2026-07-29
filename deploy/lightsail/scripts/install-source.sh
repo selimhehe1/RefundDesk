@@ -26,6 +26,36 @@ readonly STABLE_RECOVERY_LAUNCHER="/usr/local/sbin/refunddesk-quiesce-recovery"
 readonly TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
 readonly QUIESCE_JOURNAL="${REFUNDDESK_CONTROL_ROOT}/runtime-quiesce-in-progress.json"
 
+normalize_source_control_plane_modes() {
+  local mode relative_path source_root="$1" target_file
+
+  while IFS='|' read -r relative_path _ mode; do
+    target_file="${source_root}/deploy/lightsail/${relative_path}"
+    assert_regular_file "${target_file}"
+    chmod "${mode}" "${target_file}" ||
+      die "source control-plane mode could not be normalized: ${relative_path}"
+  done < <(refunddesk_control_plane_mappings)
+}
+
+assert_source_control_plane_modes() {
+  local mode relative_path source_root="$1" target_file
+
+  while IFS='|' read -r relative_path _ mode; do
+    target_file="${source_root}/deploy/lightsail/${relative_path}"
+    assert_root_control_file "${target_file}"
+    [[ "$(stat --format='%u:%g:%a' -- "${target_file}")" == "0:0:${mode#0}" ]] ||
+      die "source control-plane ownership or mode differs: ${relative_path}"
+    case "${relative_path}" in
+      scripts/*)
+        [[ -x "${target_file}" ]] ||
+          die "source control-plane launcher is not executable: ${relative_path}"
+        bash -n "${target_file}" ||
+          die "source control-plane launcher syntax is invalid: ${relative_path}"
+        ;;
+    esac
+  done < <(refunddesk_control_plane_mappings)
+}
+
 assert_transition_allows_revision() {
   if [[ ! -e "${TRANSITION_JOURNAL}" && ! -L "${TRANSITION_JOURNAL}" ]]; then
     return 0
@@ -76,20 +106,13 @@ install_stable_control_plane() {
   local effective_source expected_link generation_parent legacy_final legacy_staging
   local mapping mode relative_path stable_path target_file
   local -a contract_lines
-  local -a control_plane_mappings=(
-    "scripts/release-launcher.sh|${STABLE_RELEASE_LAUNCHER}|0755"
-    "scripts/release-fence.sh|${STABLE_RELEASE_FENCE}|0755"
-    "scripts/backup-launcher.sh|${STABLE_BACKUP_LAUNCHER}|0755"
-    "scripts/retention-launcher.sh|${STABLE_RETENTION_LAUNCHER}|0755"
-    "scripts/quiesce-recovery-launcher.sh|${STABLE_RECOVERY_LAUNCHER}|0755"
-    "systemd/refunddesk-backup.service|/etc/systemd/system/refunddesk-backup.service|0644"
-    "systemd/refunddesk-backup.timer|/etc/systemd/system/refunddesk-backup.timer|0644"
-    "systemd/refunddesk-retention.service|/etc/systemd/system/refunddesk-retention.service|0644"
-    "systemd/refunddesk-retention.timer|/etc/systemd/system/refunddesk-retention.timer|0644"
-    "systemd/refunddesk-quiesce-recovery.service|/etc/systemd/system/refunddesk-quiesce-recovery.service|0644"
-  )
+  local -a control_plane_mappings
   local requires_legacy_snapshot=false
 
+  mapfile -t control_plane_mappings < <(refunddesk_control_plane_mappings)
+  (( ${#control_plane_mappings[@]} == 10 )) ||
+    die "source control-plane mapping cardinality differs"
+  assert_source_control_plane_modes "${source_root}"
   contract_marker="${source_root}/deploy/lightsail/RELEASE_CONTRACT_VERSION"
   control_plane_source="${source_root}/deploy/lightsail"
   generation_parent="${REFUNDDESK_ROOT}/control-plane-generations"
@@ -303,6 +326,7 @@ if [[ -e "${FINAL_SOURCE}" || -L "${FINAL_SOURCE}" ]]; then
     die "existing source revision marker differs"
   [[ "$(<"${FINAL_SOURCE}/.refunddesk-source-sha256")" == "${EXPECTED_SHA256}" ]] ||
     die "existing source archive marker differs"
+  assert_source_control_plane_modes "${FINAL_SOURCE}"
   DURABILITY_HELPER="${FINAL_SOURCE}/deploy/lightsail/scripts/release-transition-journal.py"
   assert_root_control_file "${DURABILITY_HELPER}"
   python3 "${DURABILITY_HELPER}" fsync-tree --path "${FINAL_SOURCE}" >/dev/null ||
@@ -397,6 +421,8 @@ chmod 0444 \
   "${TEMP_SOURCE}/deploy/lightsail/Caddyfile.public" \
   "${TEMP_SOURCE}/deploy/lightsail/Caddyfile.verifier" \
   "${TEMP_SOURCE}/deploy/lightsail/pg_hba.conf"
+normalize_source_control_plane_modes "${TEMP_SOURCE}"
+assert_source_control_plane_modes "${TEMP_SOURCE}"
 printf '%s\n' "${REVISION}" >"${TEMP_SOURCE}/.refunddesk-revision"
 printf '%s\n' "${EXPECTED_SHA256}" >"${TEMP_SOURCE}/.refunddesk-source-sha256"
 chmod 0600 \

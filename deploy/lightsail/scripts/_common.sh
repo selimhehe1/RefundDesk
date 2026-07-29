@@ -76,6 +76,20 @@ assert_root_secret_file() {
   (( (8#${mode} & 077) == 0 )) || die "secret file must not grant group/world access: ${path}"
 }
 
+refunddesk_control_plane_mappings() {
+  printf '%s\n' \
+    "scripts/release-launcher.sh|/usr/local/sbin/refunddesk-release|0755" \
+    "scripts/release-fence.sh|/usr/local/sbin/refunddesk-release-fence|0755" \
+    "scripts/backup-launcher.sh|/usr/local/sbin/refunddesk-backup|0755" \
+    "scripts/retention-launcher.sh|/usr/local/sbin/refunddesk-retention|0755" \
+    "scripts/quiesce-recovery-launcher.sh|/usr/local/sbin/refunddesk-quiesce-recovery|0755" \
+    "systemd/refunddesk-backup.service|/etc/systemd/system/refunddesk-backup.service|0644" \
+    "systemd/refunddesk-backup.timer|/etc/systemd/system/refunddesk-backup.timer|0644" \
+    "systemd/refunddesk-retention.service|/etc/systemd/system/refunddesk-retention.service|0644" \
+    "systemd/refunddesk-retention.timer|/etc/systemd/system/refunddesk-retention.timer|0644" \
+    "systemd/refunddesk-quiesce-recovery.service|/etc/systemd/system/refunddesk-quiesce-recovery.service|0644"
+}
+
 assert_safe_directory() {
   local path="$1"
   [[ -d "${path}" && ! -L "${path}" ]] || die "expected a non-symlink directory: ${path}"

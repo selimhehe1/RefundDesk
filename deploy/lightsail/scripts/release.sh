@@ -1476,44 +1476,48 @@ ROTATION_STATE_TMP=""
 commit_release_environment
 
 CONTROL_PLANE_TARGET="${SOURCE_ROOT}/deploy/lightsail"
-for control_plane_mapping in \
-  "scripts/release-launcher.sh|/usr/local/sbin/refunddesk-release" \
-  "scripts/release-fence.sh|/usr/local/sbin/refunddesk-release-fence" \
-  "scripts/backup-launcher.sh|/usr/local/sbin/refunddesk-backup" \
-  "scripts/retention-launcher.sh|/usr/local/sbin/refunddesk-retention" \
-  "scripts/quiesce-recovery-launcher.sh|/usr/local/sbin/refunddesk-quiesce-recovery" \
-  "systemd/refunddesk-backup.service|/etc/systemd/system/refunddesk-backup.service" \
-  "systemd/refunddesk-backup.timer|/etc/systemd/system/refunddesk-backup.timer" \
-  "systemd/refunddesk-retention.service|/etc/systemd/system/refunddesk-retention.service" \
-  "systemd/refunddesk-retention.timer|/etc/systemd/system/refunddesk-retention.timer" \
-  "systemd/refunddesk-quiesce-recovery.service|/etc/systemd/system/refunddesk-quiesce-recovery.service"; do
-  control_plane_relative="${control_plane_mapping%%|*}"
+while IFS='|' read -r control_plane_relative _ control_plane_mode; do
   assert_root_control_file "${CONTROL_PLANE_TARGET}/${control_plane_relative}"
-done
+  [[ "$(stat --format='%u:%g:%a' -- \
+    "${CONTROL_PLANE_TARGET}/${control_plane_relative}")" == \
+    "0:0:${control_plane_mode#0}" ]] ||
+    die "verified control-plane source ownership or mode differs: ${control_plane_relative}"
+  case "${control_plane_relative}" in
+    scripts/*)
+      [[ -x "${CONTROL_PLANE_TARGET}/${control_plane_relative}" ]] ||
+        die "verified control-plane launcher is not executable: ${control_plane_relative}"
+      bash -n "${CONTROL_PLANE_TARGET}/${control_plane_relative}" ||
+        die "verified control-plane launcher syntax is invalid: ${control_plane_relative}"
+      ;;
+  esac
+done < <(refunddesk_control_plane_mappings)
 python3 "${TRANSITION_HELPER}" durable-symlink \
   --target "${REFUNDDESK_CONTROL_PLANE_LINK}" \
   --value "${CONTROL_PLANE_TARGET}" >/dev/null ||
   die "verified control-plane generation could not be activated atomically"
-[[ "$(readlink --canonicalize-existing -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == \
+[[ "$(readlink -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == "${CONTROL_PLANE_TARGET}" &&
+  "$(readlink --canonicalize-existing -- "${REFUNDDESK_CONTROL_PLANE_LINK}")" == \
   "${CONTROL_PLANE_TARGET}" ]] ||
   die "active control-plane generation differs from the verified release"
-for control_plane_mapping in \
-  "scripts/release-launcher.sh|/usr/local/sbin/refunddesk-release" \
-  "scripts/release-fence.sh|/usr/local/sbin/refunddesk-release-fence" \
-  "scripts/backup-launcher.sh|/usr/local/sbin/refunddesk-backup" \
-  "scripts/retention-launcher.sh|/usr/local/sbin/refunddesk-retention" \
-  "scripts/quiesce-recovery-launcher.sh|/usr/local/sbin/refunddesk-quiesce-recovery" \
-  "systemd/refunddesk-backup.service|/etc/systemd/system/refunddesk-backup.service" \
-  "systemd/refunddesk-backup.timer|/etc/systemd/system/refunddesk-backup.timer" \
-  "systemd/refunddesk-retention.service|/etc/systemd/system/refunddesk-retention.service" \
-  "systemd/refunddesk-retention.timer|/etc/systemd/system/refunddesk-retention.timer" \
-  "systemd/refunddesk-quiesce-recovery.service|/etc/systemd/system/refunddesk-quiesce-recovery.service"; do
-  control_plane_relative="${control_plane_mapping%%|*}"
-  installed_control_path="${control_plane_mapping#*|}"
+while IFS='|' read -r control_plane_relative installed_control_path control_plane_mode; do
   assert_root_control_symlink \
     "${installed_control_path}" \
     "${REFUNDDESK_CONTROL_PLANE_LINK}/${control_plane_relative}"
-done
+  [[ "$(stat --dereference --format='%u:%g:%a' -- "${installed_control_path}")" == \
+    "0:0:${control_plane_mode#0}" ]] ||
+    die "active control-plane ownership or mode differs: ${installed_control_path}"
+  [[ "$(readlink --canonicalize-existing -- "${installed_control_path}")" == \
+    "${CONTROL_PLANE_TARGET}/${control_plane_relative}" ]] ||
+    die "active control-plane mapping escaped the verified release: ${installed_control_path}"
+  case "${control_plane_relative}" in
+    scripts/*)
+      [[ -x "${installed_control_path}" ]] ||
+        die "active control-plane launcher is not executable: ${installed_control_path}"
+      bash -n "${installed_control_path}" ||
+        die "active control-plane launcher syntax is invalid: ${installed_control_path}"
+      ;;
+  esac
+done < <(refunddesk_control_plane_mappings)
 
 lock_transition_journal ||
   die "release transition coordination lock could not be reacquired for commit"
