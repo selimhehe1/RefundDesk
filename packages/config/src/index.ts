@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+import {
+  APPLICATION_KEY_ROTATION_STATES,
+  applicationKeyMaterialStateIsValid,
+  type ApplicationKeyRotationState,
+  type ApplicationKeyVersion,
+} from "./key-rotation.js";
+
+export {
+  APPLICATION_KEY_ROTATION_STATES,
+  applicationKeyMaterialStateIsValid,
+  assertApplicationKeyRotationTransition,
+  isApplicationKeyRotationState,
+} from "./key-rotation.js";
+export type {
+  ApplicationKeyMaterialState,
+  ApplicationKeyRotationSet,
+  ApplicationKeyRotationState,
+  ApplicationKeyVersion,
+} from "./key-rotation.js";
+
 const nodeEnvironment = z.enum(["development", "test", "production"]).default("development");
 const logLevel = z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info");
 const stripeApiVersion = z.literal("2026-06-24.dahlia");
@@ -35,6 +55,52 @@ const base64Key = z
       return false;
     }
   }, "Expected a base64-encoded 32-byte key");
+const applicationKeyVersion = z.enum(["v1", "v2"]);
+const applicationKeyRotationState = z.enum(APPLICATION_KEY_ROTATION_STATES).default("legacy");
+
+function validateApplicationKeyMaterialState(
+  activeVersion: ApplicationKeyVersion,
+  rotationState: ApplicationKeyRotationState,
+  v1Key: string | undefined,
+  v2Key: string | undefined,
+  stateField: string,
+  context: z.RefinementCtx,
+): void {
+  if (
+    !applicationKeyMaterialStateIsValid({
+      activeVersion,
+      rotationState,
+      v1Present: v1Key !== undefined,
+      v2Present: v2Key !== undefined,
+    })
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: [stateField],
+      message: "Application key material does not match its declared rotation state",
+    });
+  }
+}
+
+function validateDistinctApplicationKeys(
+  keys: readonly (readonly [field: string, value: string | undefined])[],
+  context: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [field, value] of keys) {
+    if (value === undefined) {
+      continue;
+    }
+    if (seen.has(value)) {
+      context.addIssue({
+        code: "custom",
+        path: [field],
+        message: "Application keys must be distinct across families and versions",
+      });
+    }
+    seen.add(value);
+  }
+}
 
 const FORBIDDEN_POSTGRES_QUERY_PARAMETERS = new Set([
   "database",
@@ -285,9 +351,11 @@ const platformEnvironmentSchema = z
     STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: webhookSecret,
     STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: z.literal("disabled").default("disabled"),
     REFUNDDESK_GLOBAL_LIVE_ENABLED: globalLiveEnabled,
-    REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: base64Key,
+    REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: base64Key.optional(),
+    REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: base64Key.optional(),
     REFUNDDESK_EXPORT_SIGNING_KEY_V1: base64Key,
-    REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: z.literal("v1"),
+    REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: applicationKeyVersion,
+    REFUNDDESK_FIELD_KEY_ROTATION_STATE: applicationKeyRotationState,
     REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL: signedRequestVerifierUrl,
     REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: base64Key,
   })
@@ -329,13 +397,22 @@ const platformEnvironmentSchema = z
         message: "Test-mode and managed-sandbox webhook secrets must be distinct",
       });
     }
-    if (value.REFUNDDESK_EXPORT_SIGNING_KEY_V1 === value.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1) {
-      context.addIssue({
-        code: "custom",
-        path: ["REFUNDDESK_EXPORT_SIGNING_KEY_V1"],
-        message: "Audit-export signing keys must be independent",
-      });
-    }
+    validateApplicationKeyMaterialState(
+      value.REFUNDDESK_ACTIVE_FIELD_KEY_VERSION,
+      value.REFUNDDESK_FIELD_KEY_ROTATION_STATE,
+      value.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1,
+      value.REFUNDDESK_FIELD_ENCRYPTION_KEY_V2,
+      "REFUNDDESK_FIELD_KEY_ROTATION_STATE",
+      context,
+    );
+    validateDistinctApplicationKeys(
+      [
+        ["REFUNDDESK_FIELD_ENCRYPTION_KEY_V1", value.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1],
+        ["REFUNDDESK_FIELD_ENCRYPTION_KEY_V2", value.REFUNDDESK_FIELD_ENCRYPTION_KEY_V2],
+        ["REFUNDDESK_EXPORT_SIGNING_KEY_V1", value.REFUNDDESK_EXPORT_SIGNING_KEY_V1],
+      ],
+      context,
+    );
   });
 
 const workerEnvironmentSchema = z
@@ -353,10 +430,14 @@ const workerEnvironmentSchema = z
     STRIPE_PLATFORM_TEST_ACCOUNT_ID: stripeAccountId,
     STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: stripeAccountId,
     REFUNDDESK_GLOBAL_LIVE_ENABLED: globalLiveEnabled,
-    REFUNDDESK_PROOF_HMAC_KEY_V1: base64Key,
-    REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: z.literal("v1"),
-    REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1: base64Key,
-    REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: z.literal("v1"),
+    REFUNDDESK_PROOF_HMAC_KEY_V1: base64Key.optional(),
+    REFUNDDESK_PROOF_HMAC_KEY_V2: base64Key.optional(),
+    REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: applicationKeyVersion,
+    REFUNDDESK_PROOF_KEY_ROTATION_STATE: applicationKeyRotationState,
+    REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1: base64Key.optional(),
+    REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: base64Key.optional(),
+    REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: applicationKeyVersion,
+    REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: applicationKeyRotationState,
     REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: base64Key,
     WORKER_HEALTH_HOST: workerHealthHost,
     WORKER_HEALTH_PORT: workerHealthPort,
@@ -402,13 +483,37 @@ const workerEnvironmentSchema = z
         message: "Test-mode and managed-sandbox account IDs must be distinct",
       });
     }
-    if (value.REFUNDDESK_PROOF_HMAC_KEY_V1 === value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1) {
-      context.addIssue({
-        code: "custom",
-        path: ["REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1"],
-        message: "Approval-attestation and Refund-proof HMAC keys must be independent",
-      });
-    }
+    validateApplicationKeyMaterialState(
+      value.REFUNDDESK_ACTIVE_PROOF_KEY_VERSION,
+      value.REFUNDDESK_PROOF_KEY_ROTATION_STATE,
+      value.REFUNDDESK_PROOF_HMAC_KEY_V1,
+      value.REFUNDDESK_PROOF_HMAC_KEY_V2,
+      "REFUNDDESK_PROOF_KEY_ROTATION_STATE",
+      context,
+    );
+    validateApplicationKeyMaterialState(
+      value.REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION,
+      value.REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE,
+      value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1,
+      value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2,
+      "REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE",
+      context,
+    );
+    validateDistinctApplicationKeys(
+      [
+        ["REFUNDDESK_PROOF_HMAC_KEY_V1", value.REFUNDDESK_PROOF_HMAC_KEY_V1],
+        ["REFUNDDESK_PROOF_HMAC_KEY_V2", value.REFUNDDESK_PROOF_HMAC_KEY_V2],
+        [
+          "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1",
+          value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1,
+        ],
+        [
+          "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2",
+          value.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2,
+        ],
+      ],
+      context,
+    );
   });
 
 const migrationEnvironmentSchema = z
@@ -450,7 +555,6 @@ const migrationEnvironmentSchema = z
 
 export type NodeEnvironment = "development" | "test" | "production";
 export type LogLevel = "fatal" | "error" | "warn" | "info" | "debug" | "trace";
-
 interface RuntimeConfig {
   readonly nodeEnv: NodeEnvironment;
   readonly logLevel: LogLevel;
@@ -474,8 +578,10 @@ export interface PlatformConfig extends RuntimeConfig {
     readonly accountLiveWebhookSecret: "disabled";
   };
   readonly keys: {
-    readonly activeFieldVersion: "v1";
-    readonly fieldV1: Buffer;
+    readonly activeFieldVersion: ApplicationKeyVersion;
+    readonly fieldRotationState: ApplicationKeyRotationState;
+    readonly fieldV1?: Buffer;
+    readonly fieldV2?: Buffer;
     readonly exportV1: Buffer;
   };
 }
@@ -493,10 +599,14 @@ export interface WorkerConfig extends RuntimeConfig {
     readonly managedSandboxEffectKey: string;
   };
   readonly keys: {
-    readonly activeProofVersion: "v1";
-    readonly proofV1: Buffer;
-    readonly activeApprovalAttestationVersion: "v1";
-    readonly approvalAttestationV1: Buffer;
+    readonly activeProofVersion: ApplicationKeyVersion;
+    readonly proofRotationState: ApplicationKeyRotationState;
+    readonly proofV1?: Buffer;
+    readonly proofV2?: Buffer;
+    readonly activeApprovalAttestationVersion: ApplicationKeyVersion;
+    readonly approvalAttestationRotationState: ApplicationKeyRotationState;
+    readonly approvalAttestationV1?: Buffer;
+    readonly approvalAttestationV2?: Buffer;
   };
   readonly health: {
     readonly host: "127.0.0.1" | "0.0.0.0" | "::1" | "::";
@@ -529,7 +639,9 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
     "STRIPE_PLATFORM_TEST_EFFECT_KEY",
     "STRIPE_MANAGED_SANDBOX_EFFECT_KEY",
     "REFUNDDESK_PROOF_HMAC_KEY_V1",
+    "REFUNDDESK_PROOF_HMAC_KEY_V2",
     "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1",
+    "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2",
   ]);
   rejectUnexpectedProductionNamespaceVariables(
     source,
@@ -547,8 +659,10 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
     [
       "REFUNDDESK_GLOBAL_LIVE_ENABLED",
       "REFUNDDESK_FIELD_ENCRYPTION_KEY_V1",
+      "REFUNDDESK_FIELD_ENCRYPTION_KEY_V2",
       "REFUNDDESK_EXPORT_SIGNING_KEY_V1",
       "REFUNDDESK_ACTIVE_FIELD_KEY_VERSION",
+      "REFUNDDESK_FIELD_KEY_ROTATION_STATE",
       "REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL",
       "REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN",
     ],
@@ -581,7 +695,13 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
     },
     keys: {
       activeFieldVersion: env.REFUNDDESK_ACTIVE_FIELD_KEY_VERSION,
-      fieldV1: Buffer.from(env.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1, "base64"),
+      fieldRotationState: env.REFUNDDESK_FIELD_KEY_ROTATION_STATE,
+      ...(env.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1 === undefined
+        ? {}
+        : { fieldV1: Buffer.from(env.REFUNDDESK_FIELD_ENCRYPTION_KEY_V1, "base64") }),
+      ...(env.REFUNDDESK_FIELD_ENCRYPTION_KEY_V2 === undefined
+        ? {}
+        : { fieldV2: Buffer.from(env.REFUNDDESK_FIELD_ENCRYPTION_KEY_V2, "base64") }),
       exportV1: Buffer.from(env.REFUNDDESK_EXPORT_SIGNING_KEY_V1, "base64"),
     },
   };
@@ -601,6 +721,7 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
     "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET",
     "REFUNDDESK_FIELD_ENCRYPTION_KEY_V1",
+    "REFUNDDESK_FIELD_ENCRYPTION_KEY_V2",
     "REFUNDDESK_EXPORT_SIGNING_KEY_V1",
   ]);
   rejectUnexpectedProductionNamespaceVariables(
@@ -616,9 +737,13 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     [
       "REFUNDDESK_GLOBAL_LIVE_ENABLED",
       "REFUNDDESK_PROOF_HMAC_KEY_V1",
+      "REFUNDDESK_PROOF_HMAC_KEY_V2",
       "REFUNDDESK_ACTIVE_PROOF_KEY_VERSION",
+      "REFUNDDESK_PROOF_KEY_ROTATION_STATE",
       "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1",
+      "REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2",
       "REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION",
+      "REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE",
       "REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN",
     ],
   );
@@ -646,9 +771,31 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     },
     keys: {
       activeProofVersion: env.REFUNDDESK_ACTIVE_PROOF_KEY_VERSION,
-      proofV1: Buffer.from(env.REFUNDDESK_PROOF_HMAC_KEY_V1, "base64"),
+      proofRotationState: env.REFUNDDESK_PROOF_KEY_ROTATION_STATE,
+      ...(env.REFUNDDESK_PROOF_HMAC_KEY_V1 === undefined
+        ? {}
+        : { proofV1: Buffer.from(env.REFUNDDESK_PROOF_HMAC_KEY_V1, "base64") }),
+      ...(env.REFUNDDESK_PROOF_HMAC_KEY_V2 === undefined
+        ? {}
+        : { proofV2: Buffer.from(env.REFUNDDESK_PROOF_HMAC_KEY_V2, "base64") }),
       activeApprovalAttestationVersion: env.REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION,
-      approvalAttestationV1: Buffer.from(env.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1, "base64"),
+      approvalAttestationRotationState: env.REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE,
+      ...(env.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1 === undefined
+        ? {}
+        : {
+            approvalAttestationV1: Buffer.from(
+              env.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1,
+              "base64",
+            ),
+          }),
+      ...(env.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2 === undefined
+        ? {}
+        : {
+            approvalAttestationV2: Buffer.from(
+              env.REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2,
+              "base64",
+            ),
+          }),
     },
     health: {
       host: env.WORKER_HEALTH_HOST,
@@ -751,9 +898,12 @@ function validateOptionalCombinedEnvironment(source: NodeJS.ProcessEnv): void {
   assertOptionalValuesAreDistinct(
     [
       source["REFUNDDESK_FIELD_ENCRYPTION_KEY_V1"],
+      source["REFUNDDESK_FIELD_ENCRYPTION_KEY_V2"],
       source["REFUNDDESK_PROOF_HMAC_KEY_V1"],
+      source["REFUNDDESK_PROOF_HMAC_KEY_V2"],
       source["REFUNDDESK_EXPORT_SIGNING_KEY_V1"],
       source["REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1"],
+      source["REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2"],
     ],
     "APPLICATION_KEYS_NOT_SEPARATED",
   );
@@ -815,13 +965,38 @@ export function assertReleaseConfigSeparation(config: ReleaseConfigSet): void {
   ) {
     throw new Error("MIGRATION_RUNTIME_DATABASE_URLS_DIVERGE");
   }
+  if (
+    !applicationKeyMaterialStateIsValid({
+      activeVersion: config.platform.keys.activeFieldVersion,
+      rotationState: config.platform.keys.fieldRotationState,
+      v1Present: config.platform.keys.fieldV1 !== undefined,
+      v2Present: config.platform.keys.fieldV2 !== undefined,
+    }) ||
+    !applicationKeyMaterialStateIsValid({
+      activeVersion: config.worker.keys.activeProofVersion,
+      rotationState: config.worker.keys.proofRotationState,
+      v1Present: config.worker.keys.proofV1 !== undefined,
+      v2Present: config.worker.keys.proofV2 !== undefined,
+    }) ||
+    !applicationKeyMaterialStateIsValid({
+      activeVersion: config.worker.keys.activeApprovalAttestationVersion,
+      rotationState: config.worker.keys.approvalAttestationRotationState,
+      v1Present: config.worker.keys.approvalAttestationV1 !== undefined,
+      v2Present: config.worker.keys.approvalAttestationV2 !== undefined,
+    })
+  ) {
+    throw new Error("APPLICATION_KEY_ROTATION_STATE_INVALID");
+  }
 
   const applicationKeys = [
     config.platform.keys.fieldV1,
+    config.platform.keys.fieldV2,
     config.platform.keys.exportV1,
     config.worker.keys.proofV1,
+    config.worker.keys.proofV2,
     config.worker.keys.approvalAttestationV1,
-  ];
+    config.worker.keys.approvalAttestationV2,
+  ].filter((key): key is Buffer => key !== undefined);
   for (let leftIndex = 0; leftIndex < applicationKeys.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < applicationKeys.length; rightIndex += 1) {
       if (applicationKeys[leftIndex]?.equals(applicationKeys[rightIndex] ?? Buffer.alloc(0))) {

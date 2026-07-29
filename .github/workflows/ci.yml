@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:18.4-bookworm
+        image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
         env:
           POSTGRES_DB: refunddesk
           POSTGRES_USER: refunddesk_owner
@@ -36,7 +36,9 @@ jobs:
       REFUNDDESK_PROOF_HMAC_KEY_V1: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
       REFUNDDESK_EXPORT_SIGNING_KEY_V1: AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=
       REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: v1
+      REFUNDDESK_FIELD_KEY_ROTATION_STATE: legacy
       REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: v1
+      REFUNDDESK_PROOF_KEY_ROTATION_STATE: legacy
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,7 +62,7 @@ jobs:
           shellcheck --severity=warning --source-path=SCRIPTDIR deploy/lightsail/scripts/*.sh
 
           sudo install -d -o root -g root -m 0700 /etc/refunddesk
-          for name in postgres platform worker migration caddy backup; do
+          for name in postgres platform worker migration maintenance caddy backup; do
             sudo install -o root -g root -m 0600 \
               "deploy/lightsail/${name}.env.example" \
               "/etc/refunddesk/${name}.env"
@@ -84,7 +86,7 @@ jobs:
           sudo install -d -o root -g 1000 -m 0750 /etc/refunddesk/tls/verifier
           sudo install -d -o root -g root -m 0755 /etc/refunddesk/tls/client
 
-          for name in owner web worker queue; do
+          for name in owner web worker queue maintenance; do
             secret_file="$(mktemp)"
             openssl rand -hex 32 > "$secret_file"
             sudo install -o root -g root -m 0600 \
@@ -93,9 +95,107 @@ jobs:
             rm -f -- "$secret_file"
           done
 
+          unsafe_private_orphan=/run/refunddesk-internal-pki.BAD001
+          sudo install -d -o root -g root -m 0700 "$unsafe_private_orphan"
+          sudo install -o root -g root -m 0600 /dev/null "$unsafe_private_orphan/foreign"
+          if sudo env \
+            REFUNDDESK_TLS_ROOT=/etc/refunddesk/tls \
+            bash deploy/lightsail/scripts/provision-internal-pki.sh; then
+            echo "unsafe private PKI orphan was accepted" >&2
+            exit 1
+          fi
+          sudo test -f "$unsafe_private_orphan/foreign"
+          sudo rm -- "$unsafe_private_orphan/foreign"
+          sudo rmdir -- "$unsafe_private_orphan"
+
+          safe_private_orphan=/run/refunddesk-internal-pki.CI0001
+          safe_stage_orphan=/etc/refunddesk/tls/.pki-stage.CI0001
+          sudo install -d -o root -g root -m 0700 "$safe_private_orphan"
+          sudo install -o root -g root -m 0600 \
+            /dev/null \
+            "$safe_private_orphan/postgres-ca.key"
+          sudo install -o root -g root -m 0600 \
+            /dev/null \
+            "$safe_private_orphan/postgres-ca.crt"
+          sudo install -o root -g root -m 0600 \
+            /dev/null \
+            "$safe_private_orphan/client-ca-bundle.crt"
+          sudo install -d -o root -g root -m 0700 \
+            "$safe_stage_orphan" \
+            "$safe_stage_orphan/postgres" \
+            "$safe_stage_orphan/verifier"
+          sudo install -o root -g root -m 0600 \
+            /dev/null \
+            "$safe_stage_orphan/postgres/ca.crt"
+          sudo rmdir -- /etc/refunddesk/tls/client
+          sudo install -d -o root -g root -m 0755 /etc/refunddesk/tls/client
+          sudo install -o root -g root -m 0444 \
+            "$safe_private_orphan/client-ca-bundle.crt" \
+            /etc/refunddesk/tls/client/refunddesk-ca-bundle.crt
+
           sudo env \
             REFUNDDESK_TLS_ROOT=/etc/refunddesk/tls \
             bash deploy/lightsail/scripts/provision-internal-pki.sh
+          sudo test ! -e "$safe_private_orphan"
+          sudo test ! -e "$safe_stage_orphan"
+          mapfile -d '' pki_markers < <(
+            sudo find /etc/refunddesk/tls \
+              -xdev \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -name '.pki-generation.*.sha256' \
+              -print0
+          )
+          test "${#pki_markers[@]}" -eq 1
+          pki_marker_name="${pki_markers[0]##*/}"
+          pki_generation_suffix="${pki_marker_name#.pki-generation.}"
+          pki_generation_suffix="${pki_generation_suffix%.sha256}"
+          [[ "$pki_generation_suffix" =~ ^[A-Za-z0-9]{6}$ ]]
+          interrupted_private_cleanup="/run/refunddesk-internal-pki.${pki_generation_suffix}"
+          sudo install -d -o root -g root -m 0700 "$interrupted_private_cleanup"
+          sudo install -o root -g root -m 0600 \
+            /etc/refunddesk/tls/postgres/ca.crt \
+            "$interrupted_private_cleanup/postgres-ca.crt"
+
+          pki_state_before="$(
+            sudo stat --format='%n:%d:%i:%s:%Y' \
+              /etc/refunddesk/tls/client/refunddesk-ca-bundle.crt \
+              /etc/refunddesk/tls/postgres/ca.crt \
+              /etc/refunddesk/tls/postgres/server.crt \
+              /etc/refunddesk/tls/postgres/server.key \
+              /etc/refunddesk/tls/verifier/ca.crt \
+              /etc/refunddesk/tls/verifier/server.crt \
+              /etc/refunddesk/tls/verifier/server.key
+          )"
+          sudo env \
+            REFUNDDESK_TLS_ROOT=/etc/refunddesk/tls \
+            bash deploy/lightsail/scripts/provision-internal-pki.sh
+          sudo test ! -e "$interrupted_private_cleanup"
+          pki_state_after="$(
+            sudo stat --format='%n:%d:%i:%s:%Y' \
+              /etc/refunddesk/tls/client/refunddesk-ca-bundle.crt \
+              /etc/refunddesk/tls/postgres/ca.crt \
+              /etc/refunddesk/tls/postgres/server.crt \
+              /etc/refunddesk/tls/postgres/server.key \
+              /etc/refunddesk/tls/verifier/ca.crt \
+              /etc/refunddesk/tls/verifier/server.crt \
+              /etc/refunddesk/tls/verifier/server.key
+          )"
+          test "$pki_state_after" = "$pki_state_before"
+          sudo env \
+            REFUNDDESK_TLS_ROOT=/etc/refunddesk/tls \
+            bash deploy/lightsail/scripts/provision-internal-pki.sh
+          pki_state_final="$(
+            sudo stat --format='%n:%d:%i:%s:%Y' \
+              /etc/refunddesk/tls/client/refunddesk-ca-bundle.crt \
+              /etc/refunddesk/tls/postgres/ca.crt \
+              /etc/refunddesk/tls/postgres/server.crt \
+              /etc/refunddesk/tls/postgres/server.key \
+              /etc/refunddesk/tls/verifier/ca.crt \
+              /etc/refunddesk/tls/verifier/server.crt \
+              /etc/refunddesk/tls/verifier/server.key
+          )"
+          test "$pki_state_final" = "$pki_state_before"
 
           for caddyfile in public verifier; do
             caddy_arguments=(
@@ -122,12 +222,34 @@ jobs:
               )
             fi
             sudo docker run "${caddy_arguments[@]}" \
-              caddy:2.11.4-alpine \
+              caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648 \
               caddy validate --config /etc/caddy/Caddyfile
           done
           systemd-analyze verify \
             deploy/lightsail/systemd/refunddesk-backup.service \
-            deploy/lightsail/systemd/refunddesk-backup.timer
+            deploy/lightsail/systemd/refunddesk-backup.timer \
+            deploy/lightsail/systemd/refunddesk-quiesce-recovery.service \
+            deploy/lightsail/systemd/refunddesk-retention.service \
+            deploy/lightsail/systemd/refunddesk-retention.timer
+
+          sudo env \
+            PATH="$PATH" \
+            CI=true \
+            GITHUB_ACTIONS=true \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            bash deploy/lightsail/scripts/test-postgres-root-mount-migration.sh
+
+          sudo env \
+            PATH="$PATH" \
+            REFUNDDESK_ROOT="$GITHUB_WORKSPACE" \
+            REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
+            REFUNDDESK_COMPOSE_FILE="$GITHUB_WORKSPACE/deploy/lightsail/compose.yml" \
+            REFUNDDESK_COMPOSE_PROJECT=refunddesk-ci \
+            REFUNDDESK_RELEASE_ENV=/etc/refunddesk/release.env \
+            CI=true \
+            GITHUB_ACTIONS=true \
+            bash deploy/lightsail/scripts/test-database-owner-reservation.sh
 
           cleanup_lightsail_contract() {
             local status="$1"
@@ -147,6 +269,7 @@ jobs:
           }
           trap 'cleanup_lightsail_contract "$?"' EXIT
 
+          sudo install -d -o root -g root -m 0700 /run/refunddesk-ci
           for bootstrap_pass in 1 2; do
             echo "PostgreSQL restricted-login bootstrap pass ${bootstrap_pass}/2"
             sudo env \
@@ -156,10 +279,43 @@ jobs:
               REFUNDDESK_COMPOSE_FILE="$GITHUB_WORKSPACE/deploy/lightsail/compose.yml" \
               REFUNDDESK_COMPOSE_PROJECT=refunddesk-ci \
               REFUNDDESK_RELEASE_ENV=/etc/refunddesk/release.env \
-              REFUNDDESK_OPERATOR_LOCK=/run/lock/refunddesk-ci.lock \
+              REFUNDDESK_OPERATOR_LOCK=/run/refunddesk-ci/operator.lock \
               REFUNDDESK_IMAGE_TAG=sandbox-ci \
+              REFUNDDESK_DATABASE_BOOTSTRAP_CONTRACT=ci-v2 \
+              CI=true \
+              GITHUB_ACTIONS=true \
+              GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
               bash deploy/lightsail/scripts/bootstrap-database.sh
           done
+
+          maintenance_secret_backup="$(mktemp)"
+          sudo install -o root -g root -m 0600 \
+            /etc/refunddesk/secrets/postgres-maintenance-password \
+            "$maintenance_secret_backup"
+          sudo install -o root -g root -m 0600 \
+            /etc/refunddesk/secrets/postgres-owner-password \
+            /etc/refunddesk/secrets/postgres-maintenance-password
+          if sudo env \
+            PATH="$PATH" \
+            REFUNDDESK_ROOT="$GITHUB_WORKSPACE" \
+            REFUNDDESK_CONFIG_ROOT=/etc/refunddesk \
+            REFUNDDESK_COMPOSE_FILE="$GITHUB_WORKSPACE/deploy/lightsail/compose.yml" \
+            REFUNDDESK_COMPOSE_PROJECT=refunddesk-ci \
+            REFUNDDESK_RELEASE_ENV=/etc/refunddesk/release.env \
+            REFUNDDESK_OPERATOR_LOCK=/run/refunddesk-ci/operator.lock \
+            REFUNDDESK_IMAGE_TAG=sandbox-ci \
+            REFUNDDESK_DATABASE_BOOTSTRAP_CONTRACT=ci-v2 \
+            CI=true \
+            GITHUB_ACTIONS=true \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            bash deploy/lightsail/scripts/bootstrap-database.sh; then
+            echo "bootstrap accepted duplicate owner/maintenance passwords" >&2
+            exit 1
+          fi
+          sudo install -o root -g root -m 0600 \
+            "$maintenance_secret_backup" \
+            /etc/refunddesk/secrets/postgres-maintenance-password
+          sudo rm -f -- "$maintenance_secret_backup"
 
           role_count="$(
             sudo docker compose \
@@ -169,11 +325,21 @@ jobs:
               exec --no-TTY postgres \
               psql --username=refunddesk_owner --dbname=refunddesk \
                 --tuples-only --no-align \
-                --command="SELECT count(*) FROM pg_roles WHERE rolname IN ('refunddesk_web_login','refunddesk_worker_login','refunddesk_queue_login') AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls;"
+                --command="SELECT count(*) FROM pg_roles WHERE rolname IN ('refunddesk_web_login','refunddesk_worker_login','refunddesk_queue_login','refunddesk_maintenance_login') AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND rolinherit AND NOT rolreplication AND NOT rolbypassrls;"
           )"
-          test "$role_count" = "3"
+          test "$role_count" = "4"
+          maintenance_membership="$(
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              exec --no-TTY postgres \
+              psql --username=refunddesk_owner --dbname=refunddesk \
+                --tuples-only --no-align \
+                --command="SELECT array_agg(parent.rolname ORDER BY parent.rolname) = ARRAY['refunddesk_maintenance']::name[] FROM pg_auth_members AS membership INNER JOIN pg_roles AS parent ON parent.oid = membership.roleid INNER JOIN pg_roles AS member ON member.oid = membership.member WHERE member.rolname = 'refunddesk_maintenance_login';"
+          )"
+          test "$maintenance_membership" = "t"
           trap - EXIT
-          cleanup_lightsail_contract 0
       - name: Build provider-neutral OCI targets
         env:
           DOCKER_BUILDKIT: "1"
@@ -181,6 +347,89 @@ jobs:
           docker build --target web --tag refunddesk-web:ci .
           docker build --target worker --tag refunddesk-worker:ci .
           docker build --target migrate --tag refunddesk-migrate:ci .
+      - name: Run isolated retention one-shot on PostgreSQL 18
+        run: |
+          set -euo pipefail
+          cleanup_retention_contract() {
+            status="$?"
+            trap - EXIT
+            if [[ "$status" -ne 0 ]]; then
+              sudo docker compose \
+                --project-name refunddesk-ci \
+                --env-file /etc/refunddesk/release.env \
+                --file deploy/lightsail/compose.yml \
+                logs --no-color postgres || true
+            fi
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              down --remove-orphans >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup_retention_contract EXIT
+
+          docker tag refunddesk-migrate:ci refunddesk-migrate:sandbox-ci
+          sudo bash -c '
+            set -euo pipefail
+            owner_password="$(</etc/refunddesk/secrets/postgres-owner-password)"
+            web_password="$(</etc/refunddesk/secrets/postgres-web-password)"
+            worker_password="$(</etc/refunddesk/secrets/postgres-worker-password)"
+            queue_password="$(</etc/refunddesk/secrets/postgres-queue-password)"
+            maintenance_password="$(</etc/refunddesk/secrets/postgres-maintenance-password)"
+            pseudonym_key="$(openssl rand -base64 32 | tr -d "\n")"
+            printf "%s\n" \
+              "NODE_ENV=production" \
+              "LOG_LEVEL=info" \
+              "DATABASE_URL=postgresql://refunddesk_web_login:${web_password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full" \
+              "WORKER_DATABASE_URL=postgresql://refunddesk_worker_login:${worker_password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full" \
+              "PGBOSS_DATABASE_URL=postgresql://refunddesk_queue_login:${queue_password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full" \
+              "DATABASE_MIGRATION_URL=postgresql://refunddesk_owner:${owner_password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full" \
+              > /etc/refunddesk/migration.env
+            printf "%s\n" \
+              "NODE_ENV=production" \
+              "REFUNDDESK_MAINTENANCE_DATABASE_URL=postgresql://refunddesk_maintenance_login:${maintenance_password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full" \
+              "REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1=${pseudonym_key}" \
+              "REFUNDDESK_RETENTION_BATCH_SIZE=25" \
+              "REFUNDDESK_RETENTION_SCOPE=test_sandbox" \
+              > /etc/refunddesk/maintenance.env
+            chown root:root /etc/refunddesk/migration.env /etc/refunddesk/maintenance.env
+            chmod 0600 /etc/refunddesk/migration.env /etc/refunddesk/maintenance.env
+          '
+
+          for migration_pass in 1 2; do
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              --profile release run --rm --no-deps --pull never migrate
+          done
+
+          retention_result="$(
+            sudo docker compose \
+              --project-name refunddesk-ci \
+              --env-file /etc/refunddesk/release.env \
+              --file deploy/lightsail/compose.yml \
+              --profile maintenance run --rm --no-deps --pull never maintenance
+          )"
+          jq --exit-status '
+            .component == "retention-purge"
+            and .status == "completed"
+            and .selected == 0
+            and .purged == 0
+            and .blocked_after_selection == 0
+          ' <<<"$retention_result" >/dev/null
+
+          sudo bash -c \
+            'printf "%s\n" "STRIPE_PLATFORM_TEST_EFFECT_KEY=forbidden" >> /etc/refunddesk/maintenance.env'
+          if sudo docker compose \
+            --project-name refunddesk-ci \
+            --env-file /etc/refunddesk/release.env \
+            --file deploy/lightsail/compose.yml \
+            --profile maintenance run --rm --no-deps --pull never maintenance; then
+            echo "maintenance accepted foreign Stripe authority" >&2
+            exit 1
+          fi
       - name: Inspect OCI security contracts
         run: |
           set -euo pipefail
@@ -198,6 +447,7 @@ jobs:
             ];
             if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
             if (!fs.existsSync('/workspace/packages/config/dist/check-release.js')) process.exit(1);
+            if (!fs.existsSync('/workspace/packages/config/dist/check-key-rotation-transition.js')) process.exit(1);
           "
           docker run --rm --entrypoint node refunddesk-worker:ci -e "
             const fs = require('node:fs');
@@ -226,8 +476,16 @@ jobs:
           STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET: whsec_ci_test
           STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: whsec_ci_sandbox
           STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: disabled
+          REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=
+          REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: v2
+          REFUNDDESK_FIELD_KEY_ROTATION_STATE: active
+          REFUNDDESK_PROOF_HMAC_KEY_V2: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+          REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: v2
+          REFUNDDESK_PROOF_KEY_ROTATION_STATE: active
           REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=
-          REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: v1
+          REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=
+          REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: v2
+          REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: active
           REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=
           REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL: https://worker.refunddesk.invalid/internal/v1/signed-requests/verify
         run: |
@@ -292,8 +550,10 @@ jobs:
             -e STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET \
             -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
             -e REFUNDDESK_FIELD_ENCRYPTION_KEY_V1 \
+            -e REFUNDDESK_FIELD_ENCRYPTION_KEY_V2 \
             -e REFUNDDESK_EXPORT_SIGNING_KEY_V1 \
             -e REFUNDDESK_ACTIVE_FIELD_KEY_VERSION \
+            -e REFUNDDESK_FIELD_KEY_ROTATION_STATE \
             -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN \
             -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL \
             refunddesk-web:ci
@@ -320,9 +580,13 @@ jobs:
             -e STRIPE_MANAGED_SANDBOX_EFFECT_KEY \
             -e REFUNDDESK_GLOBAL_LIVE_ENABLED \
             -e REFUNDDESK_PROOF_HMAC_KEY_V1 \
+            -e REFUNDDESK_PROOF_HMAC_KEY_V2 \
             -e REFUNDDESK_ACTIVE_PROOF_KEY_VERSION \
+            -e REFUNDDESK_PROOF_KEY_ROTATION_STATE \
             -e REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1 \
+            -e REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2 \
             -e REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION \
+            -e REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE \
             -e REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN \
             -e WORKER_HEALTH_HOST=0.0.0.0 \
             -e WORKER_HEALTH_PORT=3201 \
@@ -357,12 +621,20 @@ jobs:
               'STRIPE_PLATFORM_TEST_EFFECT_KEY',
               'STRIPE_MANAGED_SANDBOX_EFFECT_KEY',
               'REFUNDDESK_PROOF_HMAC_KEY_V1',
+              'REFUNDDESK_PROOF_HMAC_KEY_V2',
+              'REFUNDDESK_PROOF_KEY_ROTATION_STATE',
               'REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1',
+              'REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2',
+              'REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE',
               'WORKER_DATABASE_URL',
               'PGBOSS_DATABASE_URL',
               'DATABASE_MIGRATION_URL'
             ];
             if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(1);
+            if (
+              process.env.REFUNDDESK_ACTIVE_FIELD_KEY_VERSION !== 'v2' ||
+              process.env.REFUNDDESK_FIELD_KEY_ROTATION_STATE !== 'active'
+            ) process.exit(1);
           "
           docker exec refunddesk-worker-ci node -e "
             const forbidden = [
@@ -371,11 +643,19 @@ jobs:
               'STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET',
               'STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET',
               'REFUNDDESK_FIELD_ENCRYPTION_KEY_V1',
+              'REFUNDDESK_FIELD_ENCRYPTION_KEY_V2',
+              'REFUNDDESK_FIELD_KEY_ROTATION_STATE',
               'REFUNDDESK_EXPORT_SIGNING_KEY_V1',
               'DATABASE_URL',
               'DATABASE_MIGRATION_URL'
             ];
             if (forbidden.some((name) => process.env[name] !== undefined)) process.exit(1);
+            if (
+              process.env.REFUNDDESK_ACTIVE_PROOF_KEY_VERSION !== 'v2' ||
+              process.env.REFUNDDESK_PROOF_KEY_ROTATION_STATE !== 'active' ||
+              process.env.REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION !== 'v2' ||
+              process.env.REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE !== 'active'
+            ) process.exit(1);
           "
           curl --fail --silent http://127.0.0.1:3200/ >/dev/null
           test "$(

@@ -15,12 +15,12 @@ x-runtime-security: &runtime-security
 
 services:
   postgres:
-    image: postgres:18.4-bookworm
+    image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     restart: unless-stopped
     env_file:
       - /etc/refunddesk/postgres.env
     environment:
-      PGDATA: /var/lib/postgresql/data
+      PGDATA: /var/lib/postgresql
     command:
       - postgres
       - -c
@@ -70,7 +70,7 @@ services:
     volumes:
       - type: bind
         source: /var/lib/refunddesk/postgres/data
-        target: /var/lib/postgresql/data
+        target: /var/lib/postgresql
         bind:
           create_host_path: false
       - type: bind
@@ -112,6 +112,9 @@ services:
       database-migrate:
         aliases:
           - postgres.refunddesk.internal
+      database-maintenance:
+        aliases:
+          - postgres.refunddesk.internal
     logging:
       driver: json-file
       options:
@@ -119,10 +122,12 @@ services:
         max-size: 5m
 
   bootstrap:
-    image: postgres:18.4-bookworm
+    image: postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     profiles:
       - release
     restart: "no"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     env_file:
       - /etc/refunddesk/postgres.env
     entrypoint:
@@ -180,6 +185,12 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      - type: bind
+        source: /etc/refunddesk/secrets/postgres-maintenance-password
+        target: /run/secrets/postgres-maintenance-password
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:mode=1777
     networks:
@@ -195,6 +206,8 @@ services:
     profiles:
       - release
     restart: "no"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     env_file:
       - /etc/refunddesk/migration.env
     environment:
@@ -230,10 +243,57 @@ services:
         max-file: "3"
         max-size: 5m
 
+  maintenance:
+    image: refunddesk-migrate:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
+    profiles:
+      - maintenance
+    restart: "no"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
+    env_file:
+      - /etc/refunddesk/maintenance.env
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/refunddesk/postgres-ca.crt
+      NODE_OPTIONS: --max-old-space-size=96
+    command:
+      - node
+      - packages/db/scripts/run-retention-purge.mjs
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 160m
+    cpus: 0.5
+    stop_grace_period: 30s
+    volumes:
+      - type: bind
+        source: /etc/refunddesk/tls/postgres/ca.crt
+        target: /run/refunddesk/postgres-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - database-maintenance
+    logging:
+      driver: json-file
+      options:
+        max-file: "1"
+        max-size: 1m
+
   worker:
     <<: *runtime-security
     image: refunddesk-worker:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
-    restart: unless-stopped
+    restart: "${REFUNDDESK_RUNTIME_RESTART_POLICY:-unless-stopped}"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     env_file:
       - /etc/refunddesk/worker.env
     environment:
@@ -266,8 +326,10 @@ services:
 
   verifier:
     <<: *runtime-security
-    image: caddy:2.11.4-alpine
-    restart: unless-stopped
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: "${REFUNDDESK_RUNTIME_RESTART_POLICY:-unless-stopped}"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     user: "1000:1000"
     cap_add:
       - NET_BIND_SERVICE
@@ -311,7 +373,9 @@ services:
   web:
     <<: *runtime-security
     image: refunddesk-web:${REFUNDDESK_IMAGE_TAG:?REFUNDDESK_IMAGE_TAG is required}
-    restart: unless-stopped
+    restart: "${REFUNDDESK_RUNTIME_RESTART_POLICY:-unless-stopped}"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     env_file:
       - /etc/refunddesk/platform.env
     environment:
@@ -344,10 +408,14 @@ services:
 
   caddy:
     <<: *runtime-security
-    image: caddy:2.11.4-alpine
-    restart: unless-stopped
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: "${REFUNDDESK_RUNTIME_RESTART_POLICY:-unless-stopped}"
+    labels:
+      com.refunddesk.revision: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     env_file:
       - /etc/refunddesk/caddy.env
+    environment:
+      REFUNDDESK_REVISION: ${REFUNDDESK_REVISION:?REFUNDDESK_REVISION is required}
     user: "1000:1000"
     cap_add:
       - NET_BIND_SERVICE
@@ -408,6 +476,9 @@ networks:
     driver: bridge
     internal: true
   database-migrate:
+    driver: bridge
+    internal: true
+  database-maintenance:
     driver: bridge
     internal: true
   caddy-egress:

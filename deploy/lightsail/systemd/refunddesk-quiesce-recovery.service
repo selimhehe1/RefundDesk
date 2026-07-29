@@ -1,0 +1,44 @@
+[Unit]
+Description=Recover RefundDesk after interrupted runtime quiescence
+Documentation=https://github.com/selimhehe1/RefundDesk
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+Before=refunddesk-backup.service refunddesk-retention.service
+ConditionPathExists=/var/lib/refunddesk/control/runtime-quiesce-in-progress.json
+
+[Service]
+Type=oneshot
+Environment=HOME=/run/refunddesk-quiesce-recovery
+Environment=DOCKER_CONFIG=/run/refunddesk-quiesce-recovery
+RuntimeDirectory=refunddesk-quiesce-recovery
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/sbin/refunddesk-quiesce-recovery
+UMask=0077
+TimeoutStartSec=15min
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ReadWritePaths=/run/docker.sock /run/refunddesk /run/refunddesk-quiesce-recovery /var/lib/refunddesk/control /var/log/refunddesk
+
+[Install]
+WantedBy=multi-user.target

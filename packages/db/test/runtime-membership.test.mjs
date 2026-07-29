@@ -57,6 +57,9 @@ describe("runtime database login membership", () => {
 
   it("accepts only exact absent, upgrade, or current preflight role sets", () => {
     expect(classifyPreflightCollectiveRoleSet([])).toBe("absent");
+    expect(classifyPreflightCollectiveRoleSet(["refunddesk_maintenance"])).toBe(
+      "maintenance-bootstrap",
+    );
     expect(
       classifyPreflightCollectiveRoleSet([
         "refunddesk_maintenance",
@@ -84,6 +87,7 @@ describe("runtime database login membership", () => {
 
     for (const invalidRoleSet of [
       ["refunddesk_runtime"],
+      ["refunddesk_maintenance", "refunddesk_runtime"],
       ["refunddesk_attestation_writer", "refunddesk_runtime", "refunddesk_worker"],
       ["refunddesk_maintenance", "refunddesk_queue", "refunddesk_runtime", "refunddesk_worker"],
       ["provider_admin", "refunddesk_maintenance", "refunddesk_runtime", "refunddesk_worker"],

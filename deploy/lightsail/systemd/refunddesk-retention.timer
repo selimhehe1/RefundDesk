@@ -1,0 +1,12 @@
+[Unit]
+Description=Run RefundDesk test/sandbox retention hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+AccuracySec=1min
+Persistent=true
+Unit=refunddesk-retention.service
+
+[Install]
+WantedBy=timers.target

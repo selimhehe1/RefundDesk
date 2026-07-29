@@ -5,6 +5,7 @@ apps/stripe-app/stripe-app.local.json
 dist/
 coverage/
 .cache/
+__pycache__/
 test-results/
 playwright-report/
 

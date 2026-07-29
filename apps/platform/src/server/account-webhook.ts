@@ -23,7 +23,7 @@ import { getPilotRuntime } from "./pilot-runtime";
 export type AccountWebhookRouteEnvironment = "live" | "test" | "sandbox";
 
 const MAX_WEBHOOK_BYTES = 1_048_576;
-const TENANT_PURGE_DELAY_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
+const TENANT_PURGE_DELAY_MILLISECONDS = 29 * 24 * 60 * 60 * 1_000;
 const STRIPE_ACCOUNT_PATTERN = /^acct_[A-Za-z0-9]+$/u;
 const SUPPORTED_EVENT_TYPES = new Set<AccountWebhookEventType>([
   "refund.created",

@@ -16,6 +16,8 @@ https://{$REFUNDDESK_PUBLIC_HOST}:8443 {
 
 	header {
 		-Server
+		Cache-Control "no-store"
+		X-RefundDesk-Revision "{$REFUNDDESK_REVISION}"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
@@ -25,6 +27,16 @@ https://{$REFUNDDESK_PUBLIC_HOST}:8443 {
 	route {
 		@blocked path /internal /internal/* /api/ready /api/webhooks/stripe-connected /api/webhooks/stripe-connected/* /api/webhooks/stripe-account/live
 		respond @blocked 404
+
+		@signed_api path /api/v1/*
+		request_body @signed_api {
+			max_size 32768
+		}
+
+		@account_webhooks path /api/webhooks/stripe-account/test /api/webhooks/stripe-account/sandbox
+		request_body @account_webhooks {
+			max_size 1048576
+		}
 
 		reverse_proxy web.refunddesk.internal:3000 {
 			transport http {

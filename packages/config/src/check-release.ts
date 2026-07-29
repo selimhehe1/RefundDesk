@@ -9,6 +9,18 @@ import {
   loadPlatformConfig,
   loadWorkerConfig,
 } from "./index.js";
+import type { ApplicationKeyRotationSet } from "./key-rotation.js";
+
+export interface ReleaseConfigurationSummary {
+  readonly keyRotation: ApplicationKeyRotationSet;
+}
+
+interface MaintenanceReleaseConfiguration {
+  readonly databasePrincipal: string;
+  readonly pseudonymKey: Buffer;
+}
+
+const HOSTED_PUBLIC_VIEWER_HOST = "d2xv7szimbgban.cloudfront.net";
 
 function resolveInputPath(path: string, invocationDirectory: string): string {
   return isAbsolute(path) ? path : resolve(invocationDirectory, path);
@@ -20,6 +32,136 @@ async function loadEnvironment(
 ): Promise<NodeJS.ProcessEnv> {
   const resolvedPath = isAbsolute(path) ? path : resolve(invocationDirectory, path);
   return parseEnv(await readFile(resolvedPath, "utf8"));
+}
+
+async function loadMaintenanceEnvironment(
+  path: string,
+  invocationDirectory: string,
+): Promise<NodeJS.ProcessEnv> {
+  const resolvedPath = isAbsolute(path) ? path : resolve(invocationDirectory, path);
+  const contents = await readFile(resolvedPath, "utf8");
+  if (contents.includes("\r")) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  const lines = contents.split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  const environment: NodeJS.ProcessEnv = {};
+  for (const line of lines) {
+    const match = /^([A-Z][A-Z0-9_]*)=(.+)$/u.exec(line);
+    const name = match?.[1];
+    const value = match?.[2];
+    if (name === undefined || value === undefined || environment[name] !== undefined) {
+      throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+    }
+    environment[name] = value;
+  }
+  return environment;
+}
+
+function loadMaintenanceReleaseConfiguration(
+  environment: NodeJS.ProcessEnv,
+): MaintenanceReleaseConfiguration {
+  const expectedNames = new Set([
+    "NODE_ENV",
+    "REFUNDDESK_MAINTENANCE_DATABASE_URL",
+    "REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1",
+    "REFUNDDESK_RETENTION_BATCH_SIZE",
+    "REFUNDDESK_RETENTION_SCOPE",
+  ]);
+  const actualNames = Object.keys(environment);
+  if (
+    actualNames.length !== expectedNames.size ||
+    actualNames.some((name) => !expectedNames.has(name))
+  ) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  if (
+    environment["NODE_ENV"] !== "production" ||
+    environment["REFUNDDESK_RETENTION_SCOPE"] !== "test_sandbox" ||
+    !/^(?:[1-9]|[1-9]\d|100)$/u.test(environment["REFUNDDESK_RETENTION_BATCH_SIZE"] ?? "")
+  ) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+
+  const encodedKey = environment["REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1"] ?? "";
+  if (!/^[A-Za-z0-9+/]{43}=$/u.test(encodedKey)) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  const pseudonymKey = Buffer.from(encodedKey, "base64");
+  if (pseudonymKey.length !== 32 || pseudonymKey.toString("base64") !== encodedKey) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+
+  const databaseUrlValue = environment["REFUNDDESK_MAINTENANCE_DATABASE_URL"];
+  if (databaseUrlValue === undefined) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  let databaseUrl: URL;
+  try {
+    databaseUrl = new URL(databaseUrlValue);
+  } catch {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  let databasePrincipal: string;
+  try {
+    databasePrincipal = decodeURIComponent(databaseUrl.username);
+  } catch {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  if (
+    (databaseUrl.protocol !== "postgres:" && databaseUrl.protocol !== "postgresql:") ||
+    databasePrincipal !== "refunddesk_maintenance_login" ||
+    databaseUrl.password.length === 0 ||
+    databaseUrl.hostname !== "postgres.refunddesk.internal" ||
+    databaseUrl.port !== "5432" ||
+    databaseUrl.pathname !== "/refunddesk" ||
+    databaseUrl.search !== "?sslmode=verify-full" ||
+    databaseUrl.hash !== ""
+  ) {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+  return { databasePrincipal, pseudonymKey };
+}
+
+function releaseDatabasePrincipal(connectionString: string): string {
+  try {
+    return decodeURIComponent(new URL(connectionString).username);
+  } catch {
+    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+  }
+}
+
+function assertMaintenanceReleaseSeparation(
+  maintenance: MaintenanceReleaseConfiguration,
+  platform: ReturnType<typeof loadPlatformConfig>,
+  worker: ReturnType<typeof loadWorkerConfig>,
+  migration: ReturnType<typeof loadMigrationConfig>,
+): void {
+  const otherDatabasePrincipals = [
+    releaseDatabasePrincipal(platform.databaseUrl),
+    releaseDatabasePrincipal(worker.workerDatabaseUrl),
+    releaseDatabasePrincipal(worker.pgBossDatabaseUrl),
+    releaseDatabasePrincipal(migration.migrationDatabaseUrl),
+  ];
+  if (otherDatabasePrincipals.includes(maintenance.databasePrincipal)) {
+    throw new Error("MAINTENANCE_DATABASE_PRINCIPAL_NOT_SEPARATED");
+  }
+
+  const applicationKeys = [
+    platform.keys.fieldV1,
+    platform.keys.fieldV2,
+    platform.keys.exportV1,
+    worker.keys.proofV1,
+    worker.keys.proofV2,
+    worker.keys.approvalAttestationV1,
+    worker.keys.approvalAttestationV2,
+    Buffer.from(platform.signedRequestVerifierToken, "base64"),
+  ].filter((key): key is Buffer => key !== undefined);
+  if (applicationKeys.some((key) => key.equals(maintenance.pseudonymKey))) {
+    throw new Error("MAINTENANCE_PSEUDONYM_KEY_NOT_SEPARATED");
+  }
 }
 
 function parsePublicOriginFile(contents: string): string {
@@ -47,8 +189,10 @@ function assertHostedPublicOrigin(
   const publicOrigin = parsePublicOriginFile(publicOriginContents);
   const publicHost = caddyEnvironment["REFUNDDESK_PUBLIC_HOST"];
   let origin: URL;
+  let caddyOrigin: URL;
   try {
     origin = new URL(publicOrigin);
+    caddyOrigin = new URL(`https://${publicHost ?? ""}`);
   } catch {
     throw new Error("HOSTED_PUBLIC_ORIGIN_INVALID");
   }
@@ -58,7 +202,17 @@ function assertHostedPublicOrigin(
     publicOrigin !== origin.origin ||
     appBaseUrl !== publicOrigin ||
     publicHost === undefined ||
-    publicHost !== origin.hostname
+    publicHost !== caddyOrigin.hostname ||
+    caddyOrigin.protocol !== "https:" ||
+    caddyOrigin.port !== "" ||
+    caddyOrigin.username !== "" ||
+    caddyOrigin.password !== "" ||
+    caddyOrigin.pathname !== "/" ||
+    caddyOrigin.search !== "" ||
+    caddyOrigin.hash !== "" ||
+    origin.hostname !== HOSTED_PUBLIC_VIEWER_HOST ||
+    origin.hostname === publicHost ||
+    publicHost.endsWith(".cloudfront.net")
   ) {
     throw new Error("HOSTED_PUBLIC_ORIGIN_INVALID");
   }
@@ -67,9 +221,17 @@ function assertHostedPublicOrigin(
 export async function checkReleaseConfiguration(
   paths: readonly string[],
   invocationDirectory = process.env["INIT_CWD"] ?? process.cwd(),
-): Promise<void> {
-  const [platformPath, workerPath, migrationPath, caddyPath, publicOriginPath, ...extra] = paths;
-  const hostedMode = paths.length === 5;
+): Promise<ReleaseConfigurationSummary> {
+  const [
+    platformPath,
+    workerPath,
+    migrationPath,
+    maintenancePath,
+    caddyPath,
+    publicOriginPath,
+    ...extra
+  ] = paths;
+  const hostedMode = paths.length === 6;
   if (
     platformPath === undefined ||
     workerPath === undefined ||
@@ -77,7 +239,7 @@ export async function checkReleaseConfiguration(
     (paths.length !== 3 && !hostedMode) ||
     extra.length > 0
   ) {
-    throw new Error("THREE_OR_FIVE_RELEASE_INPUTS_REQUIRED");
+    throw new Error("THREE_OR_SIX_RELEASE_INPUTS_REQUIRED");
   }
 
   const [platformEnvironment, workerEnvironment, migrationEnvironment] = await Promise.all([
@@ -98,20 +260,44 @@ export async function checkReleaseConfiguration(
   assertReleaseConfigSeparation({ platform, worker, migration });
 
   if (hostedMode) {
-    if (caddyPath === undefined || publicOriginPath === undefined) {
-      throw new Error("THREE_OR_FIVE_RELEASE_INPUTS_REQUIRED");
+    if (
+      maintenancePath === undefined ||
+      caddyPath === undefined ||
+      publicOriginPath === undefined
+    ) {
+      throw new Error("THREE_OR_SIX_RELEASE_INPUTS_REQUIRED");
     }
-    const [caddyEnvironment, publicOriginContents] = await Promise.all([
+    const [maintenanceEnvironment, caddyEnvironment, publicOriginContents] = await Promise.all([
+      loadMaintenanceEnvironment(maintenancePath, invocationDirectory),
       loadEnvironment(caddyPath, invocationDirectory),
       readFile(resolveInputPath(publicOriginPath, invocationDirectory), "utf8"),
     ]);
+    assertMaintenanceReleaseSeparation(
+      loadMaintenanceReleaseConfiguration(maintenanceEnvironment),
+      platform,
+      worker,
+      migration,
+    );
     assertHostedPublicOrigin(platform.appBaseUrl, caddyEnvironment, publicOriginContents);
   }
+  return {
+    keyRotation: {
+      approvalAttestation: worker.keys.approvalAttestationRotationState,
+      field: platform.keys.fieldRotationState,
+      proof: worker.keys.proofRotationState,
+    },
+  };
 }
 
 async function main(): Promise<void> {
-  await checkReleaseConfiguration(process.argv.slice(2));
-  process.stdout.write(`${JSON.stringify({ component: "release-config", status: "separated" })}\n`);
+  const summary = await checkReleaseConfiguration(process.argv.slice(2));
+  process.stdout.write(
+    `${JSON.stringify({
+      component: "release-config",
+      keyRotation: summary.keyRotation,
+      status: "separated",
+    })}\n`,
+  );
 }
 
 const entrypoint = process.argv[1];

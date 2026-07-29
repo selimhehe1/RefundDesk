@@ -53,6 +53,13 @@ while (( $# > 0 )); do
 done
 
 require_root
+acquire_operator_lock
+BOOTSTRAP_TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
+BOOTSTRAP_QUIESCE_JOURNAL="${REFUNDDESK_CONTROL_ROOT}/runtime-quiesce-in-progress.json"
+[[ ! -e "${BOOTSTRAP_TRANSITION_JOURNAL}" && ! -L "${BOOTSTRAP_TRANSITION_JOURNAL}" ]] ||
+  die "host bootstrap is blocked while a release transition is unfinished"
+[[ ! -e "${BOOTSTRAP_QUIESCE_JOURNAL}" && ! -L "${BOOTSTRAP_QUIESCE_JOURNAL}" ]] ||
+  die "host bootstrap is blocked until runtime quiescence is recovered"
 
 [[ -r /etc/os-release ]] || die "/etc/os-release is missing"
 # shellcheck disable=SC1091
@@ -261,7 +268,8 @@ install -d -o root -g root -m 0700 \
   "${REFUNDDESK_CONFIG_ROOT}" \
   "${REFUNDDESK_CONFIG_ROOT}/aws" \
   "${REFUNDDESK_CONFIG_ROOT}/secrets" \
-  /var/lib/refunddesk/backups
+  /var/lib/refunddesk/backups \
+  /var/lib/refunddesk/control
 install -d -o root -g root -m 0755 "${REFUNDDESK_CONFIG_ROOT}/tls"
 install -d -o root -g 999 -m 2750 "${REFUNDDESK_CONFIG_ROOT}/tls/postgres"
 install -d -o root -g 1000 -m 2750 "${REFUNDDESK_CONFIG_ROOT}/tls/verifier"
@@ -271,6 +279,74 @@ install -d -o 1000 -g 1000 -m 0700 \
   /var/lib/refunddesk/caddy-public/data \
   /var/lib/refunddesk/caddy-public/config
 install -d -o root -g adm -m 0750 /var/log/refunddesk
+
+RELEASE_CONTRACT_MARKER="${SCRIPT_DIR}/../RELEASE_CONTRACT_VERSION"
+assert_root_control_file "${RELEASE_CONTRACT_MARKER}"
+mapfile -t release_contract_lines <"${RELEASE_CONTRACT_MARKER}"
+(( ${#release_contract_lines[@]} == 1 )) &&
+  [[ "${release_contract_lines[0]}" == "2" ]] ||
+  die "bootstrap source does not implement release contract 2"
+for stable_launcher in \
+  "${SCRIPT_DIR}/release-launcher.sh" \
+  "${SCRIPT_DIR}/release-fence.sh" \
+  "${SCRIPT_DIR}/backup-launcher.sh" \
+  "${SCRIPT_DIR}/retention-launcher.sh" \
+  "${SCRIPT_DIR}/quiesce-recovery-launcher.sh"; do
+  assert_root_control_file "${stable_launcher}"
+done
+BOOTSTRAP_DURABILITY_HELPER="${SCRIPT_DIR}/release-transition-journal.py"
+assert_root_control_file "${BOOTSTRAP_DURABILITY_HELPER}"
+atomic_bootstrap_install() {
+  local source_path="$1"
+  local target_path="$2"
+  local mode="$3"
+  local expected_link relative_path temporary_path
+
+  if [[ -L "${target_path}" ]]; then
+    case "${target_path}" in
+      /usr/local/sbin/*)
+        relative_path="scripts/${source_path##*/}"
+        ;;
+      /etc/systemd/system/*)
+        relative_path="systemd/${source_path##*/}"
+        ;;
+      *)
+        die "bootstrap refuses an unrecognized generated control-plane path"
+        ;;
+    esac
+    expected_link="${REFUNDDESK_CONTROL_PLANE_LINK}/${relative_path}"
+    assert_root_control_symlink "${target_path}" "${expected_link}"
+    cmp --silent "${source_path}" "${target_path}" ||
+      die "bootstrap source differs from the active control-plane generation: ${target_path}"
+    return 0
+  fi
+
+  temporary_path="$(mktemp "$(dirname -- "${target_path}")/.${target_path##*/}.XXXXXX")"
+  if ! install -o root -g root -m "${mode}" "${source_path}" "${temporary_path}"; then
+    rm -f -- "${temporary_path}"
+    die "bootstrap control-plane staging failed: ${target_path}"
+  fi
+  if ! python3 "${BOOTSTRAP_DURABILITY_HELPER}" durable-replace \
+    --source "${temporary_path}" \
+    --target "${target_path}" \
+    --mode "${mode}" >/dev/null; then
+    rm -f -- "${temporary_path}"
+    die "bootstrap control-plane activation failed: ${target_path}"
+  fi
+  cmp --silent "${source_path}" "${target_path}" ||
+    die "bootstrap control-plane bytes differ after activation: ${target_path}"
+}
+atomic_bootstrap_install \
+  "${SCRIPT_DIR}/release-launcher.sh" /usr/local/sbin/refunddesk-release 0755
+atomic_bootstrap_install \
+  "${SCRIPT_DIR}/release-fence.sh" /usr/local/sbin/refunddesk-release-fence 0755
+atomic_bootstrap_install \
+  "${SCRIPT_DIR}/backup-launcher.sh" /usr/local/sbin/refunddesk-backup 0755
+atomic_bootstrap_install \
+  "${SCRIPT_DIR}/retention-launcher.sh" /usr/local/sbin/refunddesk-retention 0755
+atomic_bootstrap_install \
+  "${SCRIPT_DIR}/quiesce-recovery-launcher.sh" \
+  /usr/local/sbin/refunddesk-quiesce-recovery 0755
 
 daemon_file=/etc/docker/daemon.json
 daemon_tmp="$(mktemp)"
@@ -358,14 +434,49 @@ ufw --force enable
 if [[ "${INSTALL_UNITS}" == "true" ]]; then
   SYSTEMD_SOURCE="${SCRIPT_DIR}/../systemd"
   if [[ -d "${SYSTEMD_SOURCE}" ]]; then
-    install -o root -g root -m 0644 \
+    atomic_bootstrap_install \
       "${SYSTEMD_SOURCE}/refunddesk-backup.service" \
-      /etc/systemd/system/refunddesk-backup.service
-    install -o root -g root -m 0644 \
+      /etc/systemd/system/refunddesk-backup.service 0644
+    atomic_bootstrap_install \
       "${SYSTEMD_SOURCE}/refunddesk-backup.timer" \
-      /etc/systemd/system/refunddesk-backup.timer
+      /etc/systemd/system/refunddesk-backup.timer 0644
+    atomic_bootstrap_install \
+      "${SYSTEMD_SOURCE}/refunddesk-retention.service" \
+      /etc/systemd/system/refunddesk-retention.service 0644
+    atomic_bootstrap_install \
+      "${SYSTEMD_SOURCE}/refunddesk-retention.timer" \
+      /etc/systemd/system/refunddesk-retention.timer 0644
+    atomic_bootstrap_install \
+      "${SYSTEMD_SOURCE}/refunddesk-quiesce-recovery.service" \
+      /etc/systemd/system/refunddesk-quiesce-recovery.service 0644
     systemctl daemon-reload
-    log "backup units installed but not enabled; configure /etc/refunddesk/backup.env first"
+    systemctl enable refunddesk-quiesce-recovery.service
+    systemctl is-enabled --quiet refunddesk-quiesce-recovery.service ||
+      die "runtime-quiescence boot recovery is not enabled"
+    systemctl enable --now refunddesk-retention.timer
+    systemctl is-enabled --quiet refunddesk-retention.timer &&
+      systemctl is-active --quiet refunddesk-retention.timer ||
+      die "retention schedule activation is unproven"
+    BOOTSTRAP_BACKUP_ENVIRONMENT="${REFUNDDESK_CONFIG_ROOT}/backup.env"
+    BOOTSTRAP_BACKUP_AWS_CONFIG="${REFUNDDESK_CONFIG_ROOT}/aws/config"
+    if [[ -e "${BOOTSTRAP_BACKUP_ENVIRONMENT}" ||
+      -L "${BOOTSTRAP_BACKUP_ENVIRONMENT}" ]]; then
+      python3 "${BOOTSTRAP_DURABILITY_HELPER}" validate-backup \
+        --environment "${BOOTSTRAP_BACKUP_ENVIRONMENT}" \
+        --aws-config "${BOOTSTRAP_BACKUP_AWS_CONFIG}" >/dev/null ||
+        die "backup scheduling configuration is invalid"
+      systemctl enable --now refunddesk-backup.timer
+      systemctl is-enabled --quiet refunddesk-backup.timer &&
+        systemctl is-active --quiet refunddesk-backup.timer ||
+        die "backup schedule activation is unproven"
+      log "valid backup schedule enabled and active"
+    else
+      systemctl disable --now refunddesk-backup.timer
+      ! systemctl is-enabled --quiet refunddesk-backup.timer ||
+        die "unconfigured backup schedule remained enabled"
+      log "backup units installed but disabled until strict backup configuration exists"
+    fi
+    log "retention timer and runtime-quiescence boot recovery enabled"
   fi
 fi
 

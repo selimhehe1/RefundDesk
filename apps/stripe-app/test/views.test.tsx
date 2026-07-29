@@ -241,6 +241,44 @@ describe("Stripe pilot views", () => {
     );
   });
 
+  it.each([429, 503])(
+    "reuses the same nonce after retryable HTTP %i without assuming completion",
+    async (status) => {
+      apiMocks.createRefundRequest
+        .mockRejectedValueOnce(
+          new SignedExtensionRequestError("REQUEST_FAILED", "Retry later", status),
+        )
+        .mockResolvedValueOnce({
+          request_id: "4c7080f7-4401-4c67-b96f-c9e80e8249d3",
+          status: "pending_approval",
+        });
+      const { wrapper, update } = render(<PaymentDetail {...testContext()} />);
+      await update();
+      wrapper
+        .findAll("TextArea")
+        .find((node) => isRecord(node.props) && node.props["name"] === "justification")
+        ?.triggerKeypath("onChange", {
+          target: { value: "Customer requested a partial refund." },
+        });
+
+      wrapper
+        .findAll("Button")
+        .find((button) => button.text === "Request refund")
+        ?.triggerKeypath("onPress");
+      await update();
+      wrapper
+        .findAll("Button")
+        .find((button) => button.text === "Request refund")
+        ?.triggerKeypath("onPress");
+      await update();
+
+      expect(apiMocks.createRefundRequest).toHaveBeenCalledTimes(2);
+      expect(apiMocks.createRefundRequest.mock.calls[1]?.[3]).toBe(
+        apiMocks.createRefundRequest.mock.calls[0]?.[3],
+      );
+    },
+  );
+
   it("rotates the nonce after an authoritative 4xx rejection", async () => {
     apiMocks.createRefundRequest
       .mockRejectedValueOnce(new SignedExtensionRequestError("REQUEST_FAILED", "Rejected", 422))

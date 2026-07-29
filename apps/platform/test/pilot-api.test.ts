@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   canonicalJson,
@@ -20,7 +20,8 @@ import {
 import { createPilotAuditToken, verifyPilotAuditToken } from "../src/server/pilot-audit-token.js";
 import { TestAndSandboxAccessPolicy } from "../src/server/pilot-access-policy.js";
 import { PilotApiError } from "../src/server/pilot-errors.js";
-import { handlePilotRoute } from "../src/server/pilot-http.js";
+import { handlePilotRoute, type PilotHttpDependencies } from "../src/server/pilot-http.js";
+import type { SignedRequestRateLimiter } from "../src/server/mutation-rate-limit.js";
 import type {
   PilotExternalAlert,
   PilotMutation,
@@ -372,11 +373,17 @@ describe("signed pilot API boundary", () => {
   let repository: FakePilotRepository;
   let paymentReader: FakePaymentReader;
   let service: PilotService;
+  let emitOperationalSignal: PilotHttpDependencies["emitOperationalSignal"];
+  let signedRequestRateLimiter: SignedRequestRateLimiter;
 
   beforeEach(() => {
     repository = new FakePilotRepository();
     paymentReader = new FakePaymentReader();
     service = new PilotService(repository, paymentReader, new TestAndSandboxAccessPolicy());
+    emitOperationalSignal = vi.fn();
+    signedRequestRateLimiter = {
+      consume: () => ({ allowed: true }),
+    };
   });
 
   const signedRequestVerifier: SignedRequestVerifier = {
@@ -400,6 +407,8 @@ describe("signed pilot API boundary", () => {
     options: SignedRequestOptions = {},
   ): Promise<Response> {
     return handlePilotRoute(signedRequest(spec, options), spec, {
+      emitOperationalSignal,
+      signedRequestRateLimiter,
       service,
       signedRequestVerifier,
     });
@@ -410,6 +419,285 @@ describe("signed pilot API boundary", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
     expect(response.headers.get("access-control-allow-headers")).toContain("Stripe-Signature");
+  });
+
+  it("rate-limits a mutation only after signature verification with its authenticated scope", async () => {
+    const calls: string[] = [];
+    const verify = vi.fn(async (rawText: string, signature: string | null) => {
+      calls.push("verify");
+      return signedRequestVerifier.verify(rawText, signature);
+    });
+    const consume = vi.fn(() => {
+      calls.push("limit");
+      return { allowed: false, retryAfterSeconds: 7 };
+    });
+
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.refundRequestCreate),
+      PILOT_ROUTE_SPECS.refundRequestCreate,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("7");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("access-control-expose-headers")).toBe("Retry-After");
+    expect(await errorBody(response)).toMatchObject({ code: "RATE_LIMITED" });
+    expect(calls).toEqual(["verify", "limit"]);
+    expect(consume).toHaveBeenCalledOnce();
+    expect(consume).toHaveBeenCalledWith({
+      accountId: ACCOUNT_ID,
+      environment: "test",
+      requestClass: "mutation",
+    });
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("rate-limits signed reads independently from mutations", async () => {
+    repository.context = {
+      ...defaultContext(),
+      environment: "sandbox",
+    };
+    const consume = vi.fn((scope: Parameters<SignedRequestRateLimiter["consume"]>[0]) => {
+      if (scope.requestClass === "read") {
+        return { allowed: false, retryAfterSeconds: 3 };
+      }
+      return { allowed: true };
+    });
+
+    const readResponse = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.paymentEligibility, { isSandbox: true }),
+      PILOT_ROUTE_SPECS.paymentEligibility,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier,
+      },
+    );
+    const mutationResponse = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.refundRequestCreate, {
+        command: {
+          amount_minor: "500",
+          currency: "eur",
+          justification: "Customer requested a partial refund.",
+          reason: "requested_by_customer",
+        },
+        isSandbox: true,
+        nonce: "7e173bba-35c5-4ea8-8822-b262dc32e55f",
+      }),
+      PILOT_ROUTE_SPECS.refundRequestCreate,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    expect(readResponse.status).toBe(429);
+    expect(readResponse.headers.get("retry-after")).toBe("3");
+    expect(mutationResponse.status).toBe(200);
+    expect(consume.mock.calls.map(([scope]) => scope)).toEqual([
+      {
+        accountId: ACCOUNT_ID,
+        environment: "sandbox",
+        requestClass: "read",
+      },
+      {
+        accountId: ACCOUNT_ID,
+        environment: "sandbox",
+        requestClass: "mutation",
+      },
+    ]);
+  });
+
+  it("does not create a limiter scope for an invalid signature", async () => {
+    const consume = vi.fn(() => ({ allowed: true }));
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.contextSync, {
+        signingSecret: "absec_wrong",
+      }),
+      PILOT_ROUTE_SPECS.contextSync,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe retryable 503 when the limiter fails after verification", async () => {
+    const verify = vi.fn(signedRequestVerifier.verify.bind(signedRequestVerifier));
+    const signal = vi.fn();
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.settingsUpdate),
+      PILOT_ROUTE_SPECS.settingsUpdate,
+      {
+        emitOperationalSignal: signal,
+        signedRequestRateLimiter: {
+          consume() {
+            throw new Error("secret internal limiter detail");
+          },
+        },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(response.headers.get("access-control-expose-headers")).toBe("Retry-After");
+    const body = await errorBody(response);
+    expect(body).toMatchObject({
+      code: "RATE_LIMITER_UNAVAILABLE",
+      message: "Signed request capacity is temporarily unavailable.",
+    });
+    expect(Object.keys(body).sort()).toEqual(["code", "message", "request_id"]);
+    expect(JSON.stringify(body)).not.toContain("secret internal limiter detail");
+    expect(verify).toHaveBeenCalledOnce();
+    expect(signal).toHaveBeenCalledOnce();
+    expect(signal).toHaveBeenCalledWith("signed_request_rate_limiter_unavailable");
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("rejects declared and streamed oversized bodies before verifier allocation", async () => {
+    const verify = vi.fn();
+    const consume = vi.fn(() => ({ allowed: true }));
+    const declaredOversized = new Request(
+      `https://api.refunddesk.example${PILOT_ROUTE_SPECS.paymentEligibility.path}`,
+      {
+        body: "{}",
+        headers: {
+          "Content-Length": "32769",
+          "Stripe-Signature": "t=1,v1=unused",
+        },
+        method: "POST",
+      },
+    );
+
+    const declaredResponse = await handlePilotRoute(
+      declaredOversized,
+      PILOT_ROUTE_SPECS.paymentEligibility,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    const streamedOversized = new Request(
+      `https://api.refunddesk.example${PILOT_ROUTE_SPECS.paymentEligibility.path}`,
+      {
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(20_000));
+            controller.enqueue(new Uint8Array(12_769));
+            controller.close();
+          },
+        }),
+        headers: { "Stripe-Signature": "t=1,v1=unused" },
+        method: "POST",
+        duplex: "half",
+      } as RequestInit & { readonly duplex: "half" },
+    );
+    const streamedResponse = await handlePilotRoute(
+      streamedOversized,
+      PILOT_ROUTE_SPECS.paymentEligibility,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    expect(declaredResponse.status).toBe(413);
+    expect(streamedResponse.status).toBe(413);
+    expect(await errorBody(declaredResponse)).toMatchObject({ code: "REQUEST_TOO_LARGE" });
+    expect(await errorBody(streamedResponse)).toMatchObject({ code: "REQUEST_TOO_LARGE" });
+    expect(verify).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing signatures, malformed lengths and encoded bodies before body consumption", async () => {
+    const getReader = vi.fn(() => {
+      throw new Error("body must not be consumed");
+    });
+    const verify = vi.fn();
+    const consume = vi.fn(() => ({ allowed: true }));
+    const missingSignature = {
+      body: { getReader },
+      headers: new Headers(),
+      url: `https://api.refunddesk.example${PILOT_ROUTE_SPECS.settingsGet.path}`,
+    } as unknown as Request;
+    const missingSignatureResponse = await handlePilotRoute(
+      missingSignature,
+      PILOT_ROUTE_SPECS.settingsGet,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    const invalidLength = new Request(
+      `https://api.refunddesk.example${PILOT_ROUTE_SPECS.settingsGet.path}`,
+      {
+        body: "{}",
+        headers: {
+          "Content-Length": "32KB",
+          "Stripe-Signature": "t=1,v1=unused",
+        },
+        method: "POST",
+      },
+    );
+    const invalidLengthResponse = await handlePilotRoute(
+      invalidLength,
+      PILOT_ROUTE_SPECS.settingsGet,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { verify },
+      },
+    );
+
+    const encoded = new Request(
+      `https://api.refunddesk.example${PILOT_ROUTE_SPECS.settingsGet.path}`,
+      {
+        body: "{}",
+        headers: {
+          "Content-Encoding": "gzip",
+          "Stripe-Signature": "t=1,v1=unused",
+        },
+        method: "POST",
+      },
+    );
+    const encodedResponse = await handlePilotRoute(encoded, PILOT_ROUTE_SPECS.settingsGet, {
+      emitOperationalSignal,
+      signedRequestRateLimiter: { consume },
+      service,
+      signedRequestVerifier: { verify },
+    });
+
+    expect(missingSignatureResponse.status).toBe(401);
+    expect(invalidLengthResponse.status).toBe(400);
+    expect(encodedResponse.status).toBe(400);
+    expect(getReader).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
   });
 
   it("verifies the raw signature before attempting to parse JSON", async () => {
@@ -426,7 +714,12 @@ describe("signed pilot API boundary", () => {
         method: "POST",
       }),
       PILOT_ROUTE_SPECS.contextSync,
-      { service, signedRequestVerifier },
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter,
+        service,
+        signedRequestVerifier,
+      },
     );
     expect(response.status).toBe(401);
     expect(await errorBody(response)).toMatchObject({

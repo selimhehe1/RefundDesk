@@ -33,6 +33,43 @@ async function closeQuietly(client: Client): Promise<void> {
   }
 }
 
+async function installPinnedPgBossRetentionFixture(client: Client): Promise<void> {
+  await client.query(`
+    CREATE SCHEMA pgboss;
+    CREATE TYPE pgboss.job_state AS ENUM (
+      'created',
+      'retry',
+      'active',
+      'completed',
+      'cancelled',
+      'failed'
+    );
+    CREATE TABLE pgboss.version (
+      version INTEGER PRIMARY KEY
+    );
+    INSERT INTO pgboss.version (version) VALUES (37);
+    CREATE TABLE pgboss.job (
+      id UUID NOT NULL,
+      name TEXT NOT NULL,
+      data JSONB,
+      state pgboss.job_state NOT NULL DEFAULT 'created',
+      blocking BOOLEAN NOT NULL DEFAULT false,
+      pending_dependencies INTEGER NOT NULL DEFAULT 0,
+      source_name TEXT,
+      source_id UUID
+    ) PARTITION BY LIST (name);
+    CREATE TABLE pgboss.job_common
+      PARTITION OF pgboss.job DEFAULT;
+    CREATE TABLE pgboss.job_dependency (
+      child_name TEXT NOT NULL,
+      child_id UUID NOT NULL,
+      parent_name TEXT NOT NULL,
+      parent_id UUID NOT NULL,
+      PRIMARY KEY (child_name, child_id, parent_name, parent_id)
+    );
+  `);
+}
+
 databaseDescribe("PostgreSQL security invariants", () => {
   const ephemeralDatabaseUrl =
     testDatabaseUrl.length === 0 ? "" : connectionStringForDatabase(testDatabaseUrl, databaseName);
@@ -117,6 +154,7 @@ databaseDescribe("PostgreSQL security invariants", () => {
       for (const migration of migrations) {
         await client.query(migration);
       }
+      await installPinnedPgBossRetentionFixture(client);
 
       await client.query("BEGIN");
       await client.query("SAVEPOINT refunddesk_security_fixture_transaction");
@@ -137,6 +175,12 @@ databaseDescribe("PostgreSQL security invariants", () => {
              CREATE ROLE refunddesk_queue_login
                LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
            END IF;
+           IF NOT EXISTS (
+             SELECT 1 FROM pg_roles WHERE rolname = 'refunddesk_maintenance_login'
+           ) THEN
+             CREATE ROLE refunddesk_maintenance_login
+               LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOREPLICATION NOBYPASSRLS;
+           END IF;
          END
          $$`,
       );
@@ -152,6 +196,10 @@ databaseDescribe("PostgreSQL security invariants", () => {
       await client.query("GRANT refunddesk_queue TO refunddesk_queue_login");
       await client.query(
         "REVOKE refunddesk_runtime, refunddesk_worker, refunddesk_maintenance, refunddesk_attestation_writer FROM refunddesk_queue_login",
+      );
+      await client.query("GRANT refunddesk_maintenance TO refunddesk_maintenance_login");
+      await client.query(
+        "REVOKE refunddesk_runtime, refunddesk_worker, refunddesk_queue, refunddesk_attestation_writer FROM refunddesk_maintenance_login",
       );
       await client.query("SET ROLE refunddesk_runtime");
       const provisionA = await client.query<{ tenant_id: string; installation_id: string }>(
@@ -992,6 +1040,78 @@ databaseDescribe("PostgreSQL security invariants", () => {
     });
     await client.query("ROLLBACK TO SAVEPOINT before_queue_financial_read");
     await client.query("RESET SESSION AUTHORIZATION");
+    await client.query("SET SESSION AUTHORIZATION refunddesk_maintenance_login");
+    const maintenanceLogin = await client.query<{
+      parent_roles: string[];
+      rolbypassrls: boolean;
+      rolcreatedb: boolean;
+      rolcreaterole: boolean;
+      rolreplication: boolean;
+      rolsuper: boolean;
+      can_list_due_purges: boolean;
+      can_guarded_purge: boolean;
+      can_raw_purge: boolean;
+      pgboss_create: boolean;
+      pgboss_usage: boolean;
+    }>(
+      `SELECT
+         ARRAY(
+           SELECT parent.rolname::text
+           FROM pg_auth_members AS membership
+           INNER JOIN pg_roles AS parent ON parent.oid = membership.roleid
+           WHERE membership.member = (
+             SELECT oid FROM pg_roles WHERE rolname = current_user
+           )
+           ORDER BY parent.rolname
+         ) AS parent_roles,
+         role.rolsuper,
+         role.rolcreatedb,
+         role.rolcreaterole,
+         role.rolreplication,
+         role.rolbypassrls,
+         has_schema_privilege(current_user, 'pgboss', 'USAGE')
+           AS pgboss_usage,
+         has_schema_privilege(current_user, 'pgboss', 'CREATE')
+           AS pgboss_create,
+         has_function_privilege(
+           current_user,
+           'public.refunddesk_list_due_tenant_purges(integer)',
+           'EXECUTE'
+         ) AS can_list_due_purges,
+         has_function_privilege(
+           current_user,
+           'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+           'EXECUTE'
+         ) AS can_guarded_purge,
+         has_function_privilege(
+           current_user,
+           'public.refunddesk_purge_tenant(uuid,character varying)',
+           'EXECUTE'
+         ) AS can_raw_purge
+       FROM pg_roles AS role
+       WHERE role.rolname = current_user`,
+    );
+    expect(maintenanceLogin.rows[0]).toEqual({
+      parent_roles: ["refunddesk_maintenance"],
+      rolsuper: false,
+      rolcreatedb: false,
+      rolcreaterole: false,
+      rolreplication: false,
+      rolbypassrls: false,
+      pgboss_usage: false,
+      pgboss_create: false,
+      can_list_due_purges: true,
+      can_guarded_purge: true,
+      can_raw_purge: false,
+    });
+    await client.query("SAVEPOINT before_maintenance_financial_read");
+    await expect(
+      client.query("SELECT id FROM public.refund_requests LIMIT 1"),
+    ).rejects.toMatchObject({
+      code: "42501",
+    });
+    await client.query("ROLLBACK TO SAVEPOINT before_maintenance_financial_read");
+    await client.query("RESET SESSION AUTHORIZATION");
     await client.query("SET SESSION AUTHORIZATION refunddesk_worker_login");
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantA]);
     await client.query(
@@ -1148,6 +1268,139 @@ databaseDescribe("PostgreSQL security invariants", () => {
     expect(tenantBEvents.rowCount).toBe(1);
   });
 
+  it("selects due tenants with explicit blockers and keeps eligible tenants first", async () => {
+    const deauthorizedAt = new Date("2020-03-01T12:00:00.000Z");
+    const pendingDeleteAt = new Date(deauthorizedAt.getTime() + 30 * 24 * 60 * 60 * 1_000);
+    const eligibleTenantId = randomUUID();
+    const heldTenantId = randomUUID();
+    const unresolvedTenantId = randomUUID();
+    const liveTenantId = randomUUID();
+    const eligibleInstallationId = randomUUID();
+    const heldInstallationId = randomUUID();
+    const unresolvedInstallationId = randomUUID();
+    const liveInstallationId = randomUUID();
+
+    await client.query("RESET ROLE");
+    await client.query(
+      `INSERT INTO tenants (id, status, pending_delete_at, legal_hold_at)
+       VALUES
+         ($1, 'pending_deletion', $5, NULL),
+         ($2, 'pending_deletion', $5, statement_timestamp()),
+         ($3, 'pending_deletion', $5, NULL),
+         ($4, 'pending_deletion', $5, NULL)`,
+      [eligibleTenantId, heldTenantId, unresolvedTenantId, liveTenantId, pendingDeleteAt],
+    );
+    await client.query(
+      `INSERT INTO stripe_installations (
+         id,
+         tenant_id,
+         stripe_account_id,
+         environment,
+         status,
+         deauthorized_at
+       )
+       VALUES
+         ($1, $5, 'acct_RetentionEligible', 'test', 'deauthorized', $9),
+         ($2, $6, 'acct_RetentionHeld', 'sandbox', 'deauthorized', $9),
+         ($3, $7, 'acct_RetentionUnresolved', 'test', 'deauthorized', $9),
+         ($4, $8, 'acct_RetentionLive', 'live', 'deauthorized', $9)`,
+      [
+        eligibleInstallationId,
+        heldInstallationId,
+        unresolvedInstallationId,
+        liveInstallationId,
+        eligibleTenantId,
+        heldTenantId,
+        unresolvedTenantId,
+        liveTenantId,
+        deauthorizedAt,
+      ],
+    );
+    await client.query(
+      `INSERT INTO reconciliation_checkpoints (
+         tenant_id,
+         installation_id,
+         committed_through,
+         scan_window_end,
+         page_in_progress
+       )
+       VALUES ($1, $2, $3, $4, true)`,
+      [
+        unresolvedTenantId,
+        unresolvedInstallationId,
+        new Date("2020-02-27T12:00:00.000Z"),
+        new Date("2020-02-28T12:00:00.000Z"),
+      ],
+    );
+
+    await client.query("SET ROLE refunddesk_runtime");
+    await client.query("SAVEPOINT before_runtime_retention_list");
+    await expect(
+      client.query("SELECT tenant_id FROM refunddesk_list_due_tenant_purges(100)"),
+    ).rejects.toMatchObject({ code: "42501" });
+    await client.query("ROLLBACK TO SAVEPOINT before_runtime_retention_list");
+
+    await client.query("SET ROLE refunddesk_maintenance");
+    await client.query("SAVEPOINT before_invalid_retention_limit");
+    await expect(
+      client.query("SELECT tenant_id FROM refunddesk_list_due_tenant_purges(0)"),
+    ).rejects.toMatchObject({ code: "22023" });
+    await client.query("ROLLBACK TO SAVEPOINT before_invalid_retention_limit");
+
+    const candidates = await client.query<{
+      blocker_reason: string | null;
+      overdue_seconds: string;
+      tenant_id: string;
+    }>(
+      `SELECT tenant_id::text, blocker_reason::text, overdue_seconds::text
+       FROM refunddesk_list_due_tenant_purges(100)`,
+    );
+    const candidatesById = new Map(candidates.rows.map((row) => [row.tenant_id, row]));
+    expect(candidates.rows[0]?.tenant_id).toBe(eligibleTenantId);
+    expect(candidatesById.get(eligibleTenantId)?.blocker_reason).toBeNull();
+    expect(candidatesById.get(heldTenantId)?.blocker_reason).toBe("legal_hold");
+    expect(candidatesById.get(unresolvedTenantId)?.blocker_reason).toBe("checkpoint_state");
+    expect(candidatesById.get(liveTenantId)?.blocker_reason).toBe("installation_state");
+    expect(candidates.rows.every((row) => Number.parseInt(row.overdue_seconds, 10) >= 0)).toBe(
+      true,
+    );
+
+    await client.query("SAVEPOINT before_raw_maintenance_purge");
+    await expect(
+      client.query("SELECT result FROM refunddesk_purge_tenant($1, $2)", [
+        liveTenantId,
+        "v1.DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      ]),
+    ).rejects.toMatchObject({ code: "42501" });
+    await client.query("ROLLBACK TO SAVEPOINT before_raw_maintenance_purge");
+
+    await client.query("SAVEPOINT before_live_automatic_purge");
+    await expect(
+      client.query("SELECT result FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        liveTenantId,
+        "v1.DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      ]),
+    ).rejects.toMatchObject({ code: "55000" });
+    await client.query("ROLLBACK TO SAVEPOINT before_live_automatic_purge");
+
+    const purged = await client.query<{ result: string }>(
+      "SELECT result FROM refunddesk_purge_test_sandbox_tenant($1, $2)",
+      [eligibleTenantId, "v1.CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"],
+    );
+    expect(purged.rows).toEqual([{ result: "completed" }]);
+
+    await client.query("RESET ROLE");
+    const preserved = await client.query<{ id: string }>(
+      "SELECT id::text FROM tenants WHERE id = ANY($1::uuid[]) ORDER BY id",
+      [[heldTenantId, unresolvedTenantId, liveTenantId]],
+    );
+    expect(new Set(preserved.rows.map((row) => row.id))).toEqual(
+      new Set([heldTenantId, unresolvedTenantId, liveTenantId]),
+    );
+    await client.query("SET ROLE refunddesk_runtime");
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantB]);
+  });
+
   it("purges only a due, hold-free tenant and returns an idempotent non-personal certificate", async () => {
     const pseudonym = "v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const deauthorizedAt = new Date("2020-01-01T12:00:00.000Z");
@@ -1266,6 +1519,33 @@ databaseDescribe("PostgreSQL security invariants", () => {
       ) VALUES ($1, 'system', 'purge.fixture', 'tenant', 'internal-fixture', $2)`,
       [purgeTenantId, "70d9f9b8-1e75-4314-97f5-271ca5ca5a2b"],
     );
+    await client.query(
+      `INSERT INTO external_refund_alerts (
+         tenant_id,
+         installation_id,
+         environment,
+         stripe_refund_id,
+         stripe_refund_created_at,
+         payment_key,
+         amount_minor,
+         currency,
+         classification,
+         detected_at
+       )
+       VALUES (
+         $1,
+         $2,
+         'test',
+         're_PurgeExternalAlert',
+         statement_timestamp() - INTERVAL '1 minute',
+         'pi_PurgeCertificate',
+         100,
+         'eur',
+         'external',
+         statement_timestamp()
+       )`,
+      [purgeTenantId, purgeInstallationId],
+    );
 
     await client.query("SET ROLE refunddesk_worker");
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [purgeTenantId]);
@@ -1283,13 +1563,102 @@ databaseDescribe("PostgreSQL security invariants", () => {
     );
 
     await client.query("RESET ROLE");
+    const activeTenantJobId = randomUUID();
+    const tenantWebhookJobId = randomUUID();
+    const foreignTenantJobId = randomUUID();
+    const globalRecoveryJobId = randomUUID();
+    const purgeWebhookReceipt = await client.query<{ id: string }>(
+      `INSERT INTO webhook_receipts (
+         tenant_id,
+         installation_id,
+         endpoint,
+         stripe_event_id,
+         stripe_account_id,
+         event_type,
+         object_id,
+         normalized_payload,
+         stripe_created_at,
+         status,
+         processed_at
+       ) VALUES (
+         $1,
+         $2,
+         'account_test',
+         'evt_PurgeQueueReceipt',
+         'acct_PurgeIntegration',
+         'account.application.deauthorized',
+         'ca_PurgeQueueReceipt',
+         '{}'::JSONB,
+         statement_timestamp(),
+         'processed',
+         statement_timestamp()
+       )
+       RETURNING id::TEXT`,
+      [purgeTenantId, purgeInstallationId],
+    );
+    const purgeWebhookReceiptId = purgeWebhookReceipt.rows[0]?.id ?? "";
+    await client.query(
+      `INSERT INTO pgboss.job (id, name, data, state)
+       VALUES
+         (
+           $1,
+           'refunddesk_refund_execute',
+           jsonb_build_object('tenant_id', $4::TEXT, 'request_id', $5::TEXT),
+           'active'
+         ),
+         (
+           $2,
+           'refunddesk_webhook_process',
+           jsonb_build_object(
+             'tenant_id',
+             $4::TEXT,
+             'installation_id',
+             $6::TEXT,
+             'receipt_id',
+             $7::TEXT
+           ),
+           'completed'
+         ),
+         (
+           $3,
+           'refunddesk_refund_execute',
+           jsonb_build_object(
+             'tenant_id',
+             $8::TEXT,
+             'request_id',
+             $9::TEXT
+           ),
+           'completed'
+         ),
+         (
+           $10,
+           'refunddesk_approved_recovery',
+           jsonb_build_object('scope', 'approved'),
+           'created'
+         )`,
+      [
+        activeTenantJobId,
+        tenantWebhookJobId,
+        foreignTenantJobId,
+        purgeTenantId,
+        purgeRequestId,
+        purgeInstallationId,
+        purgeWebhookReceiptId,
+        tenantB,
+        randomUUID(),
+        globalRecoveryJobId,
+      ],
+    );
     await client.query("UPDATE tenants SET legal_hold_at = statement_timestamp() WHERE id = $1", [
       purgeTenantId,
     ]);
     await client.query("SET ROLE refunddesk_maintenance");
     await client.query("SAVEPOINT before_held_purge");
     await expect(
-      client.query("SELECT * FROM refunddesk_purge_tenant($1, $2)", [purgeTenantId, pseudonym]),
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
     ).rejects.toMatchObject({ code: "55000" });
     await client.query("ROLLBACK TO SAVEPOINT before_held_purge");
 
@@ -1298,9 +1667,100 @@ databaseDescribe("PostgreSQL security invariants", () => {
     await client.query("SET ROLE refunddesk_runtime");
     await client.query("SAVEPOINT before_runtime_purge");
     await expect(
-      client.query("SELECT * FROM refunddesk_purge_tenant($1, $2)", [purgeTenantId, pseudonym]),
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
     ).rejects.toMatchObject({ code: "42501" });
     await client.query("ROLLBACK TO SAVEPOINT before_runtime_purge");
+
+    await client.query("RESET ROLE");
+    await client.query("UPDATE pgboss.version SET version = 36");
+    await client.query("SET ROLE refunddesk_maintenance");
+    await client.query("SAVEPOINT before_unsupported_queue_schema");
+    await expect(
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
+    ).rejects.toMatchObject({ code: "RDQ01" });
+    await client.query("ROLLBACK TO SAVEPOINT before_unsupported_queue_schema");
+
+    await client.query("RESET ROLE");
+    await client.query("UPDATE pgboss.version SET version = 37");
+    await client.query("SET ROLE refunddesk_maintenance");
+    await client.query("SAVEPOINT before_active_queue_purge");
+    await expect(
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
+    ).rejects.toMatchObject({ code: "55000" });
+    await client.query("ROLLBACK TO SAVEPOINT before_active_queue_purge");
+
+    await client.query("RESET ROLE");
+    await client.query("UPDATE pgboss.job SET state = 'completed' WHERE id = $1", [
+      activeTenantJobId,
+    ]);
+    await client.query(
+      `INSERT INTO pgboss.job_dependency (
+         child_name,
+         child_id,
+         parent_name,
+         parent_id
+       ) VALUES (
+         'refunddesk_refund_execute',
+         $1,
+         'refunddesk_approved_recovery',
+         $2
+       )`,
+      [activeTenantJobId, globalRecoveryJobId],
+    );
+    await client.query("SET ROLE refunddesk_maintenance");
+    await client.query("SAVEPOINT before_dependent_queue_purge");
+    await expect(
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
+    ).rejects.toMatchObject({ code: "55000" });
+    await client.query("ROLLBACK TO SAVEPOINT before_dependent_queue_purge");
+
+    await client.query("RESET ROLE");
+    await client.query(
+      `DELETE FROM pgboss.job_dependency
+       WHERE child_name = 'refunddesk_refund_execute'
+         AND child_id = $1`,
+      [activeTenantJobId],
+    );
+    const crossedTenantJobId = randomUUID();
+    await client.query(
+      `INSERT INTO pgboss.job (id, name, data, state)
+       VALUES (
+         $1,
+         'refunddesk_refund_execute',
+         jsonb_build_object('tenant_id', $2::TEXT, 'request_id', $3::TEXT),
+         'completed'
+       )`,
+      [crossedTenantJobId, tenantB, purgeRequestId],
+    );
+    await client.query("SET ROLE refunddesk_maintenance");
+    await client.query("SAVEPOINT before_crossed_queue_purge");
+    await expect(
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        purgeTenantId,
+        pseudonym,
+      ]),
+    ).rejects.toMatchObject({ code: "55000" });
+    await client.query("ROLLBACK TO SAVEPOINT before_crossed_queue_purge");
+
+    await client.query("RESET ROLE");
+    const crossedJobs = await client.query<{ count: number }>(
+      "SELECT count(*)::INTEGER AS count FROM pgboss.job WHERE id = $1",
+      [crossedTenantJobId],
+    );
+    expect(crossedJobs.rows).toEqual([{ count: 1 }]);
+    await client.query("DELETE FROM pgboss.job WHERE id = $1", [crossedTenantJobId]);
 
     await client.query("SET ROLE refunddesk_maintenance");
     const purged = await client.query<{
@@ -1309,27 +1769,45 @@ databaseDescribe("PostgreSQL security invariants", () => {
       process_version: string;
       result: string;
       tenant_pseudonym: string;
-    }>("SELECT * FROM refunddesk_purge_tenant($1, $2)", [purgeTenantId, pseudonym]);
+    }>("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [purgeTenantId, pseudonym]);
     expect(purged.rows[0]).toMatchObject({
       tenant_pseudonym: pseudonym,
-      process_version: "db-purge-v2",
+      process_version: "db-purge-v3",
       result: "completed",
       deleted_counts: {
         approval_attestations: 1,
         audit_events: 1,
+        external_alerts: 1,
         installations: 1,
+        queued_jobs: 2,
         requests: 1,
         tenants: 1,
         users: 2,
       },
     });
+    const automaticReplay = await client.query<{ certificate_id: string }>(
+      "SELECT certificate_id FROM refunddesk_purge_test_sandbox_tenant($1, $2)",
+      [purgeTenantId, pseudonym],
+    );
+    expect(automaticReplay.rows).toEqual([{ certificate_id: purged.rows[0]?.certificate_id }]);
+
+    await client.query("RESET ROLE");
+    const queueRowsAfterPurge = await client.query<{ id: string }>(
+      `SELECT id::TEXT
+       FROM pgboss.job
+       WHERE id = ANY($1::UUID[])
+       ORDER BY id`,
+      [[activeTenantJobId, tenantWebhookJobId, foreignTenantJobId, globalRecoveryJobId]],
+    );
+    expect(new Set(queueRowsAfterPurge.rows.map((row) => row.id))).toEqual(
+      new Set([foreignTenantJobId, globalRecoveryJobId]),
+    );
     const replay = await client.query<{ certificate_id: string }>(
       "SELECT certificate_id FROM refunddesk_purge_tenant($1, $2)",
       [purgeTenantId, pseudonym],
     );
     expect(replay.rows[0]?.certificate_id).toBe(purged.rows[0]?.certificate_id);
 
-    await client.query("RESET ROLE");
     const certificate = await client.query(
       `SELECT tenant_pseudonym, process_version, deleted_counts, result
        FROM purge_certificates
@@ -1337,8 +1815,12 @@ databaseDescribe("PostgreSQL security invariants", () => {
       [purged.rows[0]?.certificate_id],
     );
     expect(certificate.rows[0]).toMatchObject({
-      process_version: "db-purge-v2",
-      deleted_counts: { approval_attestations: 1 },
+      process_version: "db-purge-v3",
+      deleted_counts: {
+        approval_attestations: 1,
+        external_alerts: 1,
+        queued_jobs: 2,
+      },
     });
     expect(JSON.stringify(certificate.rows[0])).not.toMatch(/acct_|usr_|pi_|ch_|re_|evt_/u);
     await client.query("SET ROLE refunddesk_runtime");
@@ -1418,7 +1900,10 @@ databaseDescribe("PostgreSQL security invariants", () => {
     await client.query("SET ROLE refunddesk_maintenance");
     await client.query("SAVEPOINT before_guarded_purge");
     await expect(
-      client.query("SELECT * FROM refunddesk_purge_tenant($1, $2)", [guardedTenantId, pseudonym]),
+      client.query("SELECT * FROM refunddesk_purge_test_sandbox_tenant($1, $2)", [
+        guardedTenantId,
+        pseudonym,
+      ]),
     ).rejects.toMatchObject({ code: "55000" });
     await client.query("ROLLBACK TO SAVEPOINT before_guarded_purge");
   });

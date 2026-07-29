@@ -28,13 +28,16 @@ describe("local PostgreSQL tooling", () => {
     expect(bootstrap).toContain("CREATE ROLE refunddesk_web_login LOGIN");
     expect(bootstrap).toContain("CREATE ROLE refunddesk_worker_login LOGIN");
     expect(bootstrap).toContain("CREATE ROLE refunddesk_queue_login LOGIN");
+    expect(bootstrap).toContain("CREATE ROLE refunddesk_maintenance_login LOGIN");
     expect(bootstrap).toContain("CREATE ROLE refunddesk_queue");
     expect(bootstrap).toContain("CREATE ROLE refunddesk_attestation_writer");
     expect(bootstrap).toContain("GRANT refunddesk_runtime TO refunddesk_web_login");
     expect(bootstrap).toContain("GRANT refunddesk_worker TO refunddesk_worker_login");
     expect(bootstrap).toContain("GRANT refunddesk_queue TO refunddesk_queue_login");
+    expect(bootstrap).toContain("GRANT refunddesk_maintenance TO refunddesk_maintenance_login");
     expect(bootstrap).toContain("REVOKE refunddesk_runtime, refunddesk_worker");
     expect(bootstrap).toContain("GRANT refunddesk_attestation_writer TO refunddesk_worker_login");
+    expect(bootstrap).toContain("FROM refunddesk_maintenance_login");
     expect(bootstrap).toContain("NOBYPASSRLS");
     expect(bootstrap).toContain("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
   });
@@ -74,6 +77,10 @@ describe("local PostgreSQL tooling", () => {
     );
     expect(targetCheck).toContain("readPostflightQueueBaseIdentity");
     expect(targetCheck).not.toContain('readPostflightRuntimeIdentity("queue"');
+    expect(targetCheck).toContain(
+      'collectiveRoleSet !== "absent" && collectiveRoleSet !== "maintenance-bootstrap"',
+    );
+    expect(targetCheck).toContain('applicationCapabilitiesPresent ? ["refunddesk_runtime"] : []');
   });
 
   it("never loads the developer env file into a production process", async () => {
@@ -144,9 +151,13 @@ describe("local PostgreSQL tooling", () => {
       "INNER JOIN pg_roles AS member ON member.oid = membership.member",
     );
     expect(accessApply).toContain('"refunddesk_attestation_writer"');
+    expect(accessApply).toContain('const maintenancePrincipal = "refunddesk_maintenance_login"');
     expect(accessApply).toContain("REVOKE ${quoteIdentifier(membership.collective_role)}");
     expect(roles).toContain("FROM PUBLIC, refunddesk_runtime, refunddesk_worker");
-    expect(roles).toContain("GRANT EXECUTE ON FUNCTION refunddesk_purge_tenant(UUID, VARCHAR)");
+    expect(roles).not.toContain("GRANT EXECUTE ON FUNCTION refunddesk_purge_tenant(UUID, VARCHAR)");
+    expect(roles).toContain(
+      "GRANT EXECUTE ON FUNCTION refunddesk_purge_test_sandbox_tenant(UUID, VARCHAR)",
+    );
     expect(roles).toContain("FOREACH collective_role IN ARRAY ARRAY[");
     expect(roles).toContain("]::NAME[]");
     expect(roles).toContain("EXECUTE format('REVOKE %I FROM %I', parent_role, collective_role)");
@@ -175,6 +186,7 @@ describe("local PostgreSQL tooling", () => {
     expect(accessCheck).toContain("current_setting('session_replication_role') = 'origin'");
     expect(accessCheck).toContain("'ALTER SYSTEM'");
     expect(accessCheck).toContain("DATABASE_COLLECTIVE_ROLE_MEMBERSHIP_INVALID");
+    expect(accessCheck).toContain("new Set([maintenancePrincipal])");
     expect(accessCheck).toContain("DATABASE_GLOBAL_AUTHORITY_INVALID");
     expect(accessCheck).toContain("parent_membership");
     expect(accessCheck).toContain("public_relation_access");

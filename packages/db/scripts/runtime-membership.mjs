@@ -20,6 +20,7 @@ export function classifyPreflightCollectiveRoleSet(roleNames) {
 
   const exactRoleSets = new Map([
     ["absent", []],
+    ["maintenance-bootstrap", ["refunddesk_maintenance"]],
     ["legacy", ["refunddesk_maintenance", "refunddesk_runtime", "refunddesk_worker"]],
     [
       "attestation",

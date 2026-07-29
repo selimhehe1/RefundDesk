@@ -115,12 +115,12 @@ export class SignedExtensionRequestError extends Error {
 }
 
 export function isDefinitiveMutationRejection(error: unknown): boolean {
+  const definitivePilotStatuses = new Set([400, 401, 403, 404, 409, 413, 422]);
   return (
     error instanceof SignedExtensionRequestError &&
     error.code === "REQUEST_FAILED" &&
     error.status !== undefined &&
-    error.status >= 400 &&
-    error.status < 500
+    definitivePilotStatuses.has(error.status)
   );
 }
 

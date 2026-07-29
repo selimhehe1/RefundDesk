@@ -1049,7 +1049,9 @@ describe.sequential("durable real Stripe refund flow", () => {
       keys: {
         activeApprovalAttestationVersion: "v1",
         activeProofVersion: "v1",
+        approvalAttestationRotationState: "legacy",
         approvalAttestationV1: approvalAttestationKey,
+        proofRotationState: "legacy",
         proofV1: proofKey,
       },
       liveEnabled: false,

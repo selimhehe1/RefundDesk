@@ -36,6 +36,7 @@ describe("tenant repositories", () => {
     const eventAt = new Date("2030-01-01T12:00:00.000Z");
     const queryRaw = vi
       .fn()
+      .mockResolvedValueOnce([{ acquired: null }])
       .mockResolvedValueOnce([{ id: "installation-lock" }])
       .mockResolvedValueOnce([{ id: tenantId }])
       .mockResolvedValueOnce([
@@ -157,8 +158,11 @@ describe("tenant repositories", () => {
         version: { increment: 1 },
       },
     });
-    expect(queryRaw.mock.invocationCallOrder[2]).toBeLessThan(
+    expect(queryRaw.mock.invocationCallOrder[3]).toBeLessThan(
       requestUpdate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      installationUpdate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
     expect(installationUpdate).toHaveBeenCalledOnce();
     expect(tenantUpdate).toHaveBeenCalledOnce();
@@ -172,6 +176,7 @@ describe("tenant repositories", () => {
     const tx = {
       $queryRaw: vi
         .fn()
+        .mockResolvedValueOnce([{ acquired: null }])
         .mockResolvedValueOnce([{ id: "installation-lock" }])
         .mockResolvedValueOnce([{ id: tenantId }])
         .mockResolvedValueOnce([]),
@@ -203,6 +208,7 @@ describe("tenant repositories", () => {
     const tx = {
       $queryRaw: vi
         .fn()
+        .mockResolvedValueOnce([{ acquired: null }])
         .mockResolvedValueOnce([{ id: "installation-lock" }])
         .mockResolvedValueOnce([{ id: tenantId }])
         .mockResolvedValueOnce([
@@ -428,12 +434,38 @@ describe("migration hardening", () => {
   });
 
   it("exposes only a guarded tenant-purge capability to maintenance", async () => {
-    const [sql, runtimeRoles] = await Promise.all([
+    const [
+      sql,
+      runtimeRoles,
+      retentionSql,
+      workerJobsSource,
+      pgBossMigrationSource,
+      pgBossPlansSource,
+    ] = await Promise.all([
       readFile(
         new URL("../prisma/migrations/20260725154000_initial_pilot/migration.sql", import.meta.url),
         "utf8",
       ),
       readFile(new URL("../prisma/runtime-roles.sql", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../prisma/migrations/20260728203000_sandbox_retention_candidates/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(new URL("../../../apps/worker/src/jobs.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../../../apps/worker/node_modules/pg-boss/dist/migrationStore.js",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(
+        new URL("../../../apps/worker/node_modules/pg-boss/dist/plans.js", import.meta.url),
+        "utf8",
+      ),
     ]);
     const certificateTable = /CREATE TABLE "purge_certificates" \(([\s\S]*?)\);/u.exec(sql)?.[1];
 
@@ -460,9 +492,90 @@ describe("migration hardening", () => {
     expect(runtimeRoles).toMatch(
       /REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public\s+FROM PUBLIC,[^;]*refunddesk_maintenance/u,
     );
-    expect(runtimeRoles).toContain(
+    expect(runtimeRoles).not.toContain(
       "GRANT EXECUTE ON FUNCTION refunddesk_purge_tenant(UUID, VARCHAR)",
     );
+    expect(retentionSql).toMatch(
+      /CREATE FUNCTION "refunddesk_list_due_tenant_purges"\(requested_limit INTEGER\)[\s\S]*?SECURITY DEFINER\s+SET search_path = pg_catalog/u,
+    );
+    expect(retentionSql).toContain("installation.\"environment\" NOT IN ('test', 'sandbox')");
+    expect(retentionSql).toMatch(
+      /CREATE FUNCTION "refunddesk_purge_test_sandbox_tenant"\([\s\S]*?SECURITY DEFINER\s+SET search_path = pg_catalog/u,
+    );
+    expect(retentionSql).toMatch(
+      /CREATE FUNCTION "refunddesk_purge_test_sandbox_tenant"\([\s\S]+FROM public\."stripe_installations"[\s\S]+FOR UPDATE;[\s\S]+FROM public\."tenants"[\s\S]+FOR UPDATE;[\s\S]+installation\."environment" NOT IN \('test', 'sandbox'\)/u,
+    );
+    expect(retentionSql).toContain("webhook authorization requires existing installation context");
+    expect(retentionSql).toContain("NEW.\"process_version\" := 'db-purge-v3'");
+    expect(retentionSql).toContain("'queued_jobs'");
+    expect(retentionSql).toContain("to_regclass('pgboss.version')");
+    expect(retentionSql).toContain("to_regclass('pgboss.job')");
+    expect(retentionSql).toContain("to_regclass('pgboss.job_dependency')");
+    expect(retentionSql).toContain("pgboss_schema_version IS DISTINCT FROM 37");
+    const pgBossMigrationVersions = [
+      ...pgBossMigrationSource.matchAll(/\bversion:\s*(\d+),/gu),
+    ].map((match) => Number.parseInt(match[1] ?? "", 10));
+    expect(Math.max(...pgBossMigrationVersions)).toBe(37);
+    for (const pgBossJobColumn of [
+      "id uuid not null",
+      "name text not null",
+      "data jsonb",
+      "state ${schema}.job_state",
+      "blocking boolean not null",
+      "pending_dependencies int not null",
+      "source_name text",
+      "source_id uuid",
+    ]) {
+      expect(pgBossPlansSource).toContain(pgBossJobColumn);
+    }
+    expect(pgBossPlansSource).toContain("CREATE TABLE ${schema}.job_dependency");
+    expect(retentionSql).toContain("LOCK TABLE pgboss.job, pgboss.job_dependency");
+    expect(retentionSql).toContain("IN SHARE ROW EXCLUSIVE MODE");
+    expect(retentionSql).toContain("WHEN 'refunddesk_refund_execute'");
+    expect(retentionSql).toContain("WHEN 'refunddesk_webhook_process'");
+    expect(workerJobsSource).toContain('executeRefund: "refunddesk_refund_execute"');
+    expect(workerJobsSource).toContain('processWebhook: "refunddesk_webhook_process"');
+    expect(workerJobsSource).toMatch(
+      /executeRefundJobSchema[\s\S]*?tenant_id: uuid,[\s\S]*?request_id: uuid/u,
+    );
+    expect(workerJobsSource).toMatch(
+      /webhookJobIdentitySchema[\s\S]*?tenant_id: uuid,[\s\S]*?installation_id: uuid,[\s\S]*?receipt_id: uuid/u,
+    );
+    expect(retentionSql).toContain("matched_job.state = 'active'");
+    expect(retentionSql).toContain("FROM pgboss.job_dependency AS dependency");
+    expect(retentionSql).toContain("DELETE FROM pgboss.job AS job");
+    expect(retentionSql).toContain("deleted_pgboss_jobs <> matched_pgboss_jobs");
+    expect(retentionSql).toContain("remaining_pgboss_jobs <> 0");
+    expect(retentionSql.indexOf("DELETE FROM pgboss.job AS job")).toBeLessThan(
+      retentionSql.lastIndexOf('FROM public."refunddesk_purge_tenant"('),
+    );
+    expect(retentionSql).toContain('FROM public."refunddesk_purge_tenant"(');
+    expect(retentionSql).toMatch(
+      /IF NOT tenant_found THEN[\s\S]*?FROM public\."refunddesk_purge_tenant"\([\s\S]*?RETURN;[\s\S]*?IF NOT installation_found/u,
+    );
+    expect(retentionSql).toContain(
+      'REVOKE ALL ON FUNCTION\n  "refunddesk_purge_test_sandbox_tenant"(UUID, VARCHAR)\n  FROM PUBLIC',
+    );
+    expect(retentionSql).toContain(
+      "REVOKE EXECUTE ON FUNCTION public.refunddesk_purge_tenant(UUID, VARCHAR) FROM refunddesk_maintenance",
+    );
+    expect(retentionSql).toContain('WHEN tenant."legal_hold_at" IS NOT NULL');
+    expect(retentionSql).toContain("THEN 'legal_hold'");
+    expect(retentionSql).toContain('request."payment_guard_released_at" IS NULL');
+    expect(retentionSql).toContain("request.\"effect_state\" = 'possible'");
+    expect(retentionSql).toContain("attempt.\"state\" = 'started'");
+    expect(retentionSql).toContain('checkpoint."page_in_progress"');
+    expect(retentionSql).toContain(
+      'REVOKE ALL ON FUNCTION "refunddesk_list_due_tenant_purges"(INTEGER) FROM PUBLIC',
+    );
+    expect(runtimeRoles).toContain(
+      "GRANT EXECUTE ON FUNCTION refunddesk_list_due_tenant_purges(INTEGER)",
+    );
+    expect(runtimeRoles).toContain(
+      "GRANT EXECUTE ON FUNCTION refunddesk_purge_test_sandbox_tenant(UUID, VARCHAR)",
+    );
+    expect(runtimeRoles).not.toContain("GRANT USAGE ON SCHEMA pgboss TO refunddesk_maintenance");
+    expect(runtimeRoles).not.toMatch(/GRANT [^;]* ON [^;]*pgboss[^;]* TO refunddesk_maintenance/u);
     expect(runtimeRoles).not.toContain("GRANT SELECT, DELETE ON");
   });
 });

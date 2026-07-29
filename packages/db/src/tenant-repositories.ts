@@ -516,6 +516,17 @@ export class TenantRepositories {
     }
   }
 
+  private async lockTenantLifecycle(): Promise<void> {
+    const locked = await this.tx.$queryRaw<readonly { acquired: null }[]>`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${this.tenantId}::UUID::TEXT, 0)
+      ) AS acquired
+    `;
+    if (locked.length !== 1) {
+      throw new Error("TENANT_LIFECYCLE_LOCK_FAILED");
+    }
+  }
+
   async deauthorizeInstallation(
     installationId: string,
     deauthorizedAt: Date,
@@ -524,6 +535,7 @@ export class TenantRepositories {
     if (purgeAt.getTime() <= deauthorizedAt.getTime()) {
       throw new RangeError("Tenant purge must be scheduled after deauthorization");
     }
+    await this.lockTenantLifecycle();
     const locked = await this.tx.$queryRaw<readonly { id: string }[]>`
       SELECT id
       FROM stripe_installations
@@ -563,6 +575,7 @@ export class TenantRepositories {
     if (input.purgeAt.getTime() <= input.stripeEventCreatedAt.getTime()) {
       throw new RangeError("Tenant purge must be scheduled after deauthorization");
     }
+    await this.lockTenantLifecycle();
     const locked = await this.tx.$queryRaw<readonly { id: string }[]>`
       SELECT id
       FROM stripe_installations

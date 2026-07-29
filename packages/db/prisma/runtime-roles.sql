@@ -401,5 +401,7 @@ GRANT EXECUTE ON FUNCTION refunddesk_list_recoverable_webhook_receipts_v2(INTEGE
 
 -- Maintenance is a capability role, not a read/delete role.
 GRANT USAGE ON SCHEMA public TO refunddesk_maintenance;
-GRANT EXECUTE ON FUNCTION refunddesk_purge_tenant(UUID, VARCHAR)
+GRANT EXECUTE ON FUNCTION refunddesk_list_due_tenant_purges(INTEGER)
+  TO refunddesk_maintenance;
+GRANT EXECUTE ON FUNCTION refunddesk_purge_test_sandbox_tenant(UUID, VARCHAR)
   TO refunddesk_maintenance;

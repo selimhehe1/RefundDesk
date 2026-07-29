@@ -132,6 +132,21 @@ describe("runtime-scoped configuration", () => {
       }),
     ).toThrow("FOREIGN_RUNTIME_SECRET_FORBIDDEN");
     expect(() =>
+      loadPlatformConfig({
+        ...platformEnvironment(),
+        NODE_ENV: "production",
+        APP_BASE_URL: "https://sandbox.refunddesk.example",
+        REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 9).toString("base64"),
+      }),
+    ).toThrow("FOREIGN_RUNTIME_SECRET_FORBIDDEN");
+    expect(() =>
+      loadWorkerConfig({
+        ...workerEnvironment(),
+        NODE_ENV: "production",
+        REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 9).toString("base64"),
+      }),
+    ).toThrow("FOREIGN_RUNTIME_SECRET_FORBIDDEN");
+    expect(() =>
       loadMigrationConfig({
         NODE_ENV: "production",
         DATABASE_MIGRATION_URL: "postgresql://owner:synthetic@db.internal:5432/refunddesk",
@@ -214,6 +229,169 @@ describe("runtime-scoped configuration", () => {
         REFUNDDESK_PROOF_HMAC_KEY_V1: ` ${canonical}`,
       }),
     ).toThrow();
+  });
+
+  it("allows distinct V2 application keys to be staged while V1 remains active", () => {
+    const platform = loadPlatformConfig({
+      ...platformEnvironment(),
+      REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+      REFUNDDESK_FIELD_KEY_ROTATION_STATE: "staged",
+    });
+    const worker = loadWorkerConfig({
+      ...workerEnvironment(),
+      REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 7).toString("base64"),
+      REFUNDDESK_PROOF_KEY_ROTATION_STATE: "staged",
+      REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: Buffer.alloc(32, 8).toString("base64"),
+      REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "staged",
+    });
+
+    expect(platform.keys.activeFieldVersion).toBe("v1");
+    expect(platform.keys.fieldV2).toEqual(Buffer.alloc(32, 6));
+    expect(worker.keys.activeProofVersion).toBe("v1");
+    expect(worker.keys.proofV2).toEqual(Buffer.alloc(32, 7));
+    expect(worker.keys.activeApprovalAttestationVersion).toBe("v1");
+    expect(worker.keys.approvalAttestationV2).toEqual(Buffer.alloc(32, 8));
+  });
+
+  it("requires each V2 key before its selector can activate V2", () => {
+    expect(() =>
+      loadPlatformConfig({
+        ...platformEnvironment(),
+        REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+        REFUNDDESK_FIELD_KEY_ROTATION_STATE: "active",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadWorkerConfig({
+        ...workerEnvironment(),
+        REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: "v2",
+        REFUNDDESK_PROOF_KEY_ROTATION_STATE: "active",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadWorkerConfig({
+        ...workerEnvironment(),
+        REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: "v2",
+        REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "active",
+      }),
+    ).toThrow();
+  });
+
+  it("loads active V2 keys while retaining every required V1 key", () => {
+    const platform = loadPlatformConfig({
+      ...platformEnvironment(),
+      NODE_ENV: "production",
+      APP_BASE_URL: "https://sandbox.refunddesk.example",
+      REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+      REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+      REFUNDDESK_FIELD_KEY_ROTATION_STATE: "active",
+    });
+    const worker = loadWorkerConfig({
+      ...workerEnvironment(),
+      NODE_ENV: "production",
+      REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 7).toString("base64"),
+      REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: "v2",
+      REFUNDDESK_PROOF_KEY_ROTATION_STATE: "active",
+      REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: Buffer.alloc(32, 8).toString("base64"),
+      REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: "v2",
+      REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "active",
+    });
+
+    expect(platform.keys).toMatchObject({
+      activeFieldVersion: "v2",
+      fieldRotationState: "active",
+      fieldV1: Buffer.alloc(32, 1),
+      fieldV2: Buffer.alloc(32, 6),
+    });
+    expect(worker.keys).toMatchObject({
+      activeProofVersion: "v2",
+      proofRotationState: "active",
+      proofV1: Buffer.alloc(32, 2),
+      proofV2: Buffer.alloc(32, 7),
+      activeApprovalAttestationVersion: "v2",
+      approvalAttestationRotationState: "active",
+      approvalAttestationV1: Buffer.alloc(32, 3),
+      approvalAttestationV2: Buffer.alloc(32, 8),
+    });
+  });
+
+  it("loads a retired V1 state only when V1 is absent and V2 is active", () => {
+    const platformEnvironmentWithoutV1 = { ...platformEnvironment() };
+    delete platformEnvironmentWithoutV1["REFUNDDESK_FIELD_ENCRYPTION_KEY_V1"];
+    const workerEnvironmentWithoutV1 = { ...workerEnvironment() };
+    delete workerEnvironmentWithoutV1["REFUNDDESK_PROOF_HMAC_KEY_V1"];
+    delete workerEnvironmentWithoutV1["REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1"];
+
+    const platform = loadPlatformConfig({
+      ...platformEnvironmentWithoutV1,
+      REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+      REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+      REFUNDDESK_FIELD_KEY_ROTATION_STATE: "retired",
+    });
+    const worker = loadWorkerConfig({
+      ...workerEnvironmentWithoutV1,
+      REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 7).toString("base64"),
+      REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: "v2",
+      REFUNDDESK_PROOF_KEY_ROTATION_STATE: "retired",
+      REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: Buffer.alloc(32, 8).toString("base64"),
+      REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: "v2",
+      REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "retired",
+    });
+
+    expect(platform.keys.fieldRotationState).toBe("retired");
+    expect(platform.keys).not.toHaveProperty("fieldV1");
+    expect(worker.keys.proofRotationState).toBe("retired");
+    expect(worker.keys).not.toHaveProperty("proofV1");
+    expect(worker.keys.approvalAttestationRotationState).toBe("retired");
+    expect(worker.keys).not.toHaveProperty("approvalAttestationV1");
+    expect(() =>
+      assertReleaseConfigSeparation({
+        migration: loadMigrationConfig(migrationEnvironment()),
+        platform,
+        worker,
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      loadPlatformConfig({
+        ...platformEnvironment(),
+        REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+        REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+        REFUNDDESK_FIELD_KEY_ROTATION_STATE: "retired",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects duplicated application keys within and across V1/V2 families", () => {
+    const platform = platformEnvironment();
+    expect(() =>
+      loadPlatformConfig({
+        ...platform,
+        REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: platform["REFUNDDESK_FIELD_ENCRYPTION_KEY_V1"],
+        REFUNDDESK_FIELD_KEY_ROTATION_STATE: "staged",
+      }),
+    ).toThrow();
+
+    const worker = workerEnvironment();
+    expect(() =>
+      loadWorkerConfig({
+        ...worker,
+        REFUNDDESK_PROOF_HMAC_KEY_V2: worker["REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V1"],
+        REFUNDDESK_PROOF_KEY_ROTATION_STATE: "staged",
+      }),
+    ).toThrow();
+
+    const sharedAcrossRuntimes = Buffer.alloc(32, 9).toString("base64");
+    expect(() =>
+      loadWorkerConfig({
+        ...platform,
+        ...worker,
+        REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: sharedAcrossRuntimes,
+        REFUNDDESK_FIELD_KEY_ROTATION_STATE: "staged",
+        REFUNDDESK_PROOF_HMAC_KEY_V2: sharedAcrossRuntimes,
+        REFUNDDESK_PROOF_KEY_ROTATION_STATE: "staged",
+      }),
+    ).toThrow("APPLICATION_KEYS_NOT_SEPARATED");
   });
 
   it("requires separate test-mode and sandbox Stripe credentials", () => {
@@ -568,5 +746,55 @@ describe("runtime-scoped configuration", () => {
         },
       }),
     ).toThrow("MIGRATION_RUNTIME_DATABASE_URLS_DIVERGE");
+
+    const platformV2 = loadPlatformConfig({
+      ...platformEnvironment(),
+      NODE_ENV: "production",
+      APP_BASE_URL: "https://sandbox.refunddesk.example",
+      REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+      REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+      REFUNDDESK_FIELD_KEY_ROTATION_STATE: "active",
+    });
+    const workerV2 = loadWorkerConfig({
+      ...workerEnvironment(),
+      NODE_ENV: "production",
+      REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 7).toString("base64"),
+      REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: "v2",
+      REFUNDDESK_PROOF_KEY_ROTATION_STATE: "active",
+      REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: Buffer.alloc(32, 8).toString("base64"),
+      REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: "v2",
+      REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "active",
+    });
+    expect(() =>
+      assertReleaseConfigSeparation({ platform: platformV2, worker: workerV2, migration }),
+    ).not.toThrow();
+    expect(() =>
+      assertReleaseConfigSeparation({
+        platform: platformV2,
+        worker: {
+          ...workerV2,
+          keys: {
+            ...workerV2.keys,
+            proofV2: platformV2.keys.fieldV2,
+          },
+        },
+        migration,
+      }),
+    ).toThrow("APPLICATION_KEYS_NOT_SEPARATED");
+    expect(() =>
+      assertReleaseConfigSeparation({
+        platform: {
+          ...platformV2,
+          keys: {
+            activeFieldVersion: "v2",
+            fieldRotationState: "active",
+            fieldV1: platformV2.keys.fieldV1,
+            exportV1: platformV2.keys.exportV1,
+          },
+        },
+        worker: workerV2,
+        migration,
+      }),
+    ).toThrow("APPLICATION_KEY_ROTATION_STATE_INVALID");
   });
 });

@@ -12,7 +12,7 @@ import {
 } from "../src/api/signed-fetch";
 
 describe("mutation response certainty", () => {
-  it("rotates only after an authoritative 4xx rejection", () => {
+  it("rotates only after an authoritative non-retryable 4xx rejection", () => {
     expect(
       isDefinitiveMutationRejection(
         new SignedExtensionRequestError("REQUEST_FAILED", "Rejected", 422),
@@ -21,6 +21,31 @@ describe("mutation response certainty", () => {
     expect(
       isDefinitiveMutationRejection(
         new SignedExtensionRequestError("REQUEST_FAILED", "Unavailable", 500),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Rate limited", 429),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Request timed out", 408),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Too early", 425),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Unexpected intermediary response", 418),
+      ),
+    ).toBe(false);
+    expect(
+      isDefinitiveMutationRejection(
+        new SignedExtensionRequestError("REQUEST_FAILED", "Capacity unavailable", 503),
       ),
     ).toBe(false);
     expect(
@@ -362,4 +387,45 @@ describe("signedApiRequest", () => {
     );
     await expect(promise).rejects.not.toThrow(/database-password|stack/u);
   });
+
+  it.each([429, 503])(
+    "preserves retryable HTTP %i as a non-definitive mutation outcome",
+    async (status) => {
+      const fetcher = vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              code: status === 429 ? "RATE_LIMITED" : "RATE_LIMITER_UNAVAILABLE",
+              message: "internal detail must not be exposed",
+            }),
+            {
+              status,
+              headers: {
+                "Content-Type": "application/json",
+                "Retry-After": "7",
+              },
+            },
+          ),
+        ),
+      );
+
+      let observed: unknown;
+      try {
+        await signedApiRequest(createContext(), requestInput, {
+          signatureFetcher: () => Promise.resolve("t=1,v1=test"),
+          fetcher,
+        });
+      } catch (error) {
+        observed = error;
+      }
+
+      expect(observed).toBeInstanceOf(SignedExtensionRequestError);
+      expect(observed).toMatchObject({
+        code: "REQUEST_FAILED",
+        status,
+      });
+      expect(isDefinitiveMutationRejection(observed)).toBe(false);
+      expect(String(observed)).not.toContain("internal detail must not be exposed");
+    },
+  );
 });

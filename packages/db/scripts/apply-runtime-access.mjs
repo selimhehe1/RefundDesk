@@ -16,7 +16,16 @@ const migrationUrl = requirePostgresUrl("DATABASE_MIGRATION_URL");
 const webPrincipal = databasePrincipal(requirePostgresUrl("DATABASE_URL"));
 const workerPrincipal = databasePrincipal(requirePostgresUrl("WORKER_DATABASE_URL"));
 const queuePrincipal = databasePrincipal(requirePostgresUrl("PGBOSS_DATABASE_URL"));
-const runtimeLoginPrincipals = new Set([webPrincipal, workerPrincipal, queuePrincipal]);
+const maintenancePrincipal = "refunddesk_maintenance_login";
+const runtimeLoginPrincipals = new Set([
+  webPrincipal,
+  workerPrincipal,
+  queuePrincipal,
+  maintenancePrincipal,
+]);
+if (runtimeLoginPrincipals.size !== 4 || databasePrincipal(migrationUrl) === maintenancePrincipal) {
+  throw new Error("DATABASE_RUNTIME_PRINCIPALS_MUST_BE_DISTINCT");
+}
 const runtimeRolesSql = await readFile(
   new URL("../prisma/runtime-roles.sql", import.meta.url),
   "utf8",
@@ -147,6 +156,17 @@ try {
             ${quoteIdentifier("refunddesk_maintenance")},
             ${quoteIdentifier("refunddesk_attestation_writer")}
        FROM ${quoteIdentifier(queuePrincipal)}`,
+  );
+  await client.query(
+    `GRANT ${quoteIdentifier("refunddesk_maintenance")}
+       TO ${quoteIdentifier(maintenancePrincipal)}`,
+  );
+  await client.query(
+    `REVOKE ${quoteIdentifier("refunddesk_runtime")},
+            ${quoteIdentifier("refunddesk_worker")},
+            ${quoteIdentifier("refunddesk_queue")},
+            ${quoteIdentifier("refunddesk_attestation_writer")}
+       FROM ${quoteIdentifier(maintenancePrincipal)}`,
   );
 
   const loginPrincipals = [...runtimeLoginPrincipals];

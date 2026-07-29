@@ -49,7 +49,7 @@ import {
 import { processWebhookJobSchema, type ProcessWebhookJob } from "./jobs.js";
 
 const DATABASE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
-const TENANT_PURGE_DELAY_MILLISECONDS = 30 * 24 * 60 * 60 * 1_000;
+const TENANT_PURGE_DELAY_MILLISECONDS = 29 * 24 * 60 * 60 * 1_000;
 const APPROVAL_ATTESTATION_LIFETIME_MILLISECONDS = 5 * 60 * 1_000;
 
 function canonicalExecutionHash(record: {

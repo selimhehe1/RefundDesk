@@ -20,6 +20,7 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "lint": "eslint src test",
+    "retention:run": "node scripts/run-retention-purge.mjs",
     "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit",
     "test": "prisma generate && vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts"

@@ -20,6 +20,7 @@ const webPrincipal = databasePrincipal(webUrl);
 const workerPrincipal = databasePrincipal(workerUrl);
 const queuePrincipal = databasePrincipal(queueUrl);
 const migrationPrincipal = databasePrincipal(migrationUrl);
+const maintenancePrincipal = "refunddesk_maintenance_login";
 const collectiveRoleNames = [
   "refunddesk_attestation_writer",
   "refunddesk_maintenance",
@@ -27,7 +28,12 @@ const collectiveRoleNames = [
   "refunddesk_runtime",
   "refunddesk_worker",
 ];
-const runtimeLoginPrincipals = [...new Set([webPrincipal, workerPrincipal, queuePrincipal])];
+const runtimeLoginPrincipals = [
+  ...new Set([webPrincipal, workerPrincipal, queuePrincipal, maintenancePrincipal]),
+];
+if (runtimeLoginPrincipals.length !== 4 || migrationPrincipal === maintenancePrincipal) {
+  throw new Error("DATABASE_RUNTIME_PRINCIPALS_MUST_BE_DISTINCT");
+}
 
 async function verifyCollectiveRoleAttributes(client) {
   const result = await client.query(
@@ -83,7 +89,7 @@ async function verifyCollectiveRoleAttributes(client) {
     ["refunddesk_runtime", new Set([webPrincipal])],
     ["refunddesk_worker", new Set([workerPrincipal])],
     ["refunddesk_queue", new Set([queuePrincipal])],
-    ["refunddesk_maintenance", new Set()],
+    ["refunddesk_maintenance", new Set([maintenancePrincipal])],
     ["refunddesk_attestation_writer", new Set([workerPrincipal])],
   ]);
   for (const membership of membershipResult.rows) {
@@ -130,6 +136,11 @@ async function verifyMaintenanceCapability(client) {
                  relation.oid,
                  'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'
                )
+               OR has_any_column_privilege(
+                 'refunddesk_maintenance',
+                 relation.oid,
+                 'SELECT,INSERT,UPDATE,REFERENCES'
+               )
              ELSE false
            END
        ) AS has_direct_table_access,
@@ -161,6 +172,11 @@ async function verifyMaintenanceCapability(client) {
              'CREATE'
            )
        ) AS has_schema_create,
+       has_schema_privilege(
+         'refunddesk_maintenance',
+         'pgboss',
+         'USAGE'
+       ) AS has_pgboss_schema_usage,
        EXISTS (
          SELECT 1
          FROM pg_catalog.pg_class AS sequence
@@ -185,8 +201,13 @@ async function verifyMaintenanceCapability(client) {
            ON namespace.oid = routine.pronamespace
          WHERE namespace.nspname !~ '^pg_'
            AND namespace.nspname <> 'information_schema'
-           AND routine.oid <> to_regprocedure(
-             'public.refunddesk_purge_tenant(uuid,character varying)'
+           AND routine.oid NOT IN (
+             to_regprocedure(
+               'public.refunddesk_list_due_tenant_purges(integer)'
+             ),
+             to_regprocedure(
+               'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)'
+             )
            )
            AND CASE
              WHEN routine.prokind IN ('f', 'a', 'w') THEN
@@ -217,37 +238,86 @@ async function verifyMaintenanceCapability(client) {
        ) AS has_other_procedure_execute,
        has_function_privilege(
          'refunddesk_maintenance',
+         'public.refunddesk_list_due_tenant_purges(integer)',
+         'EXECUTE'
+       ) AS maintenance_can_list_due_purges,
+       has_function_privilege(
+         'refunddesk_runtime',
+         'public.refunddesk_list_due_tenant_purges(integer)',
+         'EXECUTE'
+       ) AS web_can_list_due_purges,
+       has_function_privilege(
+         'refunddesk_worker',
+         'public.refunddesk_list_due_tenant_purges(integer)',
+         'EXECUTE'
+       ) AS worker_can_list_due_purges,
+       has_function_privilege(
+         'refunddesk_queue',
+         'public.refunddesk_list_due_tenant_purges(integer)',
+         'EXECUTE'
+       ) AS queue_can_list_due_purges,
+       has_function_privilege(
+         'refunddesk_maintenance',
+         'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+         'EXECUTE'
+       ) AS maintenance_can_guarded_purge,
+       has_function_privilege(
+         'refunddesk_runtime',
+         'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+         'EXECUTE'
+       ) AS web_can_guarded_purge,
+       has_function_privilege(
+         'refunddesk_worker',
+         'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+         'EXECUTE'
+       ) AS worker_can_guarded_purge,
+       has_function_privilege(
+         'refunddesk_queue',
+         'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+         'EXECUTE'
+       ) AS queue_can_guarded_purge,
+       has_function_privilege(
+         'refunddesk_maintenance',
          'public.refunddesk_purge_tenant(uuid,character varying)',
          'EXECUTE'
-       ) AS maintenance_can_purge,
+       ) AS maintenance_can_raw_purge,
        has_function_privilege(
          'refunddesk_runtime',
          'public.refunddesk_purge_tenant(uuid,character varying)',
          'EXECUTE'
-       ) AS web_can_purge,
+       ) AS web_can_raw_purge,
        has_function_privilege(
          'refunddesk_worker',
          'public.refunddesk_purge_tenant(uuid,character varying)',
          'EXECUTE'
-       ) AS worker_can_purge,
+       ) AS worker_can_raw_purge,
        has_function_privilege(
          'refunddesk_queue',
          'public.refunddesk_purge_tenant(uuid,character varying)',
          'EXECUTE'
-       ) AS queue_can_purge`,
+       ) AS queue_can_raw_purge`,
   );
   const capability = result.rows[0];
   if (
     capability?.has_direct_table_access !== false ||
     capability.has_relation_maintain !== false ||
     capability.has_schema_create !== false ||
+    capability.has_pgboss_schema_usage !== false ||
     capability.has_sequence_access !== false ||
     capability.has_other_function_execute !== false ||
     capability.has_other_procedure_execute !== false ||
-    capability.maintenance_can_purge !== true ||
-    capability.web_can_purge !== false ||
-    capability.worker_can_purge !== false ||
-    capability.queue_can_purge !== false
+    capability.maintenance_can_list_due_purges !== true ||
+    capability.web_can_list_due_purges !== false ||
+    capability.worker_can_list_due_purges !== false ||
+    capability.queue_can_list_due_purges !== false ||
+    capability.maintenance_can_guarded_purge !== true ||
+    capability.web_can_guarded_purge !== false ||
+    capability.worker_can_guarded_purge !== false ||
+    capability.queue_can_guarded_purge !== false ||
+    capability.maintenance_can_raw_purge !== false ||
+    capability.web_can_raw_purge !== false ||
+    capability.worker_can_raw_purge !== false ||
+    capability.queue_can_raw_purge !== false
   ) {
     throw new Error("DATABASE_MAINTENANCE_CAPABILITY_CHECK_FAILED");
   }
@@ -1073,6 +1143,7 @@ try {
       web_principal: webPrincipal,
       worker_principal: workerPrincipal,
       queue_principal: queuePrincipal,
+      maintenance_principal: maintenancePrincipal,
     })}\n`,
   );
 } catch (error) {

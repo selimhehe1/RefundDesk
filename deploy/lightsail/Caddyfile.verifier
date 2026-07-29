@@ -13,6 +13,10 @@ https://verifier.refunddesk.internal:8443 {
 			path /internal/v1/signed-requests/verify
 		}
 
+		request_body @verify {
+			max_size 32768
+		}
+
 		reverse_proxy @verify worker.refunddesk.internal:3101 {
 			transport http {
 				dial_timeout 3s

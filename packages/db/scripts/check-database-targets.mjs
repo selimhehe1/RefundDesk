@@ -22,6 +22,10 @@ const urls = {
   worker: requirePostgresUrl("WORKER_DATABASE_URL"),
   queue: requirePostgresUrl("PGBOSS_DATABASE_URL"),
 };
+const maintenancePrincipal = "refunddesk_maintenance_login";
+if (Object.values(urls).some((url) => databasePrincipal(url) === maintenancePrincipal)) {
+  throw new Error("DATABASE_RUNTIME_PRINCIPALS_MUST_BE_DISTINCT");
+}
 
 function createClient(url, applicationName) {
   return new Client({
@@ -197,16 +201,21 @@ async function verifyPreflightRuntimeRoles() {
     );
     const queueMembership =
       collectiveRoleSet === "current" ? "refunddesk_queue" : "refunddesk_worker";
+    const applicationCapabilitiesPresent =
+      collectiveRoleSet !== "absent" && collectiveRoleSet !== "maintenance-bootstrap";
     const expectedMembershipByPrincipal = new Map([
       [webPrincipal, "refunddesk_runtime"],
       [workerPrincipal, "refunddesk_worker"],
       [queuePrincipal, queueMembership],
     ]);
+    if (collectiveRoleSet !== "absent") {
+      expectedMembershipByPrincipal.set(maintenancePrincipal, "refunddesk_maintenance");
+    }
     const expectedParentsByPrincipal = new Map([
-      [webPrincipal, collectiveRoleSet === "absent" ? [] : ["refunddesk_runtime"]],
+      [webPrincipal, applicationCapabilitiesPresent ? ["refunddesk_runtime"] : []],
       [
         workerPrincipal,
-        collectiveRoleSet === "absent"
+        !applicationCapabilitiesPresent
           ? []
           : collectiveRoleSet === "legacy"
             ? ["refunddesk_worker"]
@@ -214,13 +223,16 @@ async function verifyPreflightRuntimeRoles() {
       ],
       [
         queuePrincipal,
-        collectiveRoleSet === "absent"
+        !applicationCapabilitiesPresent
           ? []
           : collectiveRoleSet === "current"
             ? ["refunddesk_queue"]
             : ["refunddesk_worker"],
       ],
     ]);
+    if (collectiveRoleSet !== "absent") {
+      expectedParentsByPrincipal.set(maintenancePrincipal, ["refunddesk_maintenance"]);
+    }
     const principals = [...expectedMembershipByPrincipal.keys()];
     const expectedMemberships = principals.map((principal) =>
       expectedMembershipByPrincipal.get(principal),
@@ -333,11 +345,13 @@ async function verifyPreflightRuntimeRoles() {
         [collectiveRoleNames],
       );
       const expectedMembers = new Map([
-        ["refunddesk_runtime", new Set([webPrincipal])],
-        ["refunddesk_worker", new Set([workerPrincipal, queuePrincipal])],
-        ["refunddesk_maintenance", new Set()],
+        ["refunddesk_maintenance", new Set([maintenancePrincipal])],
       ]);
-      if (collectiveRoleSet !== "legacy") {
+      if (collectiveRoleSet !== "maintenance-bootstrap") {
+        expectedMembers.set("refunddesk_runtime", new Set([webPrincipal]));
+        expectedMembers.set("refunddesk_worker", new Set([workerPrincipal, queuePrincipal]));
+      }
+      if (collectiveRoleSet !== "maintenance-bootstrap" && collectiveRoleSet !== "legacy") {
         expectedMembers.set("refunddesk_attestation_writer", new Set([workerPrincipal]));
       }
       if (collectiveRoleSet === "current") {

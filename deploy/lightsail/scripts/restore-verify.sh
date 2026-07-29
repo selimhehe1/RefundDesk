@@ -15,10 +15,10 @@ source "${SCRIPT_DIR}/_common.sh"
 ARCHIVE_PATH=""
 IDENTITY_PATH=""
 EXPECTED_SHA256=""
-POSTGRES_IMAGE="postgres:18.4-bookworm"
+POSTGRES_IMAGE="postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
 CONTAINER_NAME=""
 WORK_DIRECTORY=""
-TEMP_PARENT=""
+TEMP_PARENT="/var/tmp/refunddesk-restore-verify"
 
 usage() {
   printf '%s\n' \
@@ -114,7 +114,7 @@ safe_remove_work_directory() {
   [[ -n "${WORK_DIRECTORY}" && -d "${WORK_DIRECTORY}" && ! -L "${WORK_DIRECTORY}" ]] || return 0
   resolved="$(realpath --canonicalize-existing -- "${WORK_DIRECTORY}")" || return 1
   [[ "${resolved}" == "${WORK_DIRECTORY}" ]] || return 1
-  [[ "${resolved}" == "${TEMP_PARENT}"/refunddesk-restore-verify.* ]] || return 1
+  [[ "${resolved}" == "${TEMP_PARENT}"/run.* ]] || return 1
   rm --recursive --force --one-file-system -- "${resolved}"
 }
 
@@ -133,21 +133,28 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-TEMP_PARENT="$(realpath --canonicalize-existing -- "${TMPDIR:-/tmp}")"
+if [[ ! -e "${TEMP_PARENT}" && ! -L "${TEMP_PARENT}" ]]; then
+  install -d -o root -g root -m 0700 "${TEMP_PARENT}"
+fi
 [[ -d "${TEMP_PARENT}" && ! -L "${TEMP_PARENT}" ]] ||
   die "temporary parent must be a real directory"
+TEMP_PARENT="$(realpath --canonicalize-existing -- "${TEMP_PARENT}")"
+[[ "${TEMP_PARENT}" == "/var/tmp/refunddesk-restore-verify" ]] ||
+  die "temporary parent escaped its fixed offline location"
+[[ "$(stat --format='%u:%g:%a' -- "${TEMP_PARENT}")" == "0:0:700" ]] ||
+  die "temporary parent must be root-owned mode 0700"
 WORK_DIRECTORY="$(
-  mktemp --directory --tmpdir="${TEMP_PARENT}" refunddesk-restore-verify.XXXXXXXX
+  mktemp --directory --tmpdir="${TEMP_PARENT}" run.XXXXXXXX
 )"
 WORK_DIRECTORY="$(realpath --canonicalize-existing -- "${WORK_DIRECTORY}")"
-[[ "${WORK_DIRECTORY}" == "${TEMP_PARENT}"/refunddesk-restore-verify.* ]] ||
+[[ "${WORK_DIRECTORY}" == "${TEMP_PARENT}"/run.* ]] ||
   die "mktemp returned an unexpected directory"
 [[ "$(stat --format='%u:%a' -- "${WORK_DIRECTORY}")" == "0:700" ]] ||
   die "temporary directory ownership or mode is unsafe"
 
 decrypted_archive="${WORK_DIRECTORY}/postgres.tar.zst"
 restored_pgdata="${WORK_DIRECTORY}/pgdata"
-install -d -o root -g root -m 0700 "${restored_pgdata}"
+install -d -o 999 -g 999 -m 0700 "${restored_pgdata}"
 
 if ! age \
   --decrypt \
@@ -161,15 +168,28 @@ zstd --test --quiet -- "${decrypted_archive}" 2>/dev/null ||
   die "decrypted archive compression check failed"
 
 if ! zstd --decompress --stdout --quiet -- "${decrypted_archive}" 2>/dev/null |
-  tar \
+  docker run \
+    --rm \
+    --interactive \
+    --pull never \
+    --label com.refunddesk.restore-extraction=true \
+    --network none \
+    --user 999:999 \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 32 \
+    --memory 128m \
+    --cpus 0.5 \
+    --mount "type=bind,source=${restored_pgdata},target=/restore" \
+    --entrypoint /usr/bin/tar \
+    "${POSTGRES_IMAGE}" \
     --extract \
     --file=- \
-    --directory="${restored_pgdata}" \
+    --directory=/restore \
     --numeric-owner \
-    --same-owner \
+    --no-same-owner \
     --same-permissions \
-    --acls \
-    --xattrs \
     --delay-directory-restore 2>/dev/null; then
   die "PostgreSQL archive extraction failed"
 fi
@@ -210,11 +230,11 @@ if ! docker run \
   --pids-limit 32 \
   --memory 128m \
   --cpus 0.5 \
-  --mount "type=bind,source=${restored_pgdata},target=/var/lib/postgresql/data,readonly" \
+  --mount "type=bind,source=${restored_pgdata},target=/var/lib/postgresql,readonly" \
   --entrypoint /usr/lib/postgresql/18/bin/pg_checksums \
   "${POSTGRES_IMAGE}" \
   --check \
-  --pgdata=/var/lib/postgresql/data \
+  --pgdata=/var/lib/postgresql \
   >"${WORK_DIRECTORY}/checksum-output" \
   2>"${WORK_DIRECTORY}/checksum-error"; then
   die "restored PGDATA checksums are disabled or corrupt"
@@ -235,12 +255,12 @@ docker run \
   --pids-limit 128 \
   --memory 256m \
   --cpus 1 \
-  --mount "type=bind,source=${restored_pgdata},target=/var/lib/postgresql/data" \
+  --mount "type=bind,source=${restored_pgdata},target=/var/lib/postgresql" \
   --entrypoint /usr/lib/postgresql/18/bin/postgres \
   "${POSTGRES_IMAGE}" \
-  -D /var/lib/postgresql/data \
+  -D /var/lib/postgresql \
   -c "listen_addresses=" \
-  -c "unix_socket_directories=/var/lib/postgresql/data" \
+  -c "unix_socket_directories=/var/lib/postgresql" \
   -c "unix_socket_permissions=0700" \
   -c "ssl=off" \
   -c "logging_collector=off" >/dev/null
@@ -252,7 +272,7 @@ psql_scalar() {
     --user 999:999 \
     "${CONTAINER_NAME}" \
     psql \
-    --host=/var/lib/postgresql/data \
+    --host=/var/lib/postgresql \
     --port=5432 \
     --username=refunddesk_owner \
     --dbname=refunddesk \
@@ -315,14 +335,27 @@ prisma_migrations_ready="$(
 
 runtime_roles_ready="$(
   psql_scalar "
-    WITH expected_role(role_name) AS (
+    WITH expected_role(role_name, expected_parents) AS (
       VALUES
-        ('refunddesk_web_login'),
-        ('refunddesk_worker_login'),
-        ('refunddesk_queue_login')
+        (
+          'refunddesk_web_login',
+          ARRAY['refunddesk_runtime']::text[]
+        ),
+        (
+          'refunddesk_worker_login',
+          ARRAY['refunddesk_attestation_writer', 'refunddesk_worker']::text[]
+        ),
+        (
+          'refunddesk_queue_login',
+          ARRAY['refunddesk_queue']::text[]
+        ),
+        (
+          'refunddesk_maintenance_login',
+          ARRAY['refunddesk_maintenance']::text[]
+        )
     )
     SELECT
-      count(runtime_role.oid) = 3
+      count(runtime_role.oid) = 4
       AND coalesce(bool_and(
         runtime_role.rolcanlogin
         AND NOT runtime_role.rolsuper
@@ -331,14 +364,37 @@ runtime_roles_ready="$(
         AND runtime_role.rolinherit
         AND NOT runtime_role.rolreplication
         AND NOT runtime_role.rolbypassrls
+        AND ARRAY(
+          SELECT parent.rolname::text
+          FROM pg_catalog.pg_auth_members AS membership
+          INNER JOIN pg_catalog.pg_roles AS parent
+            ON parent.oid = membership.roleid
+          WHERE membership.member = runtime_role.oid
+          ORDER BY parent.rolname
+        ) = expected_role.expected_parents
       ), false)
+      AND has_function_privilege(
+        'refunddesk_maintenance_login',
+        'public.refunddesk_list_due_tenant_purges(integer)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'refunddesk_maintenance_login',
+        'public.refunddesk_purge_test_sandbox_tenant(uuid,character varying)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'refunddesk_maintenance_login',
+        'public.refunddesk_purge_tenant(uuid,character varying)',
+        'EXECUTE'
+      )
     FROM expected_role
     LEFT JOIN pg_catalog.pg_roles AS runtime_role
       ON runtime_role.rolname = expected_role.role_name
   "
-)" || die "runtime-role verification failed"
+)" || die "application-login verification failed"
 [[ "${runtime_roles_ready}" == "t" ]] ||
-  die "runtime roles are missing or hold privileged PostgreSQL attributes"
+  die "application logins are missing, privileged or hold a foreign membership"
 
 docker stop --time 30 "${CONTAINER_NAME}" >/dev/null
 log "offline PostgreSQL 18 restore verification passed"

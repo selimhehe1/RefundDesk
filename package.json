@@ -12,7 +12,7 @@
     "build": "pnpm -r --if-present run build",
     "clean": "pnpm -r --if-present run clean",
     "config:release:check": "pnpm --filter @refunddesk/config release:check",
-    "container:check": "node scripts/check-container-contract.mjs && node scripts/check-sandbox-images-workflow.mjs && node --test deploy/lightsail/topology-contract.test.mjs deploy/lightsail/restore-verify-contract.test.mjs",
+    "container:check": "node scripts/check-container-contract.mjs && node scripts/check-sandbox-images-workflow.mjs && node --test deploy/lightsail/topology-contract.test.mjs deploy/lightsail/restore-verify-contract.test.mjs deploy/lightsail/pki-recovery-contract.test.mjs",
     "dev:platform": "pnpm --filter @refunddesk/platform dev",
     "dev:stripe-app": "pnpm --filter @refunddesk/stripe-app dev",
     "dev:worker": "pnpm --filter @refunddesk/worker dev",
@@ -32,6 +32,7 @@
     "db:migrate:deploy": "node scripts/database-command.mjs migrate-deploy",
     "db:pgboss:migrate": "node scripts/database-command.mjs migrate-pgboss",
     "db:release:prepare": "node scripts/database-command.mjs release-prepare",
+    "db:retention:run": "pnpm --filter @refunddesk/db retention:run",
     "db:runtime-roles:apply": "node scripts/database-command.mjs apply-runtime-access",
     "db:setup:local": "node scripts/database-command.mjs setup-local",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm container:check && pnpm secrets:check"

@@ -79,8 +79,13 @@ function migrationEnvironment(): NodeJS.ProcessEnv {
 
 interface ReleaseFileOverrides {
   readonly appBaseUrl?: string;
+  readonly maintenanceEnvironment?: NodeJS.ProcessEnv;
+  readonly maintenanceFile?: string;
+  readonly migrationEnvironment?: NodeJS.ProcessEnv;
+  readonly platformEnvironment?: NodeJS.ProcessEnv;
   readonly publicHost?: string;
   readonly publicOriginFile?: string;
+  readonly workerEnvironment?: NodeJS.ProcessEnv;
 }
 
 async function createReleaseFiles(overrides: ReleaseFileOverrides = {}): Promise<{
@@ -90,19 +95,51 @@ async function createReleaseFiles(overrides: ReleaseFileOverrides = {}): Promise
 }> {
   const directory = await mkdtemp(join(tmpdir(), "refunddesk-release-config-"));
   temporaryDirectories.push(directory);
-  const appBaseUrl = overrides.appBaseUrl ?? "https://sandbox.refunddesk.example";
-  const publicHost = overrides.publicHost ?? "sandbox.refunddesk.example";
+  const appBaseUrl = overrides.appBaseUrl ?? "https://d2xv7szimbgban.cloudfront.net";
+  const publicHost = overrides.publicHost ?? "origin.refunddesk.example";
   const publicOriginFile = overrides.publicOriginFile ?? `${appBaseUrl}\n`;
   const platformPath = "platform.env";
   const workerPath = "worker.env";
   const migrationPath = "migration.env";
+  const maintenancePath = "maintenance.env";
   const caddyPath = "caddy.env";
   const publicOriginPath = "public-origin";
 
   await Promise.all([
-    writeFile(join(directory, platformPath), serializeEnvironment(platformEnvironment(appBaseUrl))),
-    writeFile(join(directory, workerPath), serializeEnvironment(workerEnvironment())),
-    writeFile(join(directory, migrationPath), serializeEnvironment(migrationEnvironment())),
+    writeFile(
+      join(directory, platformPath),
+      serializeEnvironment({
+        ...platformEnvironment(appBaseUrl),
+        ...overrides.platformEnvironment,
+      }),
+    ),
+    writeFile(
+      join(directory, workerPath),
+      serializeEnvironment({
+        ...workerEnvironment(),
+        ...overrides.workerEnvironment,
+      }),
+    ),
+    writeFile(
+      join(directory, migrationPath),
+      serializeEnvironment({
+        ...migrationEnvironment(),
+        ...overrides.migrationEnvironment,
+      }),
+    ),
+    writeFile(
+      join(directory, maintenancePath),
+      overrides.maintenanceFile ??
+        serializeEnvironment({
+          NODE_ENV: "production",
+          REFUNDDESK_MAINTENANCE_DATABASE_URL:
+            "postgresql://refunddesk_maintenance_login:maintenance@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full",
+          REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1: Buffer.alloc(32, 9).toString("base64"),
+          REFUNDDESK_RETENTION_BATCH_SIZE: "25",
+          REFUNDDESK_RETENTION_SCOPE: "test_sandbox",
+          ...overrides.maintenanceEnvironment,
+        }),
+    ),
     writeFile(
       join(directory, caddyPath),
       serializeEnvironment({
@@ -116,7 +153,14 @@ async function createReleaseFiles(overrides: ReleaseFileOverrides = {}): Promise
   return {
     directory,
     legacyPaths: [platformPath, workerPath, migrationPath],
-    hostedPaths: [platformPath, workerPath, migrationPath, caddyPath, publicOriginPath],
+    hostedPaths: [
+      platformPath,
+      workerPath,
+      migrationPath,
+      maintenancePath,
+      caddyPath,
+      publicOriginPath,
+    ],
   };
 }
 
@@ -139,17 +183,118 @@ describe("release configuration file check", () => {
       publicOriginFile: "not-an-origin\n",
     });
 
-    await expect(
-      checkReleaseConfiguration(files.legacyPaths, files.directory),
-    ).resolves.toBeUndefined();
+    await expect(checkReleaseConfiguration(files.legacyPaths, files.directory)).resolves.toEqual({
+      keyRotation: {
+        approvalAttestation: "legacy",
+        field: "legacy",
+        proof: "legacy",
+      },
+    });
   });
 
-  it("accepts a canonical hosted origin matching the platform and Caddy host", async () => {
+  it("accepts a canonical viewer origin distinct from the Caddy origin host", async () => {
     const files = await createReleaseFiles();
 
-    await expect(
-      checkReleaseConfiguration(files.hostedPaths, files.directory),
-    ).resolves.toBeUndefined();
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).resolves.toEqual({
+      keyRotation: {
+        approvalAttestation: "legacy",
+        field: "legacy",
+        proof: "legacy",
+      },
+    });
+  });
+
+  it("returns only non-secret active V2 lifecycle metadata for the release guard", async () => {
+    const files = await createReleaseFiles({
+      platformEnvironment: {
+        REFUNDDESK_FIELD_ENCRYPTION_KEY_V2: Buffer.alloc(32, 6).toString("base64"),
+        REFUNDDESK_ACTIVE_FIELD_KEY_VERSION: "v2",
+        REFUNDDESK_FIELD_KEY_ROTATION_STATE: "active",
+      },
+      workerEnvironment: {
+        REFUNDDESK_PROOF_HMAC_KEY_V2: Buffer.alloc(32, 7).toString("base64"),
+        REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: "v2",
+        REFUNDDESK_PROOF_KEY_ROTATION_STATE: "active",
+        REFUNDDESK_APPROVAL_ATTESTATION_HMAC_KEY_V2: Buffer.alloc(32, 8).toString("base64"),
+        REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION: "v2",
+        REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE: "active",
+      },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).resolves.toEqual({
+      keyRotation: {
+        approvalAttestation: "active",
+        field: "active",
+        proof: "active",
+      },
+    });
+  });
+
+  it.each([
+    {
+      name: "the field encryption key",
+      key: Buffer.alloc(32, 1).toString("base64"),
+    },
+    {
+      name: "the proof key",
+      key: Buffer.alloc(32, 2).toString("base64"),
+    },
+    {
+      name: "the approval-attestation key",
+      key: Buffer.alloc(32, 3).toString("base64"),
+    },
+    {
+      name: "the export key",
+      key: Buffer.alloc(32, 4).toString("base64"),
+    },
+    {
+      name: "the private verifier token",
+      key: Buffer.alloc(32, 5).toString("base64"),
+    },
+  ])("rejects a purge pseudonym key reused as $name", async ({ key }) => {
+    const files = await createReleaseFiles({
+      maintenanceEnvironment: {
+        REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1: key,
+      },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "MAINTENANCE_PSEUDONYM_KEY_NOT_SEPARATED",
+    );
+  });
+
+  it("rejects a maintenance login reused by another release authority", async () => {
+    const reusedUrl =
+      "postgresql://refunddesk_maintenance_login:maintenance@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full";
+    const files = await createReleaseFiles({
+      platformEnvironment: {
+        DATABASE_URL: reusedUrl,
+      },
+      migrationEnvironment: {
+        DATABASE_URL: reusedUrl,
+      },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "MAINTENANCE_DATABASE_PRINCIPAL_NOT_SEPARATED",
+    );
+  });
+
+  it("rejects duplicate maintenance variables before release", async () => {
+    const files = await createReleaseFiles({
+      maintenanceFile: `${serializeEnvironment({
+        NODE_ENV: "production",
+        REFUNDDESK_MAINTENANCE_DATABASE_URL:
+          "postgresql://refunddesk_maintenance_login:maintenance@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full",
+        REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1: Buffer.alloc(32, 9).toString("base64"),
+        REFUNDDESK_RETENTION_BATCH_SIZE: "25",
+        REFUNDDESK_RETENTION_SCOPE: "test_sandbox",
+      })}REFUNDDESK_RETENTION_SCOPE=test_sandbox\n`,
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "MAINTENANCE_CONFIGURATION_INVALID",
+    );
   });
 
   it.each([
@@ -162,9 +307,22 @@ describe("release configuration file check", () => {
       },
     },
     {
-      name: "the Caddy host differs",
+      name: "the Caddy host contains a scheme",
       overrides: {
-        publicHost: "other.refunddesk.example",
+        publicHost: "https://origin.refunddesk.example",
+      },
+    },
+    {
+      name: "the Caddy host tries to claim a CloudFront certificate",
+      overrides: {
+        publicHost: "d2xv7szimbgban.cloudfront.net",
+      },
+    },
+    {
+      name: "the viewer is not the deployed CloudFront distribution",
+      overrides: {
+        appBaseUrl: "https://different.cloudfront.net",
+        publicOriginFile: "https://different.cloudfront.net\n",
       },
     },
     {
@@ -208,18 +366,18 @@ describe("release configuration file check", () => {
     );
   });
 
-  it("accepts exactly three or five inputs and keeps errors value-free", async () => {
+  it("accepts exactly three or six inputs and keeps errors value-free", async () => {
     const files = await createReleaseFiles({
-      publicHost: "sensitive-host.example",
+      publicHost: "sensitive-host.example/path",
     });
 
     for (const paths of [
       files.legacyPaths.slice(0, 2),
       [...files.legacyPaths, "unexpected-fourth"],
-      [...files.hostedPaths, "unexpected-sixth"],
+      [...files.hostedPaths, "unexpected-seventh"],
     ]) {
       await expect(checkReleaseConfiguration(paths, files.directory)).rejects.toThrow(
-        "THREE_OR_FIVE_RELEASE_INPUTS_REQUIRED",
+        "THREE_OR_SIX_RELEASE_INPUTS_REQUIRED",
       );
     }
 

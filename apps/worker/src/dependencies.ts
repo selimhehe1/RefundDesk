@@ -1,8 +1,9 @@
 import type { WorkerConfig } from "@refunddesk/config";
-import { RefundProofKeyring } from "@refunddesk/domain";
+import type { RefundProofKeyring } from "@refunddesk/domain";
 import { createLogger } from "@refunddesk/observability";
 import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
+import { createRefundProofKeyring } from "./application-keyrings.js";
 import type { Clock, WorkerLogger, WorkerStore } from "./ports.js";
 
 export const systemClock: Clock = {
@@ -35,12 +36,7 @@ export function createWorkerDependencies(
         },
       }),
     ),
-    proofs: new RefundProofKeyring({
-      active: {
-        version: config.keys.activeProofVersion,
-        key: config.keys.proofV1,
-      },
-    }),
+    proofs: createRefundProofKeyring(config.keys),
     clock: systemClock,
     logger: createLogger("refunddesk-worker", config.logLevel),
   };

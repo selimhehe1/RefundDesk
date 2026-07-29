@@ -1,7 +1,10 @@
 import type { WorkerConfig } from "@refunddesk/config";
 import { createPrismaClient } from "@refunddesk/db";
-import { ApprovalAttestationKeyring, RefundProofKeyring } from "@refunddesk/domain";
 
+import {
+  createApprovalAttestationKeyring,
+  createRefundProofKeyring,
+} from "./application-keyrings.js";
 import { PrismaWorkerStore } from "./db-store.js";
 import type { WorkerStore } from "./ports.js";
 
@@ -17,18 +20,8 @@ export function loadWorkerStore(config: WorkerConfig): Promise<WorkerStore> {
   return Promise.resolve(
     new PrismaWorkerStore(
       client,
-      new RefundProofKeyring({
-        active: {
-          version: config.keys.activeProofVersion,
-          key: config.keys.proofV1,
-        },
-      }),
-      new ApprovalAttestationKeyring({
-        active: {
-          version: config.keys.activeApprovalAttestationVersion,
-          key: config.keys.approvalAttestationV1,
-        },
-      }),
+      createRefundProofKeyring(config.keys),
+      createApprovalAttestationKeyring(config.keys),
     ),
   );
 }

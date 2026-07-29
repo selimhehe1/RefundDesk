@@ -4,13 +4,11 @@ Documentation=https://github.com/selimhehe1/RefundDesk
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/refunddesk/backup.env
-ConditionPathExists=/opt/refunddesk/current/deploy/lightsail/scripts/backup.sh
+OnFailure=refunddesk-quiesce-recovery.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=/etc/refunddesk/backup.env
-ExecStart=/usr/bin/bash /opt/refunddesk/current/deploy/lightsail/scripts/backup.sh
+ExecStart=/usr/local/sbin/refunddesk-backup
 UMask=0077
 TimeoutStartSec=45min
 Nice=10
@@ -27,7 +25,7 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
-ReadWritePaths=/var/lib/refunddesk/backups /run /var/log/refunddesk
+ReadWritePaths=/var/lib/refunddesk/backups /var/lib/refunddesk/control /run/refunddesk /run/docker.sock /var/log/refunddesk
 
 [Install]
 WantedBy=multi-user.target
