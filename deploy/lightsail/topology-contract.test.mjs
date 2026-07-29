@@ -779,6 +779,227 @@ test("deployment verification compiles every await-based Node eval as an ES modu
   }
 });
 
+test("deployment verification bounds and classifies exact-container readiness retries", async () => {
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+  const helper = shellFunction(verifyDeployment, "retry_bounded_service_probe");
+  const retryCalls = verifyDeployment.match(/^\s*retry_bounded_service_probe \\\s*$/gmu) ?? [];
+
+  assert.match(verifyDeployment, /^require_command timeout$/mu);
+  assert.match(helper, /local retry_delay_seconds=5/u);
+  assert.match(helper, /max_attempts=\$\(\(deadline_seconds \/ retry_delay_seconds \+ 2\)\)/u);
+  assert.match(helper, /local max_attempt_timeout_seconds=50/u);
+  assert.match(helper, /\$\{container_id\}" =~ \^\[0-9a-f\]\{64\}\$/u);
+  assert.doesNotMatch(helper, /docker inspect/u);
+  assert.ok(helper.includes('docker exec -- "${container_id}" "$@"'));
+  assert.ok(
+    helper.indexOf("(( remaining_seconds > 0 )) || break") < helper.indexOf("timeout \\"),
+    "a zero remaining duration must stop before GNU timeout can disable its bound",
+  );
+  assert.match(helper, /timeout \\\s+--foreground \\\s+--signal=TERM \\\s+--kill-after=5s/u);
+  assert.match(helper, /75\|124\|137\)/u);
+  assert.match(helper, /deployment probe transient failure/u);
+  assert.match(helper, /deployment probe failed permanently/u);
+  assert.match(helper, /deployment probe exhausted/u);
+  assert.doesNotMatch(helper, /\beval\b/u);
+
+  assert.equal(retryCalls.length, 4, "all four private readiness probes must be bounded");
+  for (const probe of ["web-ready", "worker-ready", "verifier-auth", "graceful-web-ready"]) {
+    assert.match(verifyDeployment, new RegExp(`\\n\\s*${probe} \\\\\\n`, "u"));
+  }
+  assert.equal(
+    (verifyDeployment.match(/AbortSignal\.timeout\(20000\)/gu) ?? []).length,
+    5,
+    "every await-based deployment fetch must keep a 20-second network bound",
+  );
+  assert.doesNotMatch(verifyDeployment, /AbortSignal\.timeout\(5000\)/u);
+  assert.equal(
+    (verifyDeployment.match(/process\.exit\(response\.status === 503 \? 75 : 1\)/gu) ?? []).length,
+    4,
+    "only HTTP 503 may be classified as retryable by private probes",
+  );
+  assert.match(
+    verifyDeployment,
+    /VERIFIED_WEB_CONTAINER_ID="\$\{container_id\}"[\s\S]+VERIFIED_WORKER_CONTAINER_ID="\$\{container_id\}"/u,
+  );
+});
+
+test("bounded readiness helper retries only transient command outcomes", async (t) => {
+  const version = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (version.error?.code === "ENOENT" || version.status !== 0) {
+    t.skip("bash is unavailable on this host; Linux CI executes this functional contract");
+    return;
+  }
+
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+  const helper = shellFunction(verifyDeployment, "retry_bounded_service_probe");
+  const containerId = "a".repeat(64);
+  const harness = `set -Eeuo pipefail
+${helper}
+scenario="$1"
+expected_id="$2"
+fake_index=0
+case "\${scenario}" in
+  transient-success) fake_statuses=(75 75 0) ;;
+  timeout-success) fake_statuses=(124 0) ;;
+  permanent-failure) fake_statuses=(1) ;;
+  transient-exhausted)
+    fake_statuses=()
+    for _ in {1..40}; do
+      fake_statuses+=(75)
+    done
+    ;;
+  *) exit 90 ;;
+esac
+log() {
+  printf 'log=%s calls=%s\\n' "$*" "\${fake_index}"
+}
+die() {
+  printf 'die=%s calls=%s\\n' "$*" "\${fake_index}" >&2
+  exit 99
+}
+sleep() {
+  SECONDS=$((SECONDS + $1))
+  return 0
+}
+timeout() {
+  while (( $# > 0 )) && [[ "$1" != "docker" ]]; do
+    shift
+  done
+  [[ "$1" == "docker" ]] || return 88
+  "$@"
+}
+docker() {
+  [[ "$1" == "exec" && "$2" == "--" && "$3" == "\${expected_id}" ]] || return 87
+  shift 3
+  printf 'argument=%q\\n' "$@"
+  status="\${fake_statuses[\${fake_index}]}"
+  fake_index=$((fake_index + 1))
+  return "\${status}"
+}
+retry_bounded_service_probe \
+  web-ready \
+  "\${expected_id}" \
+  150 \
+  node "argument with spaces"
+printf 'result=passed calls=%s\\n' "\${fake_index}"
+`;
+
+  const cases = [
+    {
+      name: "transient-success",
+      status: 0,
+      output: /result=passed calls=3/u,
+      diagnostics: /probe=web-ready; attempt=3/u,
+    },
+    {
+      name: "timeout-success",
+      status: 0,
+      output: /result=passed calls=2/u,
+      diagnostics: /exit_status=124/u,
+    },
+    {
+      name: "permanent-failure",
+      status: 99,
+      output: /calls=1/u,
+      diagnostics: /failed permanently; probe=web-ready; attempt=1; exit_status=1/u,
+    },
+    {
+      name: "transient-exhausted",
+      status: 99,
+      output: /calls=30/u,
+      diagnostics: /probe exhausted; probe=web-ready; attempts=30/u,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const result = spawnSync("bash", ["-c", harness, "bash", scenario.name, containerId], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, scenario.status, `${scenario.name}: ${result.stderr}`);
+    assert.match(`${result.stdout}\n${result.stderr}`, scenario.output);
+    assert.match(`${result.stdout}\n${result.stderr}`, scenario.diagnostics);
+    assert.match(result.stdout, /argument=node[\s\S]+argument=argument\\ with\\ spaces/u);
+  }
+});
+
+test("private readiness probes expose only safe transient and permanent exit classes", async () => {
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+  const inlineEvalPattern =
+    /\bnode (?<options>(?:--[a-z-]+(?:=[a-z]+)?\s+)*)-e '\n(?<source>[\s\S]*?)\n\s*'/gu;
+  const probeSources = new Map();
+
+  for (const { groups } of verifyDeployment.matchAll(inlineEvalPattern)) {
+    const probe = groups.source.match(/deployment_probe=(?<name>[a-z-]+)/u)?.groups?.name;
+    if (probe) {
+      probeSources.set(probe, {
+        options: groups.options.trim().split(/\s+/u).filter(Boolean),
+        source: groups.source,
+      });
+    }
+  }
+
+  assert.deepEqual([...probeSources.keys()].sort(), [
+    "graceful-web-ready",
+    "verifier-auth",
+    "web-ready",
+    "worker-ready",
+  ]);
+
+  const runProbe = (probe, responses) => {
+    const entry = probeSources.get(probe);
+    assert.ok(entry, `missing ${probe} source`);
+    const prelude = `
+      const mockedResponses = ${JSON.stringify(responses)};
+      globalThis.fetch = async () => {
+        const next = mockedResponses.shift();
+        if (!next) throw Object.assign(new Error("mock exhausted"), {name: "TypeError"});
+        if (next.error) throw Object.assign(new Error("redacted"), {name: next.error});
+        return {
+          body: "must-not-be-logged-secret",
+          ok: next.status >= 200 && next.status < 300,
+          status: next.status,
+        };
+      };
+    `;
+    return spawnSync(
+      process.execPath,
+      [...entry.options, "--eval", `${prelude}\n${entry.source}`],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL:
+            "https://verifier.refunddesk.invalid/internal/v1/signed-requests/verify",
+        },
+      },
+    );
+  };
+  const expectProbe = (probe, responses, expectedStatus, stderrPattern) => {
+    const result = runProbe(probe, responses);
+    assert.equal(result.status, expectedStatus, result.stderr);
+    assert.match(result.stderr, stderrPattern);
+    assert.doesNotMatch(result.stderr, /must-not-be-logged-secret/u);
+  };
+
+  assert.equal(runProbe("web-ready", [{ status: 200 }]).status, 0);
+  expectProbe("web-ready", [{ status: 503 }], 75, /result=http_503/u);
+  expectProbe("web-ready", [{ status: 404 }], 1, /result=http_404/u);
+  expectProbe("web-ready", [{ error: "TypeError" }], 75, /result=transport_error/u);
+
+  assert.equal(runProbe("worker-ready", [{ status: 200 }, { status: 200 }]).status, 0);
+  expectProbe(
+    "worker-ready",
+    [{ status: 200 }, { status: 503 }],
+    75,
+    /endpoint=ready result=http_503/u,
+  );
+
+  assert.equal(runProbe("verifier-auth", [{ status: 401 }]).status, 0);
+  expectProbe("verifier-auth", [{ status: 503 }], 75, /result=http_503/u);
+  expectProbe("verifier-auth", [{ status: 200 }], 1, /result=http_200/u);
+  expectProbe("graceful-web-ready", [{ status: 503 }], 75, /result=http_503/u);
+});
+
 test("environment examples preserve authority separation and disable live", async () => {
   const [
     compose,

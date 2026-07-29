@@ -41,6 +41,7 @@ require_command docker
 require_command jq
 require_command readlink
 require_command ss
+require_command timeout
 require_command tr
 
 TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
@@ -185,8 +186,81 @@ normalize_http_headers() {
   tr --delete '\r'
 }
 
+retry_bounded_service_probe() {
+  local probe_name="$1"
+  local container_id="$2"
+  local deadline_seconds="$3"
+  shift 3
+
+  local attempt attempts_completed attempt_timeout deadline exit_status max_attempts
+  local remaining_seconds sleep_seconds
+  local max_attempt_timeout_seconds=50
+  local retry_delay_seconds=5
+
+  [[ "${probe_name}" =~ ^[a-z0-9-]+$ &&
+    "${container_id}" =~ ^[0-9a-f]{64}$ &&
+    "${deadline_seconds}" =~ ^[1-9][0-9]*$ ]] ||
+    die "bounded deployment probe configuration is invalid"
+
+  max_attempts=$((deadline_seconds / retry_delay_seconds + 2))
+  deadline=$((SECONDS + deadline_seconds))
+  attempt=1
+  attempts_completed=0
+  while (( attempt <= max_attempts && SECONDS < deadline )); do
+    remaining_seconds=$((deadline - SECONDS))
+    (( remaining_seconds > 0 )) || break
+    attempt_timeout="${max_attempt_timeout_seconds}"
+    if (( remaining_seconds < attempt_timeout )); then
+      attempt_timeout="${remaining_seconds}"
+    fi
+
+    exit_status=0
+    timeout \
+      --foreground \
+      --signal=TERM \
+      --kill-after=5s \
+      "${attempt_timeout}s" \
+      docker exec -- "${container_id}" "$@" ||
+      exit_status=$?
+    attempts_completed="${attempt}"
+    if (( exit_status == 0 )); then
+      log "deployment probe passed; probe=${probe_name}; attempt=${attempt}"
+      return 0
+    fi
+
+    case "${exit_status}" in
+      75|124|137)
+        log \
+          "deployment probe transient failure; probe=${probe_name}; attempt=${attempt}; exit_status=${exit_status}"
+        ;;
+      *)
+        die \
+          "deployment probe failed permanently; probe=${probe_name}; attempt=${attempt}; exit_status=${exit_status}"
+        ;;
+    esac
+
+    if (( attempt >= max_attempts || SECONDS >= deadline )); then
+      break
+    fi
+    remaining_seconds=$((deadline - SECONDS))
+    (( remaining_seconds > 0 )) || break
+    sleep_seconds="${retry_delay_seconds}"
+    if (( remaining_seconds < sleep_seconds )); then
+      sleep_seconds="${remaining_seconds}"
+    fi
+    attempt=$((attempt + 1))
+    sleep "${sleep_seconds}" ||
+      die "deployment probe retry sleep failed; probe=${probe_name}"
+  done
+
+  die \
+    "deployment probe exhausted; probe=${probe_name}; attempts=${attempts_completed}; deadline_seconds=${deadline_seconds}"
+}
+
 refunddesk_compose config --quiet
 
+VERIFIED_WEB_CONTAINER_ID=""
+VERIFIED_WORKER_CONTAINER_ID=""
 for service in postgres verifier worker web caddy; do
   service_is_running "${service}" || die "${service} is not running"
   container_id="$(service_container_id "${service}")"
@@ -207,7 +281,18 @@ for service in postgres verifier worker web caddy; do
         ' >/dev/null ||
       die "${service} is outside the release transition fence"
   fi
+  case "${service}" in
+    web)
+      VERIFIED_WEB_CONTAINER_ID="${container_id}"
+      ;;
+    worker)
+      VERIFIED_WORKER_CONTAINER_ID="${container_id}"
+      ;;
+  esac
 done
+[[ "${VERIFIED_WEB_CONTAINER_ID}" =~ ^[0-9a-f]{64}$ &&
+  "${VERIFIED_WORKER_CONTAINER_ID}" =~ ^[0-9a-f]{64}$ ]] ||
+  die "deployment verification did not capture the exact runtime container IDs"
 
 for service in postgres verifier worker web; do
   container_id="$(service_container_id "${service}")"
@@ -389,32 +474,75 @@ viewer_options_status="$(
 [[ "${viewer_options_status}" == "${local_options_status}" ]] ||
   die "CloudFront did not relay OPTIONS to the Caddy origin"
 
-refunddesk_compose exec --no-TTY web node --input-type=module -e '
-  const response = await fetch("http://127.0.0.1:3000/api/ready", {
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) process.exit(1);
-'
-
-refunddesk_compose exec --no-TTY worker node --input-type=module -e '
-  const check = async (path) => {
-    const response = await fetch(`http://127.0.0.1:3101${path}`, {
-      signal: AbortSignal.timeout(5000),
+retry_bounded_service_probe \
+  web-ready \
+  "${VERIFIED_WEB_CONTAINER_ID}" \
+  150 \
+  node --input-type=module -e '
+  try {
+    const response = await fetch("http://127.0.0.1:3000/api/ready", {
+      signal: AbortSignal.timeout(20000),
     });
-    if (!response.ok) process.exit(1);
-  };
-  await check("/health");
-  await check("/ready");
+    if (!response.ok) {
+      console.error(`deployment_probe=web-ready result=http_${response.status}`);
+      process.exit(response.status === 503 ? 75 : 1);
+    }
+  } catch (error) {
+    const result = error?.name === "TimeoutError" ? "timeout" : "transport_error";
+    console.error(`deployment_probe=web-ready result=${result}`);
+    process.exit(75);
+  }
 '
 
-refunddesk_compose exec --no-TTY web node --input-type=module -e '
-  const response = await fetch(process.env.REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL, {
-    method: "POST",
-    headers: {"content-type": "application/json"},
-    body: "{}",
-    signal: AbortSignal.timeout(5000),
-  });
-  if (response.status !== 401) process.exit(1);
+retry_bounded_service_probe \
+  worker-ready \
+  "${VERIFIED_WORKER_CONTAINER_ID}" \
+  150 \
+  node --input-type=module -e '
+  const check = async (path, endpoint) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:3101${path}`, {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) {
+        console.error(
+          `deployment_probe=worker-ready endpoint=${endpoint} result=http_${response.status}`,
+        );
+        process.exit(response.status === 503 ? 75 : 1);
+      }
+    } catch (error) {
+      const result = error?.name === "TimeoutError" ? "timeout" : "transport_error";
+      console.error(
+        `deployment_probe=worker-ready endpoint=${endpoint} result=${result}`,
+      );
+      process.exit(75);
+    }
+  };
+  await check("/health", "health");
+  await check("/ready", "ready");
+'
+
+retry_bounded_service_probe \
+  verifier-auth \
+  "${VERIFIED_WEB_CONTAINER_ID}" \
+  150 \
+  node --input-type=module -e '
+  try {
+    const response = await fetch(process.env.REFUNDDESK_SIGNED_REQUEST_VERIFIER_URL, {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: "{}",
+      signal: AbortSignal.timeout(20000),
+    });
+    if (response.status !== 401) {
+      console.error(`deployment_probe=verifier-auth result=http_${response.status}`);
+      process.exit(response.status === 503 ? 75 : 1);
+    }
+  } catch (error) {
+    const result = error?.name === "TimeoutError" ? "timeout" : "transport_error";
+    console.error(`deployment_probe=verifier-auth result=${result}`);
+    process.exit(75);
+  }
 '
 
 for service in web worker; do
@@ -471,11 +599,26 @@ if "${GRACEFUL_STOP_TEST}"; then
     wait_for_container_health "${service}" 180 ||
       die "${service} did not recover after graceful-stop verification"
   done
-  refunddesk_compose exec --no-TTY web node --input-type=module -e '
-    const response = await fetch("http://127.0.0.1:3000/api/ready", {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) process.exit(1);
+  retry_bounded_service_probe \
+    graceful-web-ready \
+    "${VERIFIED_WEB_CONTAINER_ID}" \
+    150 \
+    node --input-type=module -e '
+    try {
+      const response = await fetch("http://127.0.0.1:3000/api/ready", {
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!response.ok) {
+        console.error(
+          `deployment_probe=graceful-web-ready result=http_${response.status}`,
+        );
+        process.exit(response.status === 503 ? 75 : 1);
+      }
+    } catch (error) {
+      const result = error?.name === "TimeoutError" ? "timeout" : "transport_error";
+      console.error(`deployment_probe=graceful-web-ready result=${result}`);
+      process.exit(75);
+    }
   '
   curl_local_origin \
     --fail --silent --show-error --max-time 20 \
