@@ -6,7 +6,7 @@ import type { PrismaClient } from "@refunddesk/db";
 import {
   ApprovalAttestationKeyring,
   type ApprovalAttestationPayload,
-  type RefundProofKeyring,
+  RefundProofKeyring,
 } from "@refunddesk/domain";
 
 import { approvalAuthorizationSnapshotHash, PrismaWorkerStore } from "../src/db-store.js";
@@ -19,6 +19,7 @@ const requesterUserId = "8c80aa09-dfc7-42e1-824c-b4c2585054cf";
 const approverUserId = "48257283-e1c7-46f4-88aa-f9d621ae93df";
 const attestationId = "0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b";
 const attestationKey = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
+const refundProofKey = Uint8Array.from({ length: 32 }, (_, index) => index);
 const scanWindowEnd = new Date("2030-01-01T12:00:00.000Z");
 const observedAt = new Date("2030-01-01T12:00:01.000Z");
 
@@ -28,13 +29,22 @@ function approvalAttestationKeyring(): ApprovalAttestationKeyring {
   });
 }
 
-function storeForTransaction(transaction: Readonly<Record<string, unknown>>): PrismaWorkerStore {
+function refundProofKeyring(): RefundProofKeyring {
+  return new RefundProofKeyring({
+    active: { version: "v1", key: refundProofKey },
+  });
+}
+
+function storeForTransaction(
+  transaction: Readonly<Record<string, unknown>>,
+  proofs: RefundProofKeyring = {} as RefundProofKeyring,
+): PrismaWorkerStore {
   const client = {
     $transaction: vi.fn((operation: (tx: Readonly<Record<string, unknown>>) => Promise<unknown>) =>
       operation(transaction),
     ),
   } as unknown as PrismaClient;
-  return new PrismaWorkerStore(client, {} as RefundProofKeyring, approvalAttestationKeyring());
+  return new PrismaWorkerStore(client, proofs, approvalAttestationKeyring());
 }
 
 function linkedWorkItem() {
@@ -744,4 +754,215 @@ describe("linked Refund reconciliation store", () => {
     ).rejects.toThrow("LINKED_REFUND_RECONCILIATION_TUPLE_MISMATCH");
     expect(refundExecutionUpdate).not.toHaveBeenCalled();
   });
+});
+
+describe("late linked Refund correlation", () => {
+  it.each([
+    ["webhook", "pending", 1, "exact_linked"],
+    ["webhook", "unique_linked", 1, "exact_linked"],
+    ["scan", "unique_linked", 2, "unique_linked"],
+    ["scan", "exact_linked", 2, "exact_linked"],
+  ] as const)(
+    "a %s observation resolves a %s candidate among %i as %s without replaying old state",
+    async (sourceKind, candidateState, candidateCount, expectedState) => {
+      const item = linkedWorkItem();
+      const receiptId = "67f37649-b880-4bb9-847f-21da2cf53580";
+      const eventCreated = Math.floor(
+        item.execution.lastStripeEventCreatedAt.getTime() / 1_000 - 1,
+      );
+      const refundCreated = eventCreated - 10;
+      const proof = refundProofKeyring().sign({
+        tenantId,
+        stripeAccountId: item.installation.stripeAccountId,
+        requestId,
+        paymentKey: item.paymentKey,
+        amountMinor: item.amountMinor,
+        currency: item.currency,
+        environment: "test",
+      });
+      const normalizedPayload = {
+        schema_version: 1 as const,
+        environment: "test" as const,
+        event_type: "refund.updated" as const,
+        event_created: eventCreated,
+        event_idempotency_key: item.execution.idempotencyKey,
+        refund: {
+          refund_id: "re_linked",
+          payment_intent_id: item.paymentIntentId,
+          charge_id: item.chargeId,
+          amount_minor: item.amountMinor.toString(),
+          currency: item.currency,
+          status: "succeeded" as const,
+          created: refundCreated,
+          metadata_request_id: requestId,
+          metadata_proof: proof,
+        },
+      };
+      const candidate = {
+        id: "f8684858-e43d-4e87-8378-90dce0b9d186",
+        tenantId,
+        requestId,
+        installationId,
+        stripeRefundId: "re_linked",
+        paymentKey: item.paymentKey,
+        paymentIntentId: item.paymentIntentId,
+        chargeId: item.chargeId,
+        amountMinor: item.amountMinor,
+        currency: item.currency,
+        stripeRefundStatus: "succeeded" as const,
+        stripeCreatedAt: new Date(refundCreated * 1_000),
+        stripeStateObservedAt: new Date(eventCreated * 1_000),
+        stripeEventId: null,
+        stripeEventCreatedAt: null,
+        eventIdempotencyCorrelation: "absent",
+        lastSeenScanWindowEnd: candidateState === "pending" ? null : scanWindowEnd,
+        state: candidateState,
+        firstObservedAt: new Date("2030-01-01T11:30:00.000Z"),
+        lastObservedAt: new Date("2030-01-01T11:30:00.000Z"),
+        resolvedAt: candidateState === "pending" ? null : new Date("2030-01-01T11:45:00.000Z"),
+      };
+      const candidateUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const refundExecutionUpdate = vi.fn();
+      const refundRequestUpdate = vi.fn();
+      const webhookReceiptUpdate = vi.fn().mockResolvedValue({ count: 1 });
+      const auditCreate = vi.fn().mockResolvedValue({ id: "audit-late-linked-webhook" });
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([{ id: requestId }]),
+        webhookReceipt: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: receiptId,
+            tenantId,
+            installationId,
+            endpoint: "account_test",
+            stripeEventId: "evt_late_linked",
+            stripeAccountId: item.installation.stripeAccountId,
+            eventType: "refund.updated",
+            objectId: "re_linked",
+            normalizedPayload,
+            stripeCreatedAt: new Date(eventCreated * 1_000),
+            receivedAt: new Date("2030-01-01T11:59:00.000Z"),
+            status: "received",
+            processingAttempts: 0,
+            processedAt: null,
+            lastErrorCode: null,
+          }),
+          updateMany: webhookReceiptUpdate,
+        },
+        stripeInstallation: {
+          findFirst: vi.fn().mockResolvedValue({
+            ...item.installation,
+            id: installationId,
+            tenantId,
+            stripeAccountId: item.installation.stripeAccountId,
+            tenant: item.tenant,
+          }),
+        },
+        refundRequest: {
+          findFirst: vi.fn().mockResolvedValue(item),
+          updateMany: refundRequestUpdate,
+        },
+        refundExecution: {
+          updateMany: refundExecutionUpdate,
+        },
+        refundCorrelationCandidate: {
+          upsert: vi.fn().mockResolvedValue(candidate),
+          update: vi.fn().mockResolvedValue({
+            ...candidate,
+            eventIdempotencyCorrelation: sourceKind === "webhook" ? "exact" : "absent",
+            stripeEventId: sourceKind === "webhook" ? "evt_late_linked" : null,
+            stripeEventCreatedAt: sourceKind === "webhook" ? new Date(eventCreated * 1_000) : null,
+            lastObservedAt: observedAt,
+          }),
+          count: vi.fn().mockResolvedValue(candidateCount),
+          updateMany: candidateUpdateMany,
+        },
+        auditEvent: { create: auditCreate },
+      };
+      const store = storeForTransaction(tx, refundProofKeyring());
+      const source =
+        sourceKind === "webhook"
+          ? ({
+              kind: "webhook",
+              receiptId,
+              stripeEventId: "evt_late_linked",
+              stripeAccountId: item.installation.stripeAccountId,
+              eventIdempotencyKey: item.execution.idempotencyKey,
+              eventType: "refund.updated",
+              eventCreated,
+            } as const)
+          : ({
+              kind: "scan",
+              eventIdempotencyKey: null,
+              scanWindowEnd,
+            } as const);
+
+      await expect(
+        store.observeRefund({
+          tenantId,
+          installationId,
+          environment: "test",
+          refund: {
+            refundId: "re_linked",
+            paymentIntentId: item.paymentIntentId,
+            chargeId: item.chargeId,
+            amountMinor: item.amountMinor,
+            currency: item.currency,
+            status: "succeeded",
+            created: refundCreated,
+            metadataRequestId: requestId,
+            metadataProof: proof,
+          },
+          source,
+          observedAt,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(candidateUpdateMany).toHaveBeenLastCalledWith({
+        where: {
+          tenantId,
+          requestId,
+          stripeRefundId: "re_linked",
+          state: {
+            in:
+              expectedState === "exact_linked"
+                ? ["pending", "conflict", "unique_linked", "exact_linked"]
+                : ["pending", "conflict", "unique_linked"],
+          },
+        },
+        data: { state: expectedState, resolvedAt: observedAt },
+      });
+      expect(refundExecutionUpdate).not.toHaveBeenCalled();
+      expect(refundRequestUpdate).not.toHaveBeenCalled();
+      if (sourceKind === "webhook") {
+        expect(webhookReceiptUpdate).toHaveBeenCalledWith({
+          where: {
+            id: receiptId,
+            tenantId,
+            status: { in: ["received", "processing", "failed"] },
+          },
+          data: {
+            status: "processed",
+            processedAt: observedAt,
+            lastErrorCode: null,
+          },
+        });
+      } else {
+        expect(webhookReceiptUpdate).not.toHaveBeenCalled();
+      }
+      expect(auditCreate.mock.calls[0]?.[0]).toMatchObject({
+        data: {
+          tenantId,
+          actorType: "worker",
+          action: "refund.observed",
+          entityId: "re_linked",
+          payload: {
+            source: sourceKind,
+            classification: "workflow_refund",
+            event_idempotency_key_present: sourceKind === "webhook",
+          },
+          occurredAt: observedAt,
+        },
+      });
+    },
+  );
 });

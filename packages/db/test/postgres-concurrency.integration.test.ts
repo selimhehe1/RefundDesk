@@ -804,8 +804,7 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
         await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
         await setTenantContext(client);
         await barrier.arrive();
-        const now = new Date();
-        await client.query(
+        const inserted = await client.query<{ decided_at: Date }>(
           `INSERT INTO approval_decisions (
             tenant_id,
             request_id,
@@ -820,15 +819,16 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
             decided_at
           ) VALUES (
             $1, $2, $3,
-            CASE WHEN $4::decision_kind = 'approve' THEN $9::UUID ELSE NULL END,
+            CASE WHEN $4::decision_kind = 'approve' THEN $8::UUID ELSE NULL END,
             $4::decision_kind,
             CASE WHEN $4::decision_kind = 'reject' THEN $5::BYTEA ELSE NULL END,
             CASE WHEN $4::decision_kind = 'reject' THEN $6::BYTEA ELSE NULL END,
             CASE WHEN $4::decision_kind = 'reject' THEN $7::BYTEA ELSE NULL END,
             CASE WHEN $4::decision_kind = 'reject' THEN 'v1' ELSE NULL END,
             '["administrator"]'::JSONB,
-            $8
-          )`,
+            clock_timestamp()
+          )
+          RETURNING decided_at`,
           [
             tenantId,
             requestId,
@@ -837,10 +837,13 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
             Buffer.from([1]),
             Buffer.alloc(12),
             Buffer.alloc(16),
-            now,
             approvalAttestationId,
           ],
         );
+        const decidedAt = inserted.rows[0]?.decided_at;
+        if (decidedAt === undefined) {
+          throw new Error("Decision timestamp was not returned");
+        }
         const transitioned =
           decision === "approve"
             ? await client.query(
@@ -852,7 +855,7 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
                  WHERE id = $1
                    AND tenant_id = $2
                    AND workflow_status = 'pending_approval'`,
-                [requestId, tenantId, now],
+                [requestId, tenantId, decidedAt],
               )
             : await client.query(
                 `UPDATE refund_requests
@@ -865,7 +868,7 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
                    AND tenant_id = $2
                    AND workflow_status = 'pending_approval'
                    AND effect_state = 'not_started'`,
-                [requestId, tenantId, now],
+                [requestId, tenantId, decidedAt],
               );
         if (transitioned.rowCount !== 1) {
           throw new Error("Decision did not win the workflow compare-and-set");

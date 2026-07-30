@@ -1240,6 +1240,7 @@ export class PrismaWorkerStore implements WorkerStore {
           classification === "workflow_refund" ||
           classification === "proof_replay");
       let candidateCount = 0;
+      let candidateState: "pending" | "exact_linked" | "unique_linked" | "conflict" | null = null;
       if (canPersistCandidate && request !== null) {
         const candidate = await repositories.recordRefundCorrelationCandidate({
           requestId: request.id,
@@ -1260,6 +1261,7 @@ export class PrismaWorkerStore implements WorkerStore {
           observedAt: input.observedAt,
         });
         candidateCount = candidate.candidateCount;
+        candidateState = candidate.state;
       }
 
       const unlinkedCandidate =
@@ -1329,24 +1331,41 @@ export class PrismaWorkerStore implements WorkerStore {
         workflowEvidence &&
         alreadyLinked &&
         request !== null &&
-        request.execution !== null &&
-        !knownObservationAlreadyHandled
+        request.execution !== null
       ) {
-        const identified = await repositories.markRefundIdentified({
-          requestId: request.id,
-          stripeRefundId: input.refund.refundId,
-          stripeRefundStatus: observedRefundStatus,
-          reconciliationResolution: "preserve",
-          ...(input.source.kind === "webhook"
-            ? {
-                stripeEventId: input.source.stripeEventId,
-                stripeEventCreatedAt: new Date(input.source.eventCreated * 1_000),
-              }
-            : {}),
-          observedAt: input.observedAt,
-        });
-        if (!identified) {
-          throw new Error("OBSERVED_REFUND_COMPARE_AND_SET_FAILED");
+        if (candidateState === null) {
+          throw new Error("OBSERVED_REFUND_CANDIDATE_MISSING");
+        }
+        const linkedState =
+          candidateState === "unique_linked" && eventIdempotencyCorrelation !== "exact"
+            ? "unique_linked"
+            : "exact_linked";
+        const linked = await repositories.markRefundCorrelationCandidateLinked(
+          request.id,
+          input.refund.refundId,
+          linkedState,
+          input.observedAt,
+        );
+        if (!linked) {
+          throw new Error("OBSERVED_REFUND_CANDIDATE_COMPARE_AND_SET_FAILED");
+        }
+        if (!knownObservationAlreadyHandled) {
+          const identified = await repositories.markRefundIdentified({
+            requestId: request.id,
+            stripeRefundId: input.refund.refundId,
+            stripeRefundStatus: observedRefundStatus,
+            reconciliationResolution: "preserve",
+            ...(input.source.kind === "webhook"
+              ? {
+                  stripeEventId: input.source.stripeEventId,
+                  stripeEventCreatedAt: new Date(input.source.eventCreated * 1_000),
+                }
+              : {}),
+            observedAt: input.observedAt,
+          });
+          if (!identified) {
+            throw new Error("OBSERVED_REFUND_COMPARE_AND_SET_FAILED");
+          }
         }
       }
 

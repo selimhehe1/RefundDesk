@@ -1433,7 +1433,10 @@ export class TenantRepositories {
         },
         data: { state: "conflict", resolvedAt: null },
       });
-      return { candidateCount, state: "conflict" };
+      return {
+        candidateCount,
+        state: updated.state === "pending" ? "conflict" : updated.state,
+      };
     }
     return { candidateCount, state: updated.state };
   }
@@ -1444,12 +1447,16 @@ export class TenantRepositories {
     state: "exact_linked" | "unique_linked",
     resolvedAt: Date,
   ): Promise<boolean> {
+    const sourceStates: Array<"pending" | "conflict" | "unique_linked" | "exact_linked"> =
+      state === "exact_linked"
+        ? ["pending", "conflict", "unique_linked", "exact_linked"]
+        : ["pending", "conflict", "unique_linked"];
     const linked = await this.tx.refundCorrelationCandidate.updateMany({
       where: {
         tenantId: this.tenantId,
         requestId,
         stripeRefundId,
-        state: { in: ["pending", "conflict", state] },
+        state: { in: sourceStates },
       },
       data: { state, resolvedAt },
     });

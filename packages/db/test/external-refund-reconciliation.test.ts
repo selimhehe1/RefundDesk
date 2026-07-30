@@ -492,3 +492,65 @@ describe("external refund reconciliation", () => {
     expect(externalAlertFindFirst).not.toHaveBeenCalled();
   });
 });
+
+describe("refund correlation candidate resolution", () => {
+  it("allows exact evidence to upgrade a unique-scan link", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const repositories = new TenantRepositories(
+      {
+        refundCorrelationCandidate: { updateMany },
+      } as unknown as Prisma.TransactionClient,
+      tenantId,
+    );
+
+    await expect(
+      repositories.markRefundCorrelationCandidateLinked(
+        requestId,
+        "re_linked",
+        "exact_linked",
+        observedAt,
+      ),
+    ).resolves.toBe(true);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        tenantId,
+        requestId,
+        stripeRefundId: "re_linked",
+        state: {
+          in: ["pending", "conflict", "unique_linked", "exact_linked"],
+        },
+      },
+      data: { state: "exact_linked", resolvedAt: observedAt },
+    });
+  });
+
+  it("never downgrades an exact link to unique-scan evidence", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 0 });
+    const repositories = new TenantRepositories(
+      {
+        refundCorrelationCandidate: { updateMany },
+      } as unknown as Prisma.TransactionClient,
+      tenantId,
+    );
+
+    await expect(
+      repositories.markRefundCorrelationCandidateLinked(
+        requestId,
+        "re_linked",
+        "unique_linked",
+        observedAt,
+      ),
+    ).resolves.toBe(false);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        tenantId,
+        requestId,
+        stripeRefundId: "re_linked",
+        state: {
+          in: ["pending", "conflict", "unique_linked"],
+        },
+      },
+      data: { state: "unique_linked", resolvedAt: observedAt },
+    });
+  });
+});
