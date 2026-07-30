@@ -5,7 +5,9 @@ import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createPrismaClient } from "../src/client.js";
+import { provisionInstallation } from "../src/installations.js";
 import { withTenantTransaction } from "../src/tenant-transaction.js";
+import { findWebhookReceipt } from "../src/webhooks.js";
 import { readOrderedMigrationSql } from "./postgres-test-support.js";
 
 const testDatabaseUrl = process.env["REFUNDDESK_TEST_DATABASE_URL"] ?? "";
@@ -527,6 +529,174 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
       installation: { id: installationId, tenantId },
       execution: null,
     });
+  });
+
+  it("persists runtime deauthorization atomically through the adapter advisory lock", async () => {
+    const runtimeDatabase = createPrismaClient({
+      connectionString: ephemeralDatabaseUrl,
+      maxConnections: 1,
+    });
+    await runtimeDatabase.$executeRawUnsafe("SET SESSION AUTHORIZATION refunddesk_runtime");
+    try {
+      const stripeAccountId = `acct_DeauthRuntime${randomBytes(6).toString("hex")}`;
+      const provisioned = await provisionInstallation(runtimeDatabase, stripeAccountId, "test");
+      const stripeEventId = `evt_DeauthRuntime${randomBytes(6).toString("hex")}`;
+      const stripeEventCreatedAt = new Date("2030-01-01T12:00:00.000Z");
+      const purgeAt = new Date("2030-01-30T12:00:00.000Z");
+      const receiptInput = {
+        installationId: provisioned.installationId,
+        endpoint: "account_test" as const,
+        stripeEventId,
+        stripeAccountId,
+        eventType: "account.application.deauthorized" as const,
+        objectId: "ca_RefundDesk",
+        stripeCreatedAt: stripeEventCreatedAt,
+        receivedAt: new Date("2030-01-01T12:00:01.000Z"),
+        normalizedPayload: {
+          schema_version: 1 as const,
+          environment: "test" as const,
+          event_type: "account.application.deauthorized" as const,
+          event_created: Math.floor(stripeEventCreatedAt.getTime() / 1_000),
+          event_idempotency_key: null,
+          application_id: "ca_RefundDesk",
+        },
+      };
+      const deauthorizationInput = {
+        installationId: provisioned.installationId,
+        stripeEventId,
+        stripeEventCreatedAt,
+        purgeAt,
+      };
+
+      const first = await withTenantTransaction(
+        runtimeDatabase,
+        provisioned.tenantId,
+        async ({ repositories }) => {
+          const applied = await repositories.applyWebhookDeauthorization(deauthorizationInput);
+          const receipt = await repositories.insertWebhookReceipt(receiptInput);
+          return { receipt, applied };
+        },
+        { maxAttempts: 1 },
+      );
+      expect(first).toMatchObject({
+        receipt: { inserted: true },
+        applied: true,
+      });
+
+      const replay = await withTenantTransaction(
+        runtimeDatabase,
+        provisioned.tenantId,
+        async ({ repositories }) => {
+          const applied = await repositories.applyWebhookDeauthorization(deauthorizationInput);
+          const receipt = await repositories.insertWebhookReceipt(receiptInput);
+          return { receipt, applied };
+        },
+        { maxAttempts: 1 },
+      );
+      expect(replay).toMatchObject({
+        receipt: {
+          inserted: false,
+          receipt: { id: first.receipt.receipt.id },
+        },
+        applied: true,
+      });
+
+      const durableState = await withTenantTransaction(
+        runtimeDatabase,
+        provisioned.tenantId,
+        ({ repositories }) => repositories.getInstallationContext(provisioned.installationId),
+        { maxAttempts: 1 },
+      );
+      expect(durableState).toMatchObject({
+        status: "deauthorized",
+        deauthorizedAt: stripeEventCreatedAt,
+        lastLifecycleEventId: stripeEventId,
+        lastLifecycleEventType: "account.application.deauthorized",
+        lastLifecycleEventCreatedAt: stripeEventCreatedAt,
+        tenant: {
+          status: "pending_deletion",
+          pendingDeleteAt: purgeAt,
+          liveEnabled: false,
+        },
+      });
+
+      const rollbackAccountId = `acct_DeauthRollback${randomBytes(6).toString("hex")}`;
+      const rollbackProvisioned = await provisionInstallation(
+        runtimeDatabase,
+        rollbackAccountId,
+        "test",
+      );
+      const rollbackEventId = `evt_DeauthRollback${randomBytes(6).toString("hex")}`;
+      const rollbackReceiptInput = {
+        ...receiptInput,
+        installationId: rollbackProvisioned.installationId,
+        stripeEventId: rollbackEventId,
+        stripeAccountId: rollbackAccountId,
+      };
+      const rollbackDeauthorizationInput = {
+        installationId: rollbackProvisioned.installationId,
+        stripeEventId: rollbackEventId,
+        stripeEventCreatedAt,
+        purgeAt,
+      };
+
+      await expect(
+        withTenantTransaction(
+          runtimeDatabase,
+          rollbackProvisioned.tenantId,
+          async ({ repositories }) => {
+            await repositories.applyWebhookDeauthorization(rollbackDeauthorizationInput);
+            await repositories.insertWebhookReceipt({
+              ...rollbackReceiptInput,
+              objectId: "ca_Different",
+            });
+          },
+          { maxAttempts: 1 },
+        ),
+      ).rejects.toThrow();
+      const rolledBackState = await withTenantTransaction(
+        runtimeDatabase,
+        rollbackProvisioned.tenantId,
+        ({ repositories }) =>
+          repositories.getInstallationContext(rollbackProvisioned.installationId),
+        { maxAttempts: 1 },
+      );
+      expect(rolledBackState).toMatchObject({
+        status: "active",
+        deauthorizedAt: null,
+        lastLifecycleEventId: null,
+        lastLifecycleEventType: null,
+        lastLifecycleEventCreatedAt: null,
+        tenant: {
+          status: "active",
+          pendingDeleteAt: null,
+          liveEnabled: false,
+        },
+      });
+      await expect(
+        findWebhookReceipt(runtimeDatabase, "account_test", rollbackEventId, rollbackAccountId),
+      ).resolves.toBeNull();
+
+      const afterRollback = await withTenantTransaction(
+        runtimeDatabase,
+        rollbackProvisioned.tenantId,
+        async ({ repositories }) => {
+          const applied = await repositories.applyWebhookDeauthorization(
+            rollbackDeauthorizationInput,
+          );
+          const receipt = await repositories.insertWebhookReceipt(rollbackReceiptInput);
+          return { receipt, applied };
+        },
+        { maxAttempts: 1 },
+      );
+      expect(afterRollback).toMatchObject({
+        receipt: { inserted: true },
+        applied: true,
+      });
+    } finally {
+      await runtimeDatabase.$executeRawUnsafe("RESET SESSION AUTHORIZATION");
+      await runtimeDatabase.$disconnect();
+    }
   });
 
   it("allows only one active financial guard for concurrent request creation", async () => {

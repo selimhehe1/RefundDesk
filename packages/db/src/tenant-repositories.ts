@@ -517,12 +517,16 @@ export class TenantRepositories {
   }
 
   private async lockTenantLifecycle(): Promise<void> {
-    const locked = await this.tx.$queryRaw<readonly { acquired: null }[]>`
-      SELECT pg_advisory_xact_lock(
-        hashtextextended(${this.tenantId}::UUID::TEXT, 0)
-      ) AS acquired
+    const locked = await this.tx.$queryRaw<readonly { acquired: number }[]>`
+      WITH tenant_lifecycle_lock AS MATERIALIZED (
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${this.tenantId}::UUID::TEXT, 0)
+        )
+      )
+      SELECT 1::INTEGER AS acquired
+      FROM tenant_lifecycle_lock
     `;
-    if (locked.length !== 1) {
+    if (locked.length !== 1 || locked[0]?.acquired !== 1) {
       throw new Error("TENANT_LIFECYCLE_LOCK_FAILED");
     }
   }

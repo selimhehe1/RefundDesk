@@ -36,7 +36,7 @@ describe("tenant repositories", () => {
     const eventAt = new Date("2030-01-01T12:00:00.000Z");
     const queryRaw = vi
       .fn()
-      .mockResolvedValueOnce([{ acquired: null }])
+      .mockResolvedValueOnce([{ acquired: 1 }])
       .mockResolvedValueOnce([{ id: "installation-lock" }])
       .mockResolvedValueOnce([{ id: tenantId }])
       .mockResolvedValueOnce([
@@ -164,8 +164,26 @@ describe("tenant repositories", () => {
     expect(queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
       installationUpdate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
+    const lockSql = (queryRaw.mock.calls[0]?.[0] as readonly string[] | undefined)?.join("?") ?? "";
+    expect(lockSql).toContain("WITH tenant_lifecycle_lock AS MATERIALIZED");
+    expect(lockSql).toMatch(/SELECT 1::INTEGER AS acquired\s+FROM tenant_lifecycle_lock/u);
     expect(installationUpdate).toHaveBeenCalledOnce();
     expect(tenantUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("requires an integer advisory-lock sentinel before lifecycle writes", async () => {
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([{ acquired: null }]),
+    } as unknown as Prisma.TransactionClient;
+    const repositories = new TenantRepositories(tx, tenantId);
+
+    await expect(
+      repositories.deauthorizeInstallation(
+        "ca3872bc-01b8-4df3-b649-e81a22c31c5e",
+        new Date("2030-01-01T12:00:00.000Z"),
+        new Date("2030-01-31T12:00:00.000Z"),
+      ),
+    ).rejects.toThrow("TENANT_LIFECYCLE_LOCK_FAILED");
   });
 
   it("marks a direct deauthorization before applying protective request transitions", async () => {
@@ -176,7 +194,7 @@ describe("tenant repositories", () => {
     const tx = {
       $queryRaw: vi
         .fn()
-        .mockResolvedValueOnce([{ acquired: null }])
+        .mockResolvedValueOnce([{ acquired: 1 }])
         .mockResolvedValueOnce([{ id: "installation-lock" }])
         .mockResolvedValueOnce([{ id: tenantId }])
         .mockResolvedValueOnce([]),
@@ -208,7 +226,7 @@ describe("tenant repositories", () => {
     const tx = {
       $queryRaw: vi
         .fn()
-        .mockResolvedValueOnce([{ acquired: null }])
+        .mockResolvedValueOnce([{ acquired: 1 }])
         .mockResolvedValueOnce([{ id: "installation-lock" }])
         .mockResolvedValueOnce([{ id: tenantId }])
         .mockResolvedValueOnce([
