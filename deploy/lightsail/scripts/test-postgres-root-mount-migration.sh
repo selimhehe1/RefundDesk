@@ -142,7 +142,14 @@ docker run \
 old_ready=false
 for _ in {1..60}; do
   if docker exec "${OLD_CONTAINER}" \
-    pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk; then
+    psql \
+    --host=/var/run/postgresql \
+    --username=refunddesk_owner \
+    --dbname=refunddesk \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --command='SELECT 1;' >/dev/null 2>&1; then
     old_ready=true
     break
   fi
@@ -208,7 +215,14 @@ docker run \
 recreated_ready=false
 for _ in {1..60}; do
   if docker exec "${OLD_CONTAINER}" \
-    pg_isready --quiet --username=refunddesk_owner --dbname=refunddesk; then
+    psql \
+    --host=/var/run/postgresql \
+    --username=refunddesk_owner \
+    --dbname=refunddesk \
+    --no-psqlrc \
+    --tuples-only \
+    --no-align \
+    --command='SELECT 1;' >/dev/null 2>&1; then
     recreated_ready=true
     break
   fi
