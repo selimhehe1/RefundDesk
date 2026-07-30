@@ -9,8 +9,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/sandbox/**/*.test.ts"],
-    hookTimeout: 180_000,
+    hookTimeout: 360_000,
     teardownTimeout: 60_000,
-    testTimeout: 180_000,
+    testTimeout: 360_000,
   },
 });

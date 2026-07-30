@@ -45,6 +45,9 @@ import {
   assertDedicatedPostgresClusterPreflight,
   assertDisposablePostgresCluster,
   assertExclusiveSingletonEnqueue,
+  readSandboxE2EScenario,
+  SANDBOX_E2E_SCENARIO_PAYMENT_METHODS,
+  type SandboxE2EScenario,
 } from "../sandbox-harness-guards.js";
 
 const API_VERSION = "2026-06-24.dahlia" as const;
@@ -57,7 +60,12 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
 const FIXTURE_AMOUNT_MINOR = 1_099;
 const REFUND_AMOUNT_MINOR = 109;
 const POLL_TIMEOUT_MILLISECONDS = 60_000;
+const ASYNC_REFUND_TIMEOUT_MILLISECONDS = 90_000;
+const ASYNC_REFUND_POLL_MILLISECONDS = 1_000;
+const EVENT_OBSERVATION_TIMEOUT_MILLISECONDS = 30_000;
+const EVENT_OBSERVATION_POLL_MILLISECONDS = 500;
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const HARNESS_SOURCE_PATH = fileURLToPath(import.meta.url);
 const FIXTURE_PATH = path.join(REPOSITORY_ROOT, "stripe-fixtures.local.json");
 const EVIDENCE_DIRECTORY = path.join(REPOSITORY_ROOT, "sandbox-evidence.local");
 
@@ -70,13 +78,19 @@ interface HarnessEnvironment {
   readonly managedSandboxEffectKey: string;
   readonly platformTestAccountId: string;
   readonly platformTestEffectKey: string;
+  readonly scenario: SandboxE2EScenario;
+  readonly sourceRevision: string;
 }
 
-interface TerminalDatabaseState {
+interface DurableDatabaseState {
   readonly attempt_count: number;
+  readonly attempt_finished_at: Date | null;
   readonly attempt_state: string;
   readonly effect_state: string;
+  readonly execution_reconciled_at: Date | null;
+  readonly execution_started_at: Date | null;
   readonly idempotency_key: string;
+  readonly last_stripe_event_created_at: Date | null;
   readonly payment_guard_released_at: Date | null;
   readonly stripe_refund_id: string | null;
   readonly stripe_refund_status: string | null;
@@ -134,6 +148,11 @@ function readHarnessEnvironment(): HarnessEnvironment {
   }
   if (process.env["NODE_ENV"] === "production") {
     throw new Error("SANDBOX_E2E_PRODUCTION_REFUSED");
+  }
+  const scenario = readSandboxE2EScenario(process.env);
+  const sourceRevision = requiredEnvironment("REFUNDDESK_SANDBOX_E2E_SOURCE_REVISION");
+  if (!/^[0-9a-f]{40}$/u.test(sourceRevision)) {
+    throw new Error("SANDBOX_E2E_SOURCE_REVISION_INVALID");
   }
 
   const selectedEnvironment = requiredEnvironment("REFUNDDESK_SANDBOX_E2E_ENVIRONMENT");
@@ -199,6 +218,8 @@ function readHarnessEnvironment(): HarnessEnvironment {
     managedSandboxEffectKey,
     platformTestAccountId,
     platformTestEffectKey,
+    scenario,
+    sourceRevision,
   };
 }
 
@@ -355,51 +376,169 @@ async function withTenantOwnerTransaction<T>(
   }
 }
 
-async function waitForTerminalState(
+async function readDurableState(
   client: Client,
   tenantId: string,
   requestId: string,
-): Promise<TerminalDatabaseState> {
+): Promise<DurableDatabaseState | null> {
+  const result = await withTenantOwnerTransaction(client, tenantId, (transaction) =>
+    transaction.query<DurableDatabaseState>(
+      `SELECT
+         request.workflow_status,
+         request.effect_state,
+         request.execution_started_at,
+         request.terminal_at,
+         request.payment_guard_released_at,
+         execution.idempotency_key,
+         execution.stripe_refund_id,
+         execution.stripe_refund_status,
+         execution.last_stripe_event_created_at,
+         execution.reconciled_at AS execution_reconciled_at,
+         COUNT(attempt.id)::INTEGER AS attempt_count,
+         COALESCE(MAX(attempt.state::TEXT), '') AS attempt_state,
+         MAX(attempt.finished_at) AS attempt_finished_at
+       FROM refund_requests AS request
+       LEFT JOIN refund_executions AS execution
+         ON execution.request_id = request.id
+        AND execution.tenant_id = request.tenant_id
+       LEFT JOIN refund_execution_attempts AS attempt
+         ON attempt.execution_id = execution.id
+        AND attempt.tenant_id = request.tenant_id
+       WHERE request.tenant_id = $1::UUID
+         AND request.id = $2::UUID
+       GROUP BY request.id, execution.id`,
+      [tenantId, requestId],
+    ),
+  );
+  return result.rows[0] ?? null;
+}
+
+function assertInitialScenarioState(
+  state: DurableDatabaseState,
+  scenario: SandboxE2EScenario,
+  expectedIdempotencyKey: string,
+): void {
+  const expectedInitialRefundStatus = scenario === "pending_refund" ? "pending" : "succeeded";
+  const timestampOrderValid =
+    state.execution_started_at instanceof Date &&
+    state.attempt_finished_at instanceof Date &&
+    state.execution_reconciled_at instanceof Date &&
+    state.execution_started_at.getTime() <= state.attempt_finished_at.getTime() &&
+    state.attempt_finished_at.getTime() <= state.execution_reconciled_at.getTime();
+  const commonValid =
+    state.attempt_count === 1 &&
+    state.attempt_state === "completed" &&
+    state.effect_state === "identified" &&
+    state.idempotency_key === expectedIdempotencyKey &&
+    state.last_stripe_event_created_at === null &&
+    /^re_[A-Za-z0-9]+$/u.test(state.stripe_refund_id ?? "") &&
+    state.stripe_refund_status === expectedInitialRefundStatus &&
+    timestampOrderValid;
+  const lifecycleValid =
+    scenario === "pending_refund"
+      ? state.workflow_status === "executing" &&
+        state.terminal_at === null &&
+        state.payment_guard_released_at === null
+      : state.workflow_status === "succeeded" &&
+        state.terminal_at instanceof Date &&
+        state.payment_guard_released_at instanceof Date &&
+        state.payment_guard_released_at.getTime() === state.terminal_at.getTime() &&
+        state.execution_reconciled_at instanceof Date &&
+        state.terminal_at.getTime() === state.execution_reconciled_at.getTime();
+  if (!commonValid || !lifecycleValid) {
+    throw new Error("SANDBOX_E2E_INITIAL_SCENARIO_STATE_INVALID");
+  }
+}
+
+async function waitForInitialScenarioState(
+  client: Client,
+  tenantId: string,
+  requestId: string,
+  scenario: SandboxE2EScenario,
+  expectedIdempotencyKey: string,
+): Promise<DurableDatabaseState> {
   const deadline = Date.now() + POLL_TIMEOUT_MILLISECONDS;
   for (;;) {
-    const result = await withTenantOwnerTransaction(client, tenantId, (transaction) =>
-      transaction.query<TerminalDatabaseState>(
-        `SELECT
-           request.workflow_status,
-           request.effect_state,
-           request.terminal_at,
-           request.payment_guard_released_at,
-           execution.idempotency_key,
-           execution.stripe_refund_id,
-           execution.stripe_refund_status,
-           COUNT(attempt.id)::INTEGER AS attempt_count,
-           COALESCE(MAX(attempt.state::TEXT), '') AS attempt_state
-         FROM refund_requests AS request
-         LEFT JOIN refund_executions AS execution
-           ON execution.request_id = request.id
-          AND execution.tenant_id = request.tenant_id
-         LEFT JOIN refund_execution_attempts AS attempt
-           ON attempt.execution_id = execution.id
-          AND attempt.tenant_id = request.tenant_id
-         WHERE request.tenant_id = $1::UUID
-           AND request.id = $2::UUID
-         GROUP BY request.id, execution.id`,
-        [tenantId, requestId],
-      ),
-    );
-    const state = result.rows[0];
-    if (
-      state !== undefined &&
-      (state.workflow_status === "succeeded" ||
-        state.workflow_status === "failed_terminal" ||
-        state.workflow_status === "reconciliation_required")
-    ) {
+    const state = await readDurableState(client, tenantId, requestId);
+    if (state !== null && state.attempt_state === "completed" && state.stripe_refund_id !== null) {
+      assertInitialScenarioState(state, scenario, expectedIdempotencyKey);
       return state;
     }
     if (Date.now() >= deadline) {
-      throw new Error("SANDBOX_E2E_TERMINAL_STATE_TIMEOUT");
+      throw new Error("SANDBOX_E2E_INITIAL_SCENARIO_STATE_TIMEOUT");
     }
     await delay(250);
+  }
+}
+
+function assertPendingGuardState(
+  state: DurableDatabaseState,
+  initialState: DurableDatabaseState,
+): void {
+  if (
+    state.workflow_status !== "executing" ||
+    state.effect_state !== "identified" ||
+    state.stripe_refund_status !== "pending" ||
+    state.stripe_refund_id !== initialState.stripe_refund_id ||
+    state.idempotency_key !== initialState.idempotency_key ||
+    state.attempt_count !== initialState.attempt_count ||
+    state.terminal_at !== null ||
+    state.payment_guard_released_at !== null ||
+    state.last_stripe_event_created_at !== null
+  ) {
+    throw new Error("SANDBOX_E2E_PENDING_REFUND_GUARD_INVARIANT_VIOLATION");
+  }
+}
+
+function assertConvergedScenarioState(
+  state: DurableDatabaseState,
+  initialState: DurableDatabaseState,
+  scenario: Exclude<SandboxE2EScenario, "normal">,
+): void {
+  const immutableIdentityValid =
+    state.stripe_refund_id === initialState.stripe_refund_id &&
+    state.idempotency_key === initialState.idempotency_key &&
+    state.attempt_count === initialState.attempt_count &&
+    state.attempt_state === initialState.attempt_state &&
+    state.attempt_finished_at?.getTime() === initialState.attempt_finished_at?.getTime() &&
+    state.execution_started_at?.getTime() === initialState.execution_started_at?.getTime() &&
+    state.last_stripe_event_created_at === null;
+  if (!immutableIdentityValid) {
+    throw new Error("SANDBOX_E2E_ASYNC_REFUND_IDENTITY_CHANGED");
+  }
+
+  if (scenario === "pending_refund") {
+    if (
+      state.workflow_status !== "succeeded" ||
+      state.effect_state !== "identified" ||
+      state.stripe_refund_status !== "succeeded" ||
+      !(state.terminal_at instanceof Date) ||
+      !(state.payment_guard_released_at instanceof Date) ||
+      state.payment_guard_released_at.getTime() !== state.terminal_at.getTime() ||
+      !(state.execution_reconciled_at instanceof Date) ||
+      state.terminal_at.getTime() > state.execution_reconciled_at.getTime() ||
+      !(initialState.execution_reconciled_at instanceof Date) ||
+      state.execution_reconciled_at.getTime() < initialState.execution_reconciled_at.getTime()
+    ) {
+      throw new Error("SANDBOX_E2E_PENDING_REFUND_CONVERGENCE_INVALID");
+    }
+    return;
+  }
+
+  if (
+    state.workflow_status !== "failed_terminal" ||
+    state.effect_state !== "absence_proven" ||
+    state.stripe_refund_status !== "failed" ||
+    !(state.terminal_at instanceof Date) ||
+    !(state.payment_guard_released_at instanceof Date) ||
+    state.terminal_at.getTime() !== initialState.terminal_at?.getTime() ||
+    state.payment_guard_released_at.getTime() !==
+      initialState.payment_guard_released_at?.getTime() ||
+    !(state.execution_reconciled_at instanceof Date) ||
+    !(initialState.execution_reconciled_at instanceof Date) ||
+    state.execution_reconciled_at.getTime() < initialState.execution_reconciled_at.getTime()
+  ) {
+    throw new Error("SANDBOX_E2E_FAILED_REFUND_SCANNER_CONVERGENCE_INVALID");
   }
 }
 
@@ -462,6 +601,139 @@ async function listPaymentIntentRefunds(
       throw new Error("SANDBOX_E2E_REFUND_LIST_CURSOR_STALLED");
     }
     startingAfter = last.id;
+  }
+}
+
+async function findRefundEvent(
+  stripe: Stripe,
+  eventType: "refund.created" | "refund.failed" | "refund.updated",
+  refundId: string,
+  createdGte: number,
+): Promise<Stripe.Event | null> {
+  let startingAfter: string | undefined;
+  for (;;) {
+    const page = await stableStripeCall("SANDBOX_E2E_STRIPE_EVENT_READ_FAILED", () =>
+      stripe.events.list({
+        created: { gte: createdGte },
+        limit: 100,
+        type: eventType,
+        ...(startingAfter === undefined ? {} : { starting_after: startingAfter }),
+      }),
+    );
+    const matched = page.data.find((event) => {
+      const object = event.data.object as { readonly id?: string };
+      return object.id === refundId;
+    });
+    if (matched !== undefined) {
+      return matched;
+    }
+    if (!page.has_more) {
+      return null;
+    }
+    const last = page.data.at(-1);
+    if (last === undefined || last.id === startingAfter) {
+      throw new Error("SANDBOX_E2E_STRIPE_EVENT_LIST_CURSOR_STALLED");
+    }
+    startingAfter = last.id;
+  }
+}
+
+async function waitForRefundEvent(
+  stripe: Stripe,
+  eventType: "refund.created" | "refund.failed" | "refund.updated",
+  refundId: string,
+  createdGte: number,
+): Promise<Stripe.Event> {
+  const deadline = Date.now() + EVENT_OBSERVATION_TIMEOUT_MILLISECONDS;
+  for (;;) {
+    const event = await findRefundEvent(stripe, eventType, refundId, createdGte);
+    if (event !== null) {
+      return event;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("SANDBOX_E2E_REFUND_EVENT_OBSERVATION_TIMEOUT");
+    }
+    await delay(EVENT_OBSERVATION_POLL_MILLISECONDS);
+  }
+}
+
+async function countWebhookReceipts(
+  client: Client,
+  tenantId: string,
+  refundId: string,
+): Promise<number> {
+  return withTenantOwnerTransaction(client, tenantId, async (transaction) => {
+    const result = await transaction.query<{ readonly receipt_count: number }>(
+      `SELECT COUNT(*)::INTEGER AS receipt_count
+       FROM webhook_receipts
+       WHERE tenant_id = $1::UUID
+         AND object_id = $2`,
+      [tenantId, refundId],
+    );
+    return result.rows[0]?.receipt_count ?? -1;
+  });
+}
+
+function assertFailedRefundAwaitingScanner(
+  state: DurableDatabaseState,
+  initialState: DurableDatabaseState,
+): void {
+  if (
+    state.workflow_status !== "succeeded" ||
+    state.effect_state !== "identified" ||
+    state.stripe_refund_status !== "succeeded" ||
+    state.stripe_refund_id !== initialState.stripe_refund_id ||
+    state.idempotency_key !== initialState.idempotency_key ||
+    state.attempt_count !== initialState.attempt_count ||
+    state.terminal_at?.getTime() !== initialState.terminal_at?.getTime() ||
+    state.payment_guard_released_at?.getTime() !==
+      initialState.payment_guard_released_at?.getTime() ||
+    state.last_stripe_event_created_at !== null
+  ) {
+    throw new Error("SANDBOX_E2E_FAILED_REFUND_PRE_SCAN_INVARIANT_VIOLATION");
+  }
+}
+
+async function convergeAsyncRefundWithScanner(input: {
+  readonly client: Client;
+  readonly dependencies: WorkerDependencies;
+  readonly initialState: DurableDatabaseState;
+  readonly requestId: string;
+  readonly scenario: Exclude<SandboxE2EScenario, "normal">;
+  readonly tenantId: string;
+}): Promise<{
+  readonly invocationCount: number;
+}> {
+  const deadline = Date.now() + ASYNC_REFUND_TIMEOUT_MILLISECONDS;
+  let invocationCount = 0;
+
+  for (;;) {
+    await handleReconciliationScanJob({ scope: "all" }, input.dependencies);
+    invocationCount += 1;
+    const state = await readDurableState(input.client, input.tenantId, input.requestId);
+    if (state === null) {
+      throw new Error("SANDBOX_E2E_ASYNC_REFUND_STATE_MISSING");
+    }
+    const converged =
+      input.scenario === "pending_refund"
+        ? state.workflow_status === "succeeded" && state.stripe_refund_status === "succeeded"
+        : state.workflow_status === "failed_terminal" && state.stripe_refund_status === "failed";
+    if (converged) {
+      assertConvergedScenarioState(state, input.initialState, input.scenario);
+      return {
+        invocationCount,
+      };
+    }
+
+    if (input.scenario === "pending_refund") {
+      assertPendingGuardState(state, input.initialState);
+    } else {
+      assertFailedRefundAwaitingScanner(state, input.initialState);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("SANDBOX_E2E_ASYNC_REFUND_SCANNER_TIMEOUT");
+    }
+    await delay(ASYNC_REFUND_POLL_MILLISECONDS);
   }
 }
 
@@ -530,6 +802,7 @@ async function cleanupHarness(): Promise<void> {
 
   const safeToDrop =
     !cleanupMustPreserve && !cleanupFailed && (!financialExecutionStarted || fullyConverged);
+  const rolesExpectedRemoved = [...createdLoginRoles];
   if (databaseCreated && safeToDrop) {
     if (controlClient === undefined) {
       cleanupFailed = true;
@@ -547,16 +820,63 @@ async function cleanupHarness(): Promise<void> {
           `DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName, DATABASE_NAME_PATTERN)}`,
         );
         databaseCreated = false;
-        for (const role of [...createdLoginRoles].reverse()) {
-          await controlClient.query(
-            `DROP ROLE IF EXISTS ${quoteIdentifier(role, ROLE_NAME_PATTERN)}`,
-          );
-        }
-        createdLoginRoles.length = 0;
       } catch {
         cleanupFailed = true;
         cleanupMustPreserve = true;
       }
+    }
+  }
+  if (!databaseCreated && safeToDrop && controlClient !== undefined) {
+    for (let index = createdLoginRoles.length - 1; index >= 0; index -= 1) {
+      const role = createdLoginRoles[index];
+      if (role === undefined) {
+        cleanupFailed = true;
+        cleanupMustPreserve = true;
+        break;
+      }
+      try {
+        await controlClient.query(
+          `DROP ROLE IF EXISTS ${quoteIdentifier(role, ROLE_NAME_PATTERN)}`,
+        );
+        createdLoginRoles.splice(index, 1);
+      } catch {
+        cleanupFailed = true;
+        cleanupMustPreserve = true;
+      }
+    }
+  }
+  if (safeToDrop && controlClient !== undefined && !databaseCreated) {
+    try {
+      const verification = await controlClient.query<{
+        readonly database_exists: boolean;
+        readonly generated_role_count: number;
+      }>(
+        `SELECT
+           EXISTS(
+             SELECT 1
+             FROM pg_database
+             WHERE datname = $1
+           ) AS database_exists,
+           (
+             SELECT COUNT(*)::INTEGER
+             FROM pg_roles
+             WHERE rolname = ANY($2::TEXT[])
+           ) AS generated_role_count`,
+        [databaseName, rolesExpectedRemoved],
+      );
+      const state = verification.rows[0];
+      if (
+        state === undefined ||
+        state.database_exists ||
+        state.generated_role_count !== 0 ||
+        createdLoginRoles.length !== 0
+      ) {
+        cleanupFailed = true;
+        cleanupMustPreserve = true;
+      }
+    } catch {
+      cleanupFailed = true;
+      cleanupMustPreserve = true;
     }
   }
   if (databaseCreated) {
@@ -590,6 +910,9 @@ afterAll(async () => {
 describe.sequential("durable real Stripe refund flow", () => {
   it("proves approval, worker execution, idempotence, guard release, and reconciliation", async () => {
     const environment = readHarnessEnvironment();
+    const harnessSourceSha256 = createHash("sha256")
+      .update(await readFile(HARNESS_SOURCE_PATH))
+      .digest("hex");
     const runId = randomUUID();
     databaseName = `refunddesk_e2e_${randomBytes(8).toString("hex")}`;
     const webRole = `refunddesk_e2e_web_${randomBytes(6).toString("hex")}`;
@@ -762,7 +1085,8 @@ describe.sequential("durable real Stripe refund flow", () => {
     if (fixtureAccount.id !== environment.accountId) {
       throw new Error("SANDBOX_E2E_FIXTURE_KEY_ACCOUNT_MISMATCH");
     }
-    const fixtureIdempotencyKey = `refunddesk:e2e:payment-intent:${runId}`;
+    const fixturePaymentMethod = SANDBOX_E2E_SCENARIO_PAYMENT_METHODS[environment.scenario];
+    const fixtureIdempotencyKey = `refunddesk:e2e:${environment.scenario}:payment-intent:${runId}`;
     await writeFile(
       FIXTURE_PATH,
       `${JSON.stringify(
@@ -772,6 +1096,8 @@ describe.sequential("durable real Stripe refund flow", () => {
           environment: environment.environment,
           stripe_account_fingerprint: hashIdentifier(environment.accountId),
           state: "payment_intent_create_pending",
+          scenario: environment.scenario,
+          payment_method: fixturePaymentMethod,
           amount_minor: FIXTURE_AMOUNT_MINOR,
           currency: "eur",
           fixture_idempotency_key_hash: hashIdentifier(fixtureIdempotencyKey),
@@ -795,8 +1121,9 @@ describe.sequential("durable real Stripe refund flow", () => {
           expand: ["latest_charge"],
           metadata: {
             refunddesk_e2e_run: runId,
+            refunddesk_e2e_scenario: environment.scenario,
           },
-          payment_method: "pm_card_visa",
+          payment_method: fixturePaymentMethod,
         },
         {
           idempotencyKey: fixtureIdempotencyKey,
@@ -834,6 +1161,10 @@ describe.sequential("durable real Stripe refund flow", () => {
     ) {
       throw new Error("SANDBOX_E2E_CARD_FIXTURE_NOT_PILOT_ELIGIBLE");
     }
+    const refundsBeforeWorkflow = await listPaymentIntentRefunds(fixtureStripe, paymentIntent.id);
+    if (refundsBeforeWorkflow.length !== 0) {
+      throw new Error("SANDBOX_E2E_FIXTURE_NOT_FRESH");
+    }
     await writeFile(
       FIXTURE_PATH,
       `${JSON.stringify(
@@ -843,6 +1174,8 @@ describe.sequential("durable real Stripe refund flow", () => {
           environment: environment.environment,
           stripe_account_fingerprint: hashIdentifier(environment.accountId),
           state: "payment_intent_succeeded",
+          scenario: environment.scenario,
+          payment_method: fixturePaymentMethod,
           payment_intent_fingerprint: hashIdentifier(paymentIntent.id),
           charge_fingerprint: hashIdentifier(charge.id),
           amount_minor: FIXTURE_AMOUNT_MINOR,
@@ -1071,43 +1404,45 @@ describe.sequential("durable real Stripe refund flow", () => {
     };
 
     financialExecutionStarted = true;
+    const expectedIdempotencyKey = refundIdempotencyKey(requestId);
     runningWorker = await startPgBossWorker(workerConfig, workerDependencies);
-    const terminalState = await waitForTerminalState(
+    const initialState = await waitForInitialScenarioState(
       ownerDatabaseClient,
       installationIdentity.tenant_id,
       requestId,
+      environment.scenario,
+      expectedIdempotencyKey,
     );
-    const expectedIdempotencyKey = refundIdempotencyKey(requestId);
-    if (
-      terminalState.attempt_count !== 1 ||
-      terminalState.attempt_state !== "completed" ||
-      terminalState.effect_state !== "identified" ||
-      terminalState.idempotency_key !== expectedIdempotencyKey ||
-      terminalState.stripe_refund_status !== "succeeded" ||
-      terminalState.workflow_status !== "succeeded" ||
-      !/^re_[A-Za-z0-9]+$/u.test(terminalState.stripe_refund_id ?? "") ||
-      !(terminalState.terminal_at instanceof Date) ||
-      !(terminalState.payment_guard_released_at instanceof Date) ||
-      terminalState.payment_guard_released_at.getTime() !== terminalState.terminal_at.getTime()
-    ) {
-      throw new Error("SANDBOX_E2E_TERMINAL_STATE_INVALID");
-    }
-    const refundId = terminalState.stripe_refund_id;
-    if (refundId === null || terminalState.terminal_at === null) {
+    const refundId = initialState.stripe_refund_id;
+    if (refundId === null) {
       throw new Error("SANDBOX_E2E_REFUND_IDENTITY_NOT_DURABLE");
     }
 
     const initialQueueState = await waitForExecutionQueueIdle(ownerDatabaseClient, requestId, 1);
+    const webhookReceiptCountBeforeScanner = await countWebhookReceipts(
+      ownerDatabaseClient,
+      installationIdentity.tenant_id,
+      refundId,
+    );
+    if (webhookReceiptCountBeforeScanner !== 0) {
+      throw new Error("SANDBOX_E2E_UNEXPECTED_WEBHOOK_RECEIPT_BEFORE_SCANNER");
+    }
     const linkedRefund = await stableStripeCall("SANDBOX_E2E_STRIPE_REFUND_READ_FAILED", () =>
       fixtureStripe.refunds.retrieve(refundId),
     );
+    const currentStripeStatusAllowed =
+      environment.scenario === "normal"
+        ? linkedRefund.status === "succeeded"
+        : environment.scenario === "pending_refund"
+          ? linkedRefund.status === "pending" || linkedRefund.status === "succeeded"
+          : linkedRefund.status === "succeeded" || linkedRefund.status === "failed";
     if (
       linkedRefund.id !== refundId ||
       linkedRefund.payment_intent !== paymentIntent.id ||
       linkedRefund.charge !== charge.id ||
       linkedRefund.amount !== REFUND_AMOUNT_MINOR ||
       linkedRefund.currency !== "eur" ||
-      linkedRefund.status !== "succeeded"
+      !currentStripeStatusAllowed
     ) {
       throw new Error("SANDBOX_E2E_LINKED_REFUND_INVALID");
     }
@@ -1173,10 +1508,99 @@ describe.sequential("durable real Stripe refund flow", () => {
       },
       workerDependencies,
     );
+    await runningWorker.stop();
+    runningWorker = undefined;
+
+    const scanStartedAt = new Date();
+    let explicitScannerInvocationCount = 0;
+    await handleReconciliationScanJob({ scope: "all" }, workerDependencies);
+    explicitScannerInvocationCount += 1;
+    let finalState = await readDurableState(
+      ownerDatabaseClient,
+      installationIdentity.tenant_id,
+      requestId,
+    );
+    if (finalState === null) {
+      throw new Error("SANDBOX_E2E_POST_REPLAY_STATE_MISSING");
+    }
+    if (environment.scenario === "normal") {
+      if (
+        finalState.workflow_status !== "succeeded" ||
+        finalState.effect_state !== "identified" ||
+        finalState.stripe_refund_status !== "succeeded" ||
+        finalState.stripe_refund_id !== refundId ||
+        finalState.idempotency_key !== expectedIdempotencyKey ||
+        finalState.attempt_count !== initialState.attempt_count ||
+        finalState.attempt_state !== initialState.attempt_state ||
+        finalState.attempt_finished_at?.getTime() !== initialState.attempt_finished_at?.getTime() ||
+        finalState.execution_started_at?.getTime() !==
+          initialState.execution_started_at?.getTime() ||
+        finalState.terminal_at?.getTime() !== initialState.terminal_at?.getTime() ||
+        finalState.payment_guard_released_at?.getTime() !==
+          initialState.payment_guard_released_at?.getTime() ||
+        finalState.last_stripe_event_created_at !== null
+      ) {
+        throw new Error("SANDBOX_E2E_NORMAL_REPLAY_STATE_INVALID");
+      }
+    } else {
+      const alreadyConverged =
+        environment.scenario === "pending_refund"
+          ? finalState.workflow_status === "succeeded" &&
+            finalState.stripe_refund_status === "succeeded"
+          : finalState.workflow_status === "failed_terminal" &&
+            finalState.stripe_refund_status === "failed";
+      if (alreadyConverged) {
+        assertConvergedScenarioState(finalState, initialState, environment.scenario);
+      } else {
+        if (environment.scenario === "pending_refund") {
+          assertPendingGuardState(finalState, initialState);
+        } else {
+          assertFailedRefundAwaitingScanner(finalState, initialState);
+        }
+        const convergence = await convergeAsyncRefundWithScanner({
+          client: ownerDatabaseClient,
+          dependencies: workerDependencies,
+          initialState,
+          requestId,
+          scenario: environment.scenario,
+          tenantId: installationIdentity.tenant_id,
+        });
+        explicitScannerInvocationCount += convergence.invocationCount;
+      }
+      await handleReconciliationScanJob({ scope: "all" }, workerDependencies);
+      explicitScannerInvocationCount += 1;
+      const confirmedState = await readDurableState(
+        ownerDatabaseClient,
+        installationIdentity.tenant_id,
+        requestId,
+      );
+      if (confirmedState === null) {
+        throw new Error("SANDBOX_E2E_ASYNC_REFUND_CONFIRMATION_STATE_MISSING");
+      }
+      assertConvergedScenarioState(confirmedState, initialState, environment.scenario);
+      finalState = confirmedState;
+    }
+    const scanCompletedAt = new Date();
 
     const refundsAfterReplay = await listPaymentIntentRefunds(fixtureStripe, paymentIntent.id);
     if (refundsAfterReplay.length !== 1 || refundsAfterReplay[0]?.id !== refundId) {
       throw new Error("SANDBOX_E2E_REFUND_REPLAY_CREATED_DUPLICATE");
+    }
+    const finalStripeRefund = await stableStripeCall(
+      "SANDBOX_E2E_FINAL_STRIPE_REFUND_READ_FAILED",
+      () => fixtureStripe.refunds.retrieve(refundId),
+    );
+    const expectedFinalStripeStatus =
+      environment.scenario === "failed_refund_scanner" ? "failed" : "succeeded";
+    if (
+      finalStripeRefund.id !== refundId ||
+      finalStripeRefund.payment_intent !== paymentIntent.id ||
+      finalStripeRefund.charge !== charge.id ||
+      finalStripeRefund.amount !== REFUND_AMOUNT_MINOR ||
+      finalStripeRefund.currency !== "eur" ||
+      finalStripeRefund.status !== expectedFinalStripeStatus
+    ) {
+      throw new Error("SANDBOX_E2E_FINAL_STRIPE_REFUND_INVALID");
     }
     const replayDatabaseState = await withTenantOwnerTransaction(
       ownerDatabaseClient,
@@ -1185,13 +1609,9 @@ describe.sequential("durable real Stripe refund flow", () => {
         transaction.query<{
           readonly attempt_count: number;
           readonly stripe_refund_id: string;
-          readonly terminal_at: Date;
-          readonly payment_guard_released_at: Date;
         }>(
           `SELECT
              execution.stripe_refund_id,
-             request.terminal_at,
-             request.payment_guard_released_at,
              COUNT(attempt.id)::INTEGER AS attempt_count
            FROM refund_requests AS request
            INNER JOIN refund_executions AS execution
@@ -1210,16 +1630,18 @@ describe.sequential("durable real Stripe refund flow", () => {
     if (
       replayState === undefined ||
       replayState.attempt_count !== 1 ||
-      replayState.stripe_refund_id !== refundId ||
-      replayState.terminal_at.getTime() !== terminalState.terminal_at.getTime() ||
-      replayState.payment_guard_released_at.getTime() !== terminalState.terminal_at.getTime()
+      replayState.stripe_refund_id !== refundId
     ) {
       throw new Error("SANDBOX_E2E_DURABLE_REPLAY_STATE_INVALID");
     }
-
-    const scanStartedAt = new Date();
-    await handleReconciliationScanJob({ scope: "all" }, workerDependencies);
-    const scanCompletedAt = new Date();
+    const webhookReceiptCountAfterScanner = await countWebhookReceipts(
+      ownerDatabaseClient,
+      installationIdentity.tenant_id,
+      refundId,
+    );
+    if (webhookReceiptCountAfterScanner !== 0) {
+      throw new Error("SANDBOX_E2E_SCANNER_SCENARIO_INGESTED_WEBHOOK");
+    }
     const reconciliation = await withTenantOwnerTransaction(
       ownerDatabaseClient,
       installationIdentity.tenant_id,
@@ -1230,6 +1652,8 @@ describe.sequential("durable real Stripe refund flow", () => {
           readonly checkpoint_scan_window_end: Date | null;
           readonly checkpoint_starting_after: string | null;
           readonly external_alert_count: number;
+          readonly linked_refresh_sources: string[];
+          readonly linked_refresh_statuses: string[];
           readonly mutation_receipt_count: number;
           readonly refund_audit_actions: string[];
           readonly workflow_audit_actions: string[];
@@ -1249,6 +1673,22 @@ describe.sequential("durable real Stripe refund flow", () => {
                  AND entity_id = $3
                ORDER BY occurred_at, id
              ) AS refund_audit_actions,
+             ARRAY(
+               SELECT payload ->> 'source'
+               FROM audit_events
+               WHERE tenant_id = $1::UUID
+                 AND entity_id = $3
+                 AND action = 'refund.linked_status_refreshed'
+               ORDER BY occurred_at, id
+             ) AS linked_refresh_sources,
+             ARRAY(
+               SELECT payload ->> 'stripe_refund_status'
+               FROM audit_events
+               WHERE tenant_id = $1::UUID
+                 AND entity_id = $3
+                 AND action = 'refund.linked_status_refreshed'
+               ORDER BY occurred_at, id
+             ) AS linked_refresh_statuses,
              (
                SELECT committed_through
                FROM reconciliation_checkpoints
@@ -1312,43 +1752,79 @@ describe.sequential("durable real Stripe refund flow", () => {
     const refundAuditComplete =
       reconciliationState.refund_audit_actions.includes("refund.linked_status_refreshed") &&
       reconciliationState.refund_audit_actions.includes("refund.observed");
+    const linkedRefreshProvesScanner =
+      reconciliationState.linked_refresh_sources.length > 0 &&
+      reconciliationState.linked_refresh_sources.every((source) => source === "linked_scan") &&
+      reconciliationState.linked_refresh_statuses.includes(expectedFinalStripeStatus);
     if (
       !checkpointComplete ||
       !checkpointBounded ||
       reconciliationState.external_alert_count !== 0 ||
       reconciliationState.mutation_receipt_count !== 5 ||
       !workflowAuditComplete ||
-      !refundAuditComplete
+      !refundAuditComplete ||
+      !linkedRefreshProvesScanner
     ) {
       throw new Error("SANDBOX_E2E_RECONCILIATION_STATE_INVALID");
     }
+    fullyConverged = true;
 
-    const recentEvents = await stableStripeCall("SANDBOX_E2E_STRIPE_EVENT_READ_FAILED", () =>
-      fixtureStripe.events.list({
-        created: { gte: Math.max(0, paymentIntent.created - 60) },
-        limit: 100,
-        type: "refund.created",
-      }),
+    const eventSearchStart = Math.max(0, paymentIntent.created - 60);
+    const refundEvent = await waitForRefundEvent(
+      fixtureStripe,
+      "refund.created",
+      refundId,
+      eventSearchStart,
     );
-    const refundEvent = recentEvents.data.find((event) => {
-      const object = event.data.object as { readonly id?: string };
-      return object.id === refundId;
-    });
     const eventIdempotencyKey = refundEvent?.request?.idempotency_key ?? null;
     expect(eventIdempotencyKey === null || eventIdempotencyKey === expectedIdempotencyKey).toBe(
       true,
     );
+    const transitionEventType =
+      environment.scenario === "pending_refund"
+        ? "refund.updated"
+        : environment.scenario === "failed_refund_scanner"
+          ? "refund.failed"
+          : null;
+    let transitionEventObserved = false;
+    if (transitionEventType !== null) {
+      await waitForRefundEvent(fixtureStripe, transitionEventType, refundId, eventSearchStart);
+      transitionEventObserved = true;
+    }
 
     const evidenceGeneratedAt = new Date().toISOString();
     const evidencePath = path.join(
       EVIDENCE_DIRECTORY,
-      `durable-refund-flow-${evidenceGeneratedAt.replaceAll(/[:.]/gu, "-")}.json`,
+      `durable-refund-flow-${environment.scenario}-${evidenceGeneratedAt.replaceAll(
+        /[:.]/gu,
+        "-",
+      )}.json`,
     );
+    const initialGuardHeld =
+      initialState.terminal_at === null && initialState.payment_guard_released_at === null;
+    const finalGuardReleasedAtTerminal =
+      finalState.terminal_at instanceof Date &&
+      finalState.payment_guard_released_at instanceof Date &&
+      finalState.payment_guard_released_at.getTime() === finalState.terminal_at.getTime();
+    const postSuccessFailureTerminalTimestampsPreserved =
+      environment.scenario === "failed_refund_scanner"
+        ? finalState.terminal_at?.getTime() === initialState.terminal_at?.getTime() &&
+          finalState.payment_guard_released_at?.getTime() ===
+            initialState.payment_guard_released_at?.getTime()
+        : null;
+    if (!finalGuardReleasedAtTerminal || postSuccessFailureTerminalTimestampsPreserved === false) {
+      throw new Error("SANDBOX_E2E_FINAL_TIMESTAMP_INVARIANT_INVALID");
+    }
     const evidence = {
-      schema_version: 1,
-      gate: "durable_real_stripe_refund_flow",
+      schema_version: 2,
+      gate: `durable_real_stripe_refund_flow.${environment.scenario}`,
       result: "PASS",
       generated_at: evidenceGeneratedAt,
+      scenario: environment.scenario,
+      provenance: {
+        harness_revision: environment.sourceRevision,
+        harness_source_sha256: harnessSourceSha256,
+      },
       stripe: {
         livemode: false,
         environment: environment.environment,
@@ -1357,24 +1833,34 @@ describe.sequential("durable real Stripe refund flow", () => {
         refund_fingerprint: hashIdentifier(refundId),
         amount_minor: REFUND_AMOUNT_MINOR,
         currency: "eur",
-        status: linkedRefund.status,
+        payment_method: fixturePaymentMethod,
+        initial_refund_status: initialState.stripe_refund_status,
+        final_refund_status: finalStripeRefund.status,
+        refund_count_before_workflow: refundsBeforeWorkflow.length,
         refund_count_for_payment_intent: refundsAfterReplay.length,
+        refund_created_event_observed: true,
+        transition_event_type: transitionEventType,
+        transition_event_observed: transitionEventType === null ? null : transitionEventObserved,
         event_idempotency_key_present: eventIdempotencyKey !== null,
         event_idempotency_key_matches:
           eventIdempotencyKey === null ? null : eventIdempotencyKey === expectedIdempotencyKey,
       },
       durable_state: {
         request_fingerprint: hashIdentifier(requestId),
-        workflow_status: terminalState.workflow_status,
-        effect_state: terminalState.effect_state,
+        initial_workflow_status: initialState.workflow_status,
+        initial_effect_state: initialState.effect_state,
+        initial_guard_held: environment.scenario === "pending_refund" ? initialGuardHeld : null,
+        final_workflow_status: finalState.workflow_status,
+        final_effect_state: finalState.effect_state,
         attempt_count: replayState.attempt_count,
         first_refund_link_immutable: replayState.stripe_refund_id === refundId,
-        idempotency_key_present: terminalState.idempotency_key.length > 0,
-        idempotency_key_matches: terminalState.idempotency_key === expectedIdempotencyKey,
+        idempotency_key_present: finalState.idempotency_key.length > 0,
+        idempotency_key_matches: finalState.idempotency_key === expectedIdempotencyKey,
         idempotency_key_fingerprint: hashIdentifier(expectedIdempotencyKey),
-        guard_released_at_terminal:
-          terminalState.payment_guard_released_at?.getTime() ===
-          terminalState.terminal_at.getTime(),
+        guard_released_at_terminal: finalGuardReleasedAtTerminal,
+        post_success_failure_terminal_timestamps_preserved:
+          postSuccessFailureTerminalTimestampsPreserved,
+        stripe_event_watermark_absent: finalState.last_stripe_event_created_at === null,
         approval_decision_count: beforeWorker.rows[0]?.decision_count ?? 0,
         distinct_approver_count: beforeWorker.rows[0]?.distinct_actor_count ?? 0,
         mutation_receipt_count: reconciliationState.mutation_receipt_count,
@@ -1387,9 +1873,15 @@ describe.sequential("durable real Stripe refund flow", () => {
         checkpoint_present: checkpointCommittedThrough instanceof Date,
         checkpoint_complete: checkpointComplete,
         checkpoint_committed_within_scan: checkpointBounded,
+        convergence_path: "linked_refund_direct_retrieval_and_temporal_scan",
+        explicit_scanner_invocation_count: explicitScannerInvocationCount,
+        webhook_signature_or_transport: "not_exercised",
+        webhook_receipt_count_before_scanner: webhookReceiptCountBeforeScanner,
+        webhook_receipt_count_after_scanner: webhookReceiptCountAfterScanner,
         linked_refresh_audited: reconciliationState.refund_audit_actions.includes(
           "refund.linked_status_refreshed",
         ),
+        linked_refresh_proves_scanner: linkedRefreshProvesScanner,
         scan_observation_audited:
           reconciliationState.refund_audit_actions.includes("refund.observed"),
         workflow_audit_complete: workflowAuditComplete,
@@ -1398,7 +1890,6 @@ describe.sequential("durable real Stripe refund flow", () => {
       cleanup_policy: "drop_ephemeral_database_and_logins_before_writing_pass_evidence",
       cleanup_completed: true,
     };
-    fullyConverged = true;
     await writeFile(
       FIXTURE_PATH,
       `${JSON.stringify(
@@ -1408,11 +1899,15 @@ describe.sequential("durable real Stripe refund flow", () => {
           environment: environment.environment,
           stripe_account_fingerprint: hashIdentifier(environment.accountId),
           state: "refund_converged",
+          scenario: environment.scenario,
+          payment_method: fixturePaymentMethod,
           payment_intent_fingerprint: hashIdentifier(paymentIntent.id),
           charge_fingerprint: hashIdentifier(charge.id),
           refund_fingerprint: hashIdentifier(refundId),
           amount_minor: REFUND_AMOUNT_MINOR,
           currency: "eur",
+          initial_refund_status: initialState.stripe_refund_status,
+          final_refund_status: finalState.stripe_refund_status,
           evidence_file: path.relative(REPOSITORY_ROOT, evidencePath),
           created_at: new Date(paymentIntent.created * 1_000).toISOString(),
           converged_at: new Date().toISOString(),
