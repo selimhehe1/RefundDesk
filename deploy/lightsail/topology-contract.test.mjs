@@ -1192,7 +1192,7 @@ test("release promotion requires revision-bound application key rotation history
   const release = await read("scripts/release.sh");
   const transitionCheck = release.indexOf("check-key-rotation-transition.js");
   const candidateCreation = release.indexOf(
-    "refunddesk_compose up --no-start --no-deps --no-build --pull never verifier worker web caddy",
+    "refunddesk_compose up \\\n  --no-start \\\n  --no-deps \\\n  --no-build \\\n  --pull never \\\n  --force-recreate \\\n  verifier worker web caddy",
   );
   const effectWorkerStart = release.indexOf("refunddesk_compose start worker web verifier");
   const deploymentVerification = release.indexOf(
@@ -1217,6 +1217,10 @@ test("release promotion requires revision-bound application key rotation history
   assert.ok(deploymentVerification < rotationStateWrite);
   assert.ok(rotationStateWrite < journalComplete);
   assert.match(release, /prove_candidate_created_contract/u);
+  assert.match(
+    release,
+    /refunddesk_compose up[\s\S]+--no-start[\s\S]+--force-recreate[\s\S]+verifier worker web caddy[\s\S]+prove_candidate_created_contract/u,
+  );
   assert.match(release, /prove_candidate_runtime_contract/u);
   assert.match(release, /REFUNDDESK_RUNTIME_RESTART_POLICY=no/u);
   assert.match(release, /docker update --restart=unless-stopped/u);
@@ -1232,6 +1236,43 @@ test("release promotion requires revision-bound application key rotation history
     release,
     /key retirement is disabled until retained rows and backups prove old-key independence/u,
   );
+});
+
+test("same-revision releases recreate every fenced stateless runtime", async () => {
+  const release = await read("scripts/release.sh");
+  const candidateCommand = [
+    "refunddesk_compose up \\",
+    "  --no-start \\",
+    "  --no-deps \\",
+    "  --no-build \\",
+    "  --pull never \\",
+    "  --force-recreate \\",
+    "  verifier worker web caddy",
+  ].join("\n");
+  const promotionStart = release.indexOf("PROMOTION_STARTED=true");
+  const journalPrepare = release.indexOf('python3 "${TRANSITION_HELPER}" prepare', promotionStart);
+  const armFence = release.indexOf("arm_release_fence", journalPrepare);
+  const candidateCreation = release.indexOf(candidateCommand, journalPrepare);
+  const candidateProof = release.indexOf("prove_candidate_created_contract", candidateCreation);
+  const lastFenceCheck = release.lastIndexOf("assert_release_fence_armed", candidateCreation);
+  const runtimeAdmission = release.indexOf("enable_candidate_runtime", candidateProof);
+  const candidateStart = release.indexOf(
+    "refunddesk_compose start worker web verifier",
+    runtimeAdmission,
+  );
+  const candidateBlock = release.slice(candidateCreation, candidateProof);
+
+  assert.ok(promotionStart >= 0);
+  assert.ok(journalPrepare > promotionStart);
+  assert.ok(armFence > journalPrepare);
+  assert.ok(lastFenceCheck > armFence);
+  assert.ok(candidateCreation > lastFenceCheck);
+  assert.ok(candidateProof > candidateCreation);
+  assert.ok(runtimeAdmission > candidateProof);
+  assert.ok(candidateStart > runtimeAdmission);
+  assert.equal((release.match(/--force-recreate/gu) ?? []).length, 1);
+  assert.equal(candidateBlock, `${candidateCommand}\n`);
+  assert.doesNotMatch(candidateBlock, /postgres|--volumes/u);
 });
 
 test("stable launchers reject pre-contract targets and bind retention to the active source", async () => {
