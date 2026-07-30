@@ -25,6 +25,9 @@ export type AccountWebhookRouteEnvironment = "live" | "test" | "sandbox";
 const MAX_WEBHOOK_BYTES = 1_048_576;
 const TENANT_PURGE_DELAY_MILLISECONDS = 29 * 24 * 60 * 60 * 1_000;
 const STRIPE_ACCOUNT_PATTERN = /^acct_[A-Za-z0-9]+$/u;
+// Stripe App lifecycle Events can retain the API version used when Stripe created
+// the Event even when the receiving destination is configured for a newer version.
+const STRIPE_APP_LIFECYCLE_SOURCE_API_VERSION = "2026-02-25.clover";
 const SUPPORTED_EVENT_TYPES = new Set<AccountWebhookEventType>([
   "refund.created",
   "refund.updated",
@@ -32,6 +35,20 @@ const SUPPORTED_EVENT_TYPES = new Set<AccountWebhookEventType>([
   "account.application.authorized",
   "account.application.deauthorized",
 ]);
+
+function supportsEventApiVersion(
+  event: Stripe.Event,
+  expectedApiVersion: AccountWebhookDependencies["expectedApiVersion"],
+): boolean {
+  if (event.api_version === expectedApiVersion) {
+    return true;
+  }
+  return (
+    (event.type === "account.application.authorized" ||
+      event.type === "account.application.deauthorized") &&
+    event.api_version === STRIPE_APP_LIFECYCLE_SOURCE_API_VERSION
+  );
+}
 
 export interface ResolvedWebhookInstallation {
   readonly tenantId: string;
@@ -335,7 +352,7 @@ export async function receiveAccountWebhook(
   if (event.livemode) {
     return apiError("MODE_MISMATCH", "Live events are disabled for the pilot", 400);
   }
-  if (event.api_version !== dependencies.expectedApiVersion) {
+  if (!supportsEventApiVersion(event, dependencies.expectedApiVersion)) {
     return apiError("API_VERSION_MISMATCH", "Webhook API version is not supported", 400);
   }
   if (event.account !== undefined) {

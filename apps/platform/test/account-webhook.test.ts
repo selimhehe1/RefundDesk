@@ -110,6 +110,7 @@ function refundEvent(
 function lifecycleEvent(
   type: "account.application.authorized" | "account.application.deauthorized",
   applicationId = APP_ID,
+  overrides: Readonly<Record<string, unknown>> = {},
 ): Readonly<Record<string, unknown>> {
   return {
     id:
@@ -117,7 +118,7 @@ function lifecycleEvent(
         ? "evt_application_authorized"
         : "evt_application_removed",
     object: "event",
-    api_version: "2026-06-24.dahlia",
+    api_version: "2026-02-25.clover",
     created: Math.floor(Date.now() / 1_000),
     data: {
       object: {
@@ -130,6 +131,7 @@ function lifecycleEvent(
     pending_webhooks: 1,
     request: null,
     type,
+    ...overrides,
   };
 }
 
@@ -358,6 +360,107 @@ describe("durable direct-account Stripe webhook ingress", () => {
     });
     expect(wrongVersion.status).toBe(400);
     expect(await wrongVersion.json()).toMatchObject({
+      code: "API_VERSION_MISMATCH",
+    });
+    expect(persistence.findExistingCalls).toBe(0);
+    expect(persistence.resolutions).toEqual([]);
+    expect(persistence.inserts).toEqual([]);
+  });
+
+  it.each(["account.application.authorized", "account.application.deauthorized"] as const)(
+    "rejects a %s Event outside the explicit lifecycle API-version allowlist",
+    async (eventType) => {
+      const persistence = new FakePersistence();
+
+      const response = await receive(
+        lifecycleEvent(eventType, APP_ID, { api_version: "2025-12-15.clover" }),
+        persistence,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "API_VERSION_MISMATCH",
+      });
+      expect(persistence.findExistingCalls).toBe(0);
+      expect(persistence.resolutions).toEqual([]);
+      expect(persistence.inserts).toEqual([]);
+    },
+  );
+
+  it.each(["account.application.authorized", "account.application.deauthorized"] as const)(
+    "continues to accept a %s Event rendered with the configured endpoint API version",
+    async (eventType) => {
+      const persistence = new FakePersistence();
+
+      const response = await receive(
+        lifecycleEvent(eventType, APP_ID, { api_version: "2026-06-24.dahlia" }),
+        persistence,
+      );
+
+      expect(response.status).toBe(200);
+      expect(persistence.resolutions).toHaveLength(1);
+      expect(persistence.inserts).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["account.application.authorized", null],
+    ["account.application.deauthorized", "2026-01-01.clover"],
+  ] as const)(
+    "rejects a %s Event rendered with unsupported API version %s",
+    async (eventType, apiVersion) => {
+      const persistence = new FakePersistence();
+
+      const response = await receive(
+        lifecycleEvent(eventType, APP_ID, { api_version: apiVersion }),
+        persistence,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "API_VERSION_MISMATCH",
+      });
+      expect(persistence.findExistingCalls).toBe(0);
+      expect(persistence.resolutions).toEqual([]);
+      expect(persistence.inserts).toEqual([]);
+    },
+  );
+
+  it.each(["refund.created", "refund.updated", "refund.failed"] as const)(
+    "does not extend the lifecycle Clover exception to %s",
+    async (eventType) => {
+      const persistence = new FakePersistence();
+
+      const response = await receive(
+        refundEvent({
+          type: eventType,
+          api_version: "2026-02-25.clover",
+        }),
+        persistence,
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "API_VERSION_MISMATCH",
+      });
+      expect(persistence.findExistingCalls).toBe(0);
+      expect(persistence.resolutions).toEqual([]);
+      expect(persistence.inserts).toEqual([]);
+    },
+  );
+
+  it("does not extend the lifecycle Clover exception by event-name prefix", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receive(
+      lifecycleEvent("account.application.authorized", APP_ID, {
+        type: "account.application.updated",
+      }),
+      persistence,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
       code: "API_VERSION_MISMATCH",
     });
     expect(persistence.findExistingCalls).toBe(0);
