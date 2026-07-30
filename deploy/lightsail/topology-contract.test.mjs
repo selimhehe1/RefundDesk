@@ -753,6 +753,35 @@ test("deployment verification normalizes HTTP CRLF before exact header checks", 
   );
 });
 
+test("deployment verification fails closed when host listener inventory is unavailable", async () => {
+  const verifyDeployment = await read("scripts/verify-deployment.sh");
+  const inventory = verifyDeployment.indexOf('host_tcp_listeners="$(');
+  const socketQuery = verifyDeployment.indexOf(
+    "ss --listening --tcp --numeric --no-header",
+    inventory,
+  );
+  const inventoryFailure = verifyDeployment.indexOf(
+    'die "host listening TCP inventory is unavailable"',
+    socketQuery,
+  );
+  const internalPortCheck = verifyDeployment.indexOf(
+    '<<<"${host_tcp_listeners}"',
+    inventoryFailure,
+  );
+
+  assert.ok(
+    inventory >= 0 &&
+      socketQuery > inventory &&
+      inventoryFailure > socketQuery &&
+      internalPortCheck > inventoryFailure,
+  );
+  assert.doesNotMatch(
+    verifyDeployment,
+    /if ss --listening --tcp/u,
+    "an ss failure must not be mistaken for an empty listener inventory",
+  );
+});
+
 test("deployment verification compiles every await-based Node eval as an ES module", async () => {
   const verifyDeployment = await read("scripts/verify-deployment.sh");
   const inlineEvalPattern =
@@ -2541,6 +2570,7 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     'current_source="$(readlink --canonicalize-existing -- "${CURRENT_LINK}")"',
     "REFUNDDESK_IMAGE_TAG=sandbox-${revision}",
     "REFUNDDESK_REVISION=${revision}",
+    `python3 - "\${MAINTENANCE_ENV}" "\${MAINTENANCE_PASSWORD_FILE}" <<'PY' || die "maintenance environment or password binding is invalid"`,
     "set(values) != expected_names",
     'urllib.parse.unquote(database_url.username or "")',
     "refunddesk_maintenance_login",
@@ -2569,6 +2599,11 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     assert.match(runner, new RegExp(fragment.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   }
   assert.doesNotMatch(runner, /^\s*(?:source|\.)\s+["']?\$\{?MAINTENANCE_ENV/mu);
+  assert.doesNotMatch(
+    runner,
+    /<<'PY' \|\|\s*\n\s+die "maintenance environment or password binding is invalid"/u,
+    "the shell failure handler must not become the first line of the Python heredoc",
+  );
   assert.doesNotMatch(runner, /docker\s+pull|refunddesk_compose\s+(?:build|pull)/u);
   assert.doesNotMatch(runner, /refunddesk_compose\s+up[^\n]*maintenance/u);
   const workerStop = runner.indexOf("refunddesk_compose stop --timeout 45 worker");
@@ -2602,12 +2637,14 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
     "Environment=DOCKER_CONFIG=/run/refunddesk-retention",
     "RuntimeDirectory=refunddesk-retention",
     "ExecStart=/usr/local/sbin/refunddesk-retention",
+    "After=docker.service network-online.target",
+    "Wants=network-online.target",
     "NoNewPrivileges=yes",
     "PrivateDevices=yes",
     "PrivateTmp=yes",
     "ProtectHome=yes",
     "ProtectSystem=strict",
-    "RestrictAddressFamilies=AF_UNIX",
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
     "CapabilityBoundingSet=",
     "ReadWritePaths=/run/refunddesk /run/docker.sock /run/refunddesk-retention /var/lib/refunddesk/control /var/log/refunddesk",
   ]) {
@@ -2640,6 +2677,69 @@ test("daily retention is revision-bound, isolated and activated on fresh or exis
   const promotion = release.lastIndexOf('--target "${REFUNDDESK_ROOT}/current"');
   const activation = release.indexOf("systemctl start refunddesk-retention.timer");
   assert.ok(promotion >= 0 && activation > promotion);
+});
+
+test("retention preflight executes validation and its shell failure handler", async (t) => {
+  const version = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (version.error?.code === "ENOENT" || version.status !== 0) {
+    t.skip("bash is unavailable on this host; Linux CI executes this functional contract");
+    return;
+  }
+
+  const runner = (await read("scripts/run-retention.sh")).replaceAll("\r\n", "\n");
+  const command =
+    `python3 - "\${MAINTENANCE_ENV}" "\${MAINTENANCE_PASSWORD_FILE}" <<'PY' || ` +
+    `die "maintenance environment or password binding is invalid"`;
+  const commandStart = runner.indexOf(command);
+  const terminator = runner.indexOf("\nPY\n", commandStart);
+  assert.ok(commandStart >= 0 && terminator > commandStart, "missing retention preflight heredoc");
+  const preflight = runner.slice(commandStart, terminator + "\nPY".length);
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-retention-preflight-"));
+  const environmentPath = join(temporaryDirectory, "maintenance.env");
+  const passwordPath = join(temporaryDirectory, "postgres-maintenance-password");
+  const password = "a".repeat(32);
+  const pseudonymKey = Buffer.alloc(32, 7).toString("base64");
+  const environment = [
+    "NODE_ENV=production",
+    `REFUNDDESK_MAINTENANCE_DATABASE_URL=postgresql://refunddesk_maintenance_login:${password}@postgres.refunddesk.internal:5432/refunddesk?sslmode=verify-full`,
+    `REFUNDDESK_PURGE_PSEUDONYM_HMAC_KEY_V1=${pseudonymKey}`,
+    "REFUNDDESK_RETENTION_BATCH_SIZE=100",
+    "REFUNDDESK_RETENTION_SCOPE=test_sandbox",
+    "",
+  ].join("\n");
+  const harness = `set -Eeuo pipefail
+die() { exit 97; }
+MAINTENANCE_ENV="$1"
+MAINTENANCE_PASSWORD_FILE="$2"
+${preflight}
+`;
+  const executePreflight = () =>
+    spawnSync(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        "-c",
+        harness,
+        "retention-preflight",
+        environmentPath,
+        passwordPath,
+      ],
+      { encoding: "utf8", timeout: 10_000 },
+    );
+
+  try {
+    await writeFile(environmentPath, environment, { encoding: "utf8", mode: 0o600 });
+    await writeFile(passwordPath, `${password}\n`, { encoding: "utf8", mode: 0o600 });
+    let result = executePreflight();
+    assert.equal(result.status, 0, result.stderr);
+
+    await writeFile(passwordPath, `${"b".repeat(32)}\n`, { encoding: "utf8", mode: 0o600 });
+    result = executePreflight();
+    assert.equal(result.status, 97, result.stderr);
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
 });
 
 test("one-shot database jobs reserve one global name without retaining secrets", async () => {
@@ -2938,7 +3038,7 @@ test("runtime quiescence is durable, exact-revision recovered and boot-wired", a
     /^ConditionPathExists=\/var\/lib\/refunddesk\/control\/runtime-quiesce-in-progress\.json$/mu,
   );
   assert.match(recoveryService, /^ExecStart=\/usr\/local\/sbin\/refunddesk-quiesce-recovery$/mu);
-  assert.match(recoveryService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/mu);
+  assert.match(recoveryService, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK$/mu);
   assert.match(backupService, /^OnFailure=refunddesk-quiesce-recovery\.service$/mu);
   assert.match(retentionService, /^OnFailure=refunddesk-quiesce-recovery\.service$/mu);
 });

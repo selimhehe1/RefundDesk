@@ -2,7 +2,8 @@
 Description=RefundDesk test/sandbox retention purge
 Documentation=https://github.com/selimhehe1/RefundDesk
 Requires=docker.service
-After=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
 OnFailure=refunddesk-quiesce-recovery.service
 
 [Service]
@@ -33,7 +34,7 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 ReadWritePaths=/run/refunddesk /run/docker.sock /run/refunddesk-retention /var/lib/refunddesk/control /var/log/refunddesk

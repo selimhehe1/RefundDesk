@@ -311,8 +311,10 @@ docker inspect "${caddy_id}" |
       and ($ports | index("443") != null)
   ' >/dev/null || die "Caddy must publish only host ports 80 and 443"
 
-if ss --listening --tcp --numeric --no-header |
-  awk '{print $4}' |
+host_tcp_listeners="$(
+  ss --listening --tcp --numeric --no-header
+)" || die "host listening TCP inventory is unavailable"
+if awk '{print $4}' <<<"${host_tcp_listeners}" |
   grep -Eq '(^|:)(3000|3101|5432|8443)$'; then
   die "an internal RefundDesk port is listening on the host"
 fi

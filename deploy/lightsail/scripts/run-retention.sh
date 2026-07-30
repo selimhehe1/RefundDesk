@@ -79,8 +79,7 @@ mapfile -t release_lines <"${REFUNDDESK_RELEASE_ENV}"
 [[ "${release_lines[1]}" == "REFUNDDESK_REVISION=${revision}" ]] ||
   die "release revision does not match the active revision"
 
-python3 - "${MAINTENANCE_ENV}" "${MAINTENANCE_PASSWORD_FILE}" <<'PY' ||
-  die "maintenance environment or password binding is invalid"
+python3 - "${MAINTENANCE_ENV}" "${MAINTENANCE_PASSWORD_FILE}" <<'PY' || die "maintenance environment or password binding is invalid"
 import base64
 import pathlib
 import re
