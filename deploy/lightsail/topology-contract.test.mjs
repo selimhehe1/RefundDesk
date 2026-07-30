@@ -1642,22 +1642,40 @@ test("backup scheduling activates only after strict configuration validation", a
   const finalizationLock = release.lastIndexOf("flock --exclusive 8");
   const restartProof = release.indexOf("restore_runtime_restart_policies", finalizationLock);
   const systemdReload = release.indexOf("systemctl daemon-reload", restartProof);
+  const durableCommit = release.indexOf('python3 "${TRANSITION_HELPER}" complete', systemdReload);
+  const transitionCommitted = release.indexOf("TRANSITION_COMMITTED=true", durableCommit);
+  const retentionActivation = release.indexOf(
+    "systemctl start refunddesk-retention.timer",
+    transitionCommitted,
+  );
   const backupActivation = release.indexOf(
     "systemctl start refunddesk-backup.timer",
-    systemdReload,
+    retentionActivation,
   );
-  const durableCommit = release.indexOf(
-    'python3 "${TRANSITION_HELPER}" complete',
-    backupActivation,
-  );
-  const finalizationUnlock = release.indexOf("flock --unlock 8", durableCommit);
+  const finalizationUnlock = release.indexOf("flock --unlock 8", backupActivation);
+  const fenceDisarm = release.indexOf("wait_for_release_fence_disarm", finalizationUnlock);
   assert.ok(
     finalizationLock >= 0 &&
       restartProof > finalizationLock &&
       systemdReload > restartProof &&
-      backupActivation > systemdReload &&
-      durableCommit > backupActivation &&
-      finalizationUnlock > durableCommit,
+      durableCommit > systemdReload &&
+      transitionCommitted > durableCommit &&
+      retentionActivation > transitionCommitted &&
+      backupActivation > retentionActivation &&
+      finalizationUnlock > backupActivation &&
+      fenceDisarm > finalizationUnlock,
+  );
+  const postCommitFailure = release.indexOf(
+    '[[ "${PROMOTION_STARTED}" == "true" && "${PROMOTION_COMPLETE}" != "true" ]]',
+  );
+  const maintenanceStop = release.indexOf("refunddesk-backup.service", postCommitFailure);
+  const runtimeStop = release.indexOf(
+    "refunddesk_compose stop --timeout 45 caddy web verifier worker",
+    postCommitFailure,
+  );
+  assert.ok(
+    postCommitFailure >= 0 && maintenanceStop > postCommitFailure && runtimeStop > maintenanceStop,
+    "post-commit failure must stop maintenance before the effect-capable runtime",
   );
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-backup-configuration-"));
@@ -2767,7 +2785,8 @@ test("backup upload uses the AWS CLI v2 SSE-S3 surface and verifies the result",
     read("scripts/backup-launcher.sh"),
     read("systemd/refunddesk-backup.service"),
   ]);
-  const uploadStart = backup.indexOf("\n  aws s3api put-object \\");
+  const uploadAttempt = backup.indexOf("UPLOAD_ATTEMPTED=true");
+  const uploadStart = backup.indexOf("\n  aws s3api put-object \\", uploadAttempt);
   const uploadEnd = backup.indexOf('\n)"; then', uploadStart);
 
   assert.ok(uploadStart >= 0 && uploadEnd > uploadStart, "missing backup upload command");
@@ -2778,6 +2797,35 @@ test("backup upload uses the AWS CLI v2 SSE-S3 surface and verifies the result",
 
   assert.match(backup, /AWS_SHARED_CREDENTIALS_FILE=\/dev\/null/u);
   assert.match(backup, /static or preloaded AWS credentials are prohibited/u);
+  assert.doesNotMatch(
+    backup,
+    /get-bucket-versioning/u,
+    "Lightsail resource-access credentials do not expose S3 GetBucketVersioning",
+  );
+  assert.doesNotMatch(
+    backup,
+    /aws lightsail get-buckets/u,
+    "the bucket resource-access role cannot call the Lightsail control plane",
+  );
+  const versioningWitness = backup.indexOf("versioning_probe_result=");
+  const versioningProofComplete = backup.indexOf(
+    "versioning-probe object remains after exact deletion",
+    versioningWitness,
+  );
+  const runtimeQuiescence = backup.indexOf(
+    'log "quiescing ingress, worker, web, verifier and PostgreSQL"',
+  );
+  assert.ok(
+    versioningWitness >= 0 &&
+      versioningProofComplete > versioningWitness &&
+      runtimeQuiescence > versioningProofComplete,
+    "the supported versioning probe must be completed before runtime quiescence",
+  );
+  assert.match(backup, /purpose=versioning-preflight/u);
+  assert.match(backup, /backup bucket did not return an enabled-version ID/u);
+  assert.match(backup, /versioned backup preflight probe metadata differs/u);
+  assert.match(backup, /S3 did not confirm exact versioning-probe deletion/u);
+  assert.match(backup, /versioning-probe object remains after exact deletion/u);
   assert.match(backup, /UPLOAD_ATTEMPTED=true[\s\S]*aws s3api put-object/u);
   assert.match(backup, /UPLOAD_COMMITTED=true[\s\S]*rotate_to_count/u);
   assert.match(backup, /--version-id "\$\{UPLOADED_VERSION_ID\}"/u);

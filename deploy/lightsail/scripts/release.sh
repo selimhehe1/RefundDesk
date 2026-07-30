@@ -1575,6 +1575,12 @@ fail_closed() {
 
   if (( status != 0 )) &&
     [[ "${PROMOTION_STARTED}" == "true" && "${PROMOTION_COMPLETE}" != "true" ]]; then
+    systemctl stop \
+      refunddesk-backup.timer \
+      refunddesk-retention.timer \
+      refunddesk-backup.service \
+      refunddesk-retention.service >/dev/null 2>&1 ||
+      status=1
     log "release validation failed; stopping public and effect-capable services"
     ids_output="$(
       docker container ls --all --quiet \
@@ -1934,6 +1940,20 @@ SYSTEMD_DAEMON_RELOAD_ATTEMPTED=true
 systemctl daemon-reload ||
   die "systemd could not reload the verified control-plane generation"
 prove_systemd_fragments_after_reload "${CONTROL_PLANE_TARGET}"
+if ! python3 "${TRANSITION_HELPER}" complete \
+  --path "${TRANSITION_JOURNAL_FILE}" \
+  --candidate "${TRANSITION_CANDIDATE_FILE}" \
+  --commit-marker "${TRANSITION_COMMIT_MARKER}" >/dev/null; then
+  flock --unlock 8
+  die "verified release metadata committed but transition journal could not be closed"
+fi
+TRANSITION_COMMITTED=true
+
+# Persistent timers can immediately run a missed calendar event. Activate them
+# only after the durable transition journal is closed, so their stable
+# launchers never observe an otherwise valid release as unfinished. The
+# release-held operator lock keeps any triggered maintenance runner serialized
+# until this release process exits.
 systemctl start refunddesk-retention.timer ||
   die "retention schedule could not be activated"
 if [[ "${BACKUP_CONFIGURATION_VALID}" == "true" ]]; then
@@ -1978,14 +1998,6 @@ else
     inactive \
     linked
 fi
-if ! python3 "${TRANSITION_HELPER}" complete \
-  --path "${TRANSITION_JOURNAL_FILE}" \
-  --candidate "${TRANSITION_CANDIDATE_FILE}" \
-  --commit-marker "${TRANSITION_COMMIT_MARKER}" >/dev/null; then
-  flock --unlock 8
-  die "verified release metadata committed but transition journal could not be closed"
-fi
-TRANSITION_COMMITTED=true
 flock --unlock 8
 wait_for_release_fence_disarm
 PROMOTION_COMPLETE=true

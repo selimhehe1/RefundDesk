@@ -38,7 +38,7 @@ while (( $# > 0 )); do
 done
 
 require_root
-for command in age aws base64 cmp docker jq readlink sha256sum tar zstd; do
+for command in age aws base64 cmp date docker jq readlink sha256sum tar zstd; do
   require_command "${command}"
 done
 acquire_operator_lock
@@ -182,17 +182,102 @@ assert_root_secret_file "${AWS_CONFIG_FILE}"
 if grep -Eiq '(^|[[:space:]])aws_(access_key_id|secret_access_key)[[:space:]]*=' "${AWS_CONFIG_FILE}"; then
   die "static AWS keys are prohibited in AWS_CONFIG_FILE"
 fi
+
+valid_version_id() {
+  local version_id="$1"
+
+  [[ -n "${version_id}" &&
+    "${version_id}" != "null" &&
+    ${#version_id} -le 1024 &&
+    "${version_id}" != *[[:space:]]* &&
+    "${version_id}" != *[[:cntrl:]]* ]]
+}
+
 aws sts get-caller-identity --output json >/dev/null ||
   die "non-static AWS credential provider is unavailable"
 aws s3api head-bucket --bucket "${REFUNDDESK_BACKUP_BUCKET}" >/dev/null ||
   die "backup bucket is unavailable"
-bucket_versioning="$(
-  aws s3api get-bucket-versioning \
+versioning_probe_timestamp="$(date --utc '+%Y%m%dT%H%M%SZ')"
+versioning_probe_key="${REFUNDDESK_BACKUP_PREFIX}.versioning-probe-${versioning_probe_timestamp}-${REFUNDDESK_BACKUP_LAUNCHER_REVISION}-$$"
+versioning_probe_inventory="$(
+  aws s3api list-object-versions \
     --bucket "${REFUNDDESK_BACKUP_BUCKET}" \
+    --prefix "${versioning_probe_key}" \
+    --no-paginate \
     --output json
-)" || die "backup bucket versioning state is unavailable"
-jq --exit-status '.Status == "Enabled"' <<<"${bucket_versioning}" >/dev/null ||
-  die "backup bucket versioning must be Enabled"
+)" || die "backup versioning-probe inventory is unavailable"
+jq --exit-status '
+  type == "object"
+  and (.IsTruncated // false) == false
+  and ([.Versions[]?, .DeleteMarkers[]?] | length) == 0
+' <<<"${versioning_probe_inventory}" >/dev/null ||
+  die "backup versioning-probe key is not fresh"
+
+# Lightsail resource-access credentials expose the supported object-version
+# APIs, but not S3 GetBucketVersioning or the Lightsail control plane. Prove
+# the current state before quiescence with a uniquely keyed, revision-bound
+# object. A missing/null VersionId is fail-closed and preserves the tiny probe
+# for explicit reconciliation; a valid version is verified, deleted exactly
+# and proven absent before any service is stopped.
+if ! versioning_probe_result="$(
+  aws s3api put-object \
+    --bucket "${REFUNDDESK_BACKUP_BUCKET}" \
+    --key "${versioning_probe_key}" \
+    --body "${ACTIVE_REVISION_FILE}" \
+    --server-side-encryption AES256 \
+    --metadata \
+      "purpose=versioning-preflight,revision=${REFUNDDESK_BACKUP_LAUNCHER_REVISION}" \
+    --output json
+)"; then
+  die "backup versioning probe returned an ambiguous result; reconcile ${versioning_probe_key}"
+fi
+versioning_probe_id="$(
+  jq --raw-output '.VersionId // empty' <<<"${versioning_probe_result}"
+)"
+valid_version_id "${versioning_probe_id}" ||
+  die "backup bucket did not return an enabled-version ID; reconcile ${versioning_probe_key}"
+versioning_probe_head="$(
+  aws s3api head-object \
+    --bucket "${REFUNDDESK_BACKUP_BUCKET}" \
+    --key "${versioning_probe_key}" \
+    --version-id "${versioning_probe_id}" \
+    --output json
+)" || die "versioned backup preflight probe is unreadable"
+versioning_probe_bytes="$(stat --format='%s' -- "${ACTIVE_REVISION_FILE}")"
+jq --exit-status \
+  --argjson bytes "${versioning_probe_bytes}" \
+  --arg revision "${REFUNDDESK_BACKUP_LAUNCHER_REVISION}" '
+    .ContentLength == $bytes
+    and (.Metadata.purpose // "") == "versioning-preflight"
+    and (.Metadata.revision // "") == $revision
+    and (.ServerSideEncryption // "") == "AES256"
+  ' <<<"${versioning_probe_head}" >/dev/null ||
+  die "versioned backup preflight probe metadata differs"
+versioning_probe_delete="$(
+  aws s3api delete-object \
+    --bucket "${REFUNDDESK_BACKUP_BUCKET}" \
+    --key "${versioning_probe_key}" \
+    --version-id "${versioning_probe_id}" \
+    --output json
+)" || die "versioned backup preflight probe deletion is ambiguous"
+jq --exit-status --arg version_id "${versioning_probe_id}" '
+  (.VersionId // "") == $version_id
+  and (.DeleteMarker // false) == false
+' <<<"${versioning_probe_delete}" >/dev/null ||
+  die "S3 did not confirm exact versioning-probe deletion"
+versioning_probe_inventory="$(
+  aws s3api list-object-versions \
+    --bucket "${REFUNDDESK_BACKUP_BUCKET}" \
+    --prefix "${versioning_probe_key}" \
+    --no-paginate \
+    --output json
+)" || die "post-delete versioning-probe inventory is unavailable"
+jq --exit-status '
+  type == "object"
+  and (.IsTruncated // false) == false
+  and ([.Versions[]?, .DeleteMarkers[]?] | length) == 0
+' <<<"${versioning_probe_inventory}" >/dev/null ||
+  die "versioning-probe object remains after exact deletion"
 
 PGDATA="${REFUNDDESK_PGDATA:-/var/lib/refunddesk/postgres/data}"
 BACKUP_DIR="${REFUNDDESK_BACKUP_LOCAL_DIR:-/var/lib/refunddesk/backups}"
@@ -390,16 +475,6 @@ list_versions() {
     log "backup version inventory is truncated; refusing an incomplete storage decision"
     return 1
   fi
-}
-
-valid_version_id() {
-  local version_id="$1"
-
-  [[ -n "${version_id}" &&
-    "${version_id}" != "null" &&
-    ${#version_id} -le 1024 &&
-    "${version_id}" != *[[:space:]]* &&
-    "${version_id}" != *[[:cntrl:]]* ]]
 }
 
 discover_uploaded_version_id() {
