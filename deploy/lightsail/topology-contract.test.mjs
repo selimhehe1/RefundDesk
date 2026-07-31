@@ -3050,6 +3050,45 @@ test("runtime quiescence is durable, exact-revision recovered and boot-wired", a
     assert.match(launcher, /refunddesk-quiesce-recovery/u);
     assert.match(launcher, /runtime-quiesce-in-progress\.json/u);
   }
+  for (const launcher of [backupLauncher, retentionLauncher, recoveryLauncher]) {
+    const sourceValidation = launcher.indexOf("active revision and current source differ");
+    const composeSelection = launcher.indexOf(
+      'canonical_compose_file="${current_source}/deploy/lightsail/compose.yml"',
+    );
+    const composeExport = launcher.indexOf(
+      'export REFUNDDESK_COMPOSE_FILE="${canonical_compose_file}"',
+    );
+    const runnerExecution = launcher.indexOf('exec /usr/bin/bash "${runner}"');
+    assert.ok(
+      sourceValidation >= 0 &&
+        composeSelection > sourceValidation &&
+        composeExport > composeSelection &&
+        runnerExecution > composeExport,
+    );
+    assert.match(
+      launcher,
+      /(?:assert_root_control_file "\$\{canonical_compose_file\}"|for control_file in[\s\S]{0,500}"\$\{canonical_compose_file\}"[\s\S]{0,500}assert_root_control_file "\$\{control_file\}")/u,
+    );
+    assert.doesNotMatch(launcher, /REFUNDDESK_COMPOSE_FILE="\$\{REFUNDDESK_ROOT\}\/current\//u);
+  }
+  for (const runner of [backup, retention, recovery]) {
+    const sourceValidation = runner.indexOf("current source");
+    const composeSelection = runner.indexOf(
+      'expected_compose_file="${current_source}/deploy/lightsail/compose.yml"',
+    );
+    const composeBinding = runner.indexOf(
+      '[[ "${REFUNDDESK_COMPOSE_FILE}" == "${expected_compose_file}" ]]',
+    );
+    const composeOwnership = runner.indexOf(
+      'assert_root_control_file "${REFUNDDESK_COMPOSE_FILE}"',
+    );
+    assert.ok(
+      sourceValidation >= 0 &&
+        composeSelection > sourceValidation &&
+        composeBinding > composeSelection &&
+        composeOwnership > composeBinding,
+    );
+  }
   const sourceInstallLock = installSource.indexOf("acquire_operator_lock");
   const sourceInstallRecovery = installSource.indexOf(
     'if [[ -e "${QUIESCE_JOURNAL}" || -L "${QUIESCE_JOURNAL}" ]]',

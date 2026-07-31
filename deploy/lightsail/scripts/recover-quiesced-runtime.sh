@@ -62,6 +62,10 @@ expected_source="${REFUNDDESK_ROOT}/releases/${revision}/source"
 [[ "${current_source}" == "${expected_source}" &&
   "${SCRIPT_DIR}" == "${current_source}/deploy/lightsail/scripts" ]] ||
   die "current source changed before runtime recovery"
+expected_compose_file="${current_source}/deploy/lightsail/compose.yml"
+[[ "${REFUNDDESK_COMPOSE_FILE}" == "${expected_compose_file}" ]] ||
+  die "recovery Compose file is not bound to the canonical active source"
+assert_root_control_file "${REFUNDDESK_COMPOSE_FILE}"
 mapfile -t release_lines <"${RELEASE_ENV_FILE}"
 (( ${#release_lines[@]} == 2 )) &&
   [[ "${release_lines[0]}" == "REFUNDDESK_IMAGE_TAG=sandbox-${revision}" ]] &&

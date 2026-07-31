@@ -132,11 +132,16 @@ current_source="$(readlink --canonicalize-existing -- "${current_link}")"
 expected_source="${REFUNDDESK_ROOT}/releases/${revision}/source"
 [[ "${current_source}" == "${expected_source}" ]] ||
   die "active revision and current source differ"
+canonical_compose_file="${current_source}/deploy/lightsail/compose.yml"
 
 revision_marker="${current_source}/.refunddesk-revision"
 contract_marker="${current_source}/deploy/lightsail/RELEASE_CONTRACT_VERSION"
 runner="${current_source}/deploy/lightsail/scripts/recover-quiesced-runtime.sh"
-for control_file in "${revision_marker}" "${contract_marker}" "${runner}"; do
+for control_file in \
+  "${canonical_compose_file}" \
+  "${revision_marker}" \
+  "${contract_marker}" \
+  "${runner}"; do
   assert_root_control_file "${control_file}"
 done
 mapfile -t source_revision_lines <"${revision_marker}"
@@ -151,4 +156,5 @@ mapfile -t contract_lines <"${contract_marker}"
 export REFUNDDESK_QUIESCE_RECOVERY_LAUNCHER_CONTRACT="${RELEASE_CONTRACT_VERSION}"
 export REFUNDDESK_QUIESCE_RECOVERY_LAUNCHER_PATH="${STABLE_LAUNCHER_PATH}"
 export REFUNDDESK_QUIESCE_RECOVERY_LAUNCHER_REVISION="${revision}"
+export REFUNDDESK_COMPOSE_FILE="${canonical_compose_file}"
 exec /usr/bin/bash "${runner}"

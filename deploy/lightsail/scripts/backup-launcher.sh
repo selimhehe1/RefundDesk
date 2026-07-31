@@ -141,12 +141,18 @@ current_source="$(readlink --canonicalize-existing -- "${current_link}")"
 expected_source_root="${REFUNDDESK_ROOT}/releases/${revision}/source"
 [[ "${current_source}" == "${expected_source_root}" ]] ||
   die "active revision and current source differ"
+canonical_compose_file="${current_source}/deploy/lightsail/compose.yml"
 
 revision_marker="${current_source}/.refunddesk-revision"
 contract_marker="${current_source}/deploy/lightsail/RELEASE_CONTRACT_VERSION"
 runner="${current_source}/deploy/lightsail/scripts/backup.sh"
 manifest="${REFUNDDESK_ROOT}/releases/${revision}/manifest.json"
-for control_file in "${revision_marker}" "${contract_marker}" "${runner}" "${manifest}"; do
+for control_file in \
+  "${canonical_compose_file}" \
+  "${revision_marker}" \
+  "${contract_marker}" \
+  "${runner}" \
+  "${manifest}"; do
   assert_root_control_file "${control_file}"
 done
 mapfile -t source_revision_lines <"${revision_marker}"
@@ -207,4 +213,5 @@ done
 export REFUNDDESK_BACKUP_LAUNCHER_CONTRACT="${RELEASE_CONTRACT_VERSION}"
 export REFUNDDESK_BACKUP_LAUNCHER_PATH="${STABLE_LAUNCHER_PATH}"
 export REFUNDDESK_BACKUP_LAUNCHER_REVISION="${revision}"
+export REFUNDDESK_COMPOSE_FILE="${canonical_compose_file}"
 exec /usr/bin/bash "${runner}"

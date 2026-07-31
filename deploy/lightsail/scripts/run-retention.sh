@@ -55,6 +55,10 @@ expected_source="${REFUNDDESK_ROOT}/releases/${revision}/source"
   die "current source and active revision differ"
 [[ "${SCRIPT_DIR}" == "${current_source}/deploy/lightsail/scripts" ]] ||
   die "retention wrapper is not running from the active source"
+expected_compose_file="${current_source}/deploy/lightsail/compose.yml"
+[[ "${REFUNDDESK_COMPOSE_FILE}" == "${expected_compose_file}" ]] ||
+  die "retention Compose file is not bound to the canonical active source"
+assert_root_control_file "${REFUNDDESK_COMPOSE_FILE}"
 
 source_revision_file="${current_source}/.refunddesk-revision"
 DURABILITY_HELPER="${current_source}/deploy/lightsail/scripts/release-transition-journal.py"

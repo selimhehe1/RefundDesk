@@ -85,6 +85,10 @@ expected_source="${REFUNDDESK_ROOT}/releases/${REFUNDDESK_BACKUP_LAUNCHER_REVISI
 [[ "${current_source}" == "${expected_source}" &&
   "${SCRIPT_DIR}" == "${current_source}/deploy/lightsail/scripts" ]] ||
   die "current source changed after backup launcher validation"
+expected_compose_file="${current_source}/deploy/lightsail/compose.yml"
+[[ "${REFUNDDESK_COMPOSE_FILE}" == "${expected_compose_file}" ]] ||
+  die "backup Compose file is not bound to the canonical active source"
+assert_root_control_file "${REFUNDDESK_COMPOSE_FILE}"
 CONTRACT_MARKER="${current_source}/deploy/lightsail/RELEASE_CONTRACT_VERSION"
 DURABILITY_HELPER="${current_source}/deploy/lightsail/scripts/release-transition-journal.py"
 RECOVERY_RUNNER="${current_source}/deploy/lightsail/scripts/recover-quiesced-runtime.sh"

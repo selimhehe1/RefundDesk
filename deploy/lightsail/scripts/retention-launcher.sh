@@ -125,10 +125,12 @@ current_source="$(readlink --canonicalize-existing -- "${current_link}")"
 expected_source="${REFUNDDESK_ROOT}/releases/${revision}/source"
 [[ "${current_source}" == "${expected_source}" ]] ||
   die "active revision and current source differ"
+canonical_compose_file="${current_source}/deploy/lightsail/compose.yml"
 
 revision_marker="${current_source}/.refunddesk-revision"
 contract_marker="${current_source}/deploy/lightsail/RELEASE_CONTRACT_VERSION"
 runner="${current_source}/deploy/lightsail/scripts/run-retention.sh"
+assert_root_control_file "${canonical_compose_file}"
 assert_root_control_file "${revision_marker}"
 assert_root_control_file "${contract_marker}"
 assert_root_control_file "${runner}"
@@ -145,4 +147,5 @@ contract_version="${contract_lines[0]}"
   contract_version <= MAXIMUM_RELEASE_CONTRACT_VERSION )) ||
   die "current source release contract is outside the supported range"
 
+export REFUNDDESK_COMPOSE_FILE="${canonical_compose_file}"
 exec /usr/bin/bash "${runner}"
