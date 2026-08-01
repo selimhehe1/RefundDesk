@@ -17,7 +17,6 @@ import {
 } from "@refunddesk/db";
 
 import { apiError, jsonResponse } from "./http";
-import type { Phase0Correlation, Phase0ObservedRefund } from "./phase0-store";
 import { getPilotRuntime } from "./pilot-runtime";
 
 export type AccountWebhookRouteEnvironment = "live" | "test" | "sandbox";
@@ -92,9 +91,6 @@ export interface AccountWebhookDependencies {
   ) => Stripe.Event;
   readonly persistence: AccountWebhookPersistence;
   readonly now: () => Date;
-  readonly phase0Observer?: {
-    observe(refund: Phase0ObservedRefund): Phase0Correlation;
-  };
 }
 
 class PrismaAccountWebhookPersistence implements AccountWebhookPersistence {
@@ -287,34 +283,6 @@ function normalizeEvent(
   return null;
 }
 
-function observePhase0Refund(
-  dependencies: AccountWebhookDependencies,
-  event: Stripe.Event,
-  stripeAccountId: string,
-  payload: NormalizedAccountWebhookPayload,
-): Phase0Correlation | undefined {
-  if (dependencies.phase0Observer === undefined || !("refund" in payload)) {
-    return undefined;
-  }
-  const refund = payload.refund;
-  const paymentKey = refund.payment_intent_id ?? refund.charge_id;
-  if (paymentKey === null) {
-    return undefined;
-  }
-  return dependencies.phase0Observer.observe({
-    eventId: event.id,
-    refundId: refund.refund_id,
-    accountId: stripeAccountId,
-    environment: payload.environment,
-    paymentKey,
-    amountMinor: refund.amount_minor,
-    currency: refund.currency,
-    requestNonce: refund.metadata_request_id,
-    proof: refund.metadata_proof,
-    eventIdempotencyKey: payload.event_idempotency_key,
-  });
-}
-
 export async function receiveAccountWebhook(
   request: Request,
   endpoint: AccountWebhookRouteEnvironment,
@@ -391,18 +359,11 @@ export async function receiveAccountWebhook(
   try {
     const existing = await dependencies.persistence.findExisting(dbEndpoint, event.id, accountId);
     if (existing !== null && normalized.payload.event_type !== "account.application.deauthorized") {
-      const phase0Correlation = observePhase0Refund(
-        dependencies,
-        event,
-        accountId,
-        normalized.payload,
-      );
       return jsonResponse({
         received: true,
         event_id: event.id,
         receipt_id: existing.receiptId,
         duplicate: true,
-        ...(phase0Correlation === undefined ? {} : { phase0_correlation: phase0Correlation }),
       });
     }
     const resolved = await dependencies.persistence.resolve({
@@ -424,19 +385,12 @@ export async function receiveAccountWebhook(
       objectId: normalized.objectId,
       receivedAt: dependencies.now(),
     });
-    const phase0Correlation = observePhase0Refund(
-      dependencies,
-      event,
-      accountId,
-      normalized.payload,
-    );
     return jsonResponse({
       received: true,
       event_id: event.id,
       receipt_id: inserted.receipt.id,
       duplicate: !inserted.inserted,
       queued_by: "durable_receipt_recovery",
-      ...(phase0Correlation === undefined ? {} : { phase0_correlation: phase0Correlation }),
     });
   } catch {
     return apiError("WEBHOOK_PERSISTENCE_UNAVAILABLE", "Webhook could not be persisted", 503);

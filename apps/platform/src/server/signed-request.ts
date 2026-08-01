@@ -6,10 +6,6 @@ import {
   signedEnvelopeSchema,
   type SignedEnvelope,
 } from "@refunddesk/contracts";
-import {
-  SignedExtensionRequestError,
-  verifySignedExtensionRequest as verifyStripeSignedExtensionRequest,
-} from "@refunddesk/stripe-adapter";
 import { z } from "zod";
 
 const VERIFIER_TIMEOUT_MS = 5_000;
@@ -46,22 +42,6 @@ export class SignedRequestVerifierUnavailableError extends Error {
   constructor() {
     super("The signed-request verifier is unavailable");
     this.name = "SignedRequestVerifierUnavailableError";
-  }
-}
-
-export function verifySignedExtensionRequest(
-  rawText: string,
-  signature: string | null,
-  signingSecret: string,
-): VerifiedSignedRequest {
-  try {
-    const verified = verifyStripeSignedExtensionRequest(rawText, signature, signingSecret);
-    return { ...verified, approvalAttestationId: null };
-  } catch (error) {
-    if (error instanceof SignedExtensionRequestError) {
-      throw new SignedRequestError(error.code, error.message);
-    }
-    throw error;
   }
 }
 

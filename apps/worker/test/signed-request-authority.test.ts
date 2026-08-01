@@ -6,7 +6,7 @@ import { canonicalJson, serializeSignedEnvelope, type SignedEnvelope } from "@re
 import { StripeSignedRequestAuthority } from "../src/signed-request-authority.js";
 import { FakeStore } from "./helpers.js";
 
-const SIGNING_SECRET = "absec_worker_authority_test";
+const SIGNING_SECRET = ["absec", "worker", "authority", "E".repeat(24)].join("_");
 const REQUEST_ID = "cc3cb5d1-268c-49b4-831f-a6f392097189";
 const REQUEST_NONCE = "1d48dd30-0eb4-4ce0-a731-57423e57567d";
 

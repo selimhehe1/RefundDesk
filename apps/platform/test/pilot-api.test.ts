@@ -9,6 +9,10 @@ import {
   type StripeRole,
 } from "@refunddesk/contracts";
 import type { AuditEvent } from "@refunddesk/db";
+import {
+  SignedExtensionRequestError,
+  verifySignedExtensionRequest,
+} from "@refunddesk/stripe-adapter";
 
 import { OPTIONS as contextSyncOptions } from "../app/api/v1/context/sync/route.js";
 import {
@@ -41,10 +45,7 @@ import type {
 } from "../src/server/pilot-ports.js";
 import { PILOT_ROUTE_SPECS, type PilotRouteSpec } from "../src/server/pilot-routes.js";
 import { PilotService } from "../src/server/pilot-service.js";
-import {
-  verifySignedExtensionRequest,
-  type SignedRequestVerifier,
-} from "../src/server/signed-request.js";
+import { SignedRequestError, type SignedRequestVerifier } from "../src/server/signed-request.js";
 
 const SIGNING_SECRET = "absec_pilot_test";
 const APPROVAL_ATTESTATION_ID = "f874c90b-25b8-4628-90f7-9643cc206799";
@@ -388,7 +389,15 @@ describe("signed pilot API boundary", () => {
 
   const signedRequestVerifier: SignedRequestVerifier = {
     verify(rawText, signature) {
-      const verified = verifySignedExtensionRequest(rawText, signature, SIGNING_SECRET);
+      let verified;
+      try {
+        verified = verifySignedExtensionRequest(rawText, signature, SIGNING_SECRET);
+      } catch (error) {
+        if (error instanceof SignedExtensionRequestError) {
+          throw new SignedRequestError(error.code, error.message);
+        }
+        throw error;
+      }
       const command = JSON.parse(verified.envelope.command_json) as {
         readonly decision?: unknown;
       };

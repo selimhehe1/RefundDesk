@@ -2,8 +2,10 @@ import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
 
 import { serializeSignedEnvelope, type SignedEnvelope } from "@refunddesk/contracts";
-
-import { SignedRequestError, verifySignedExtensionRequest } from "../src/server/signed-request.js";
+import {
+  SignedExtensionRequestError,
+  verifySignedExtensionRequest,
+} from "@refunddesk/stripe-adapter";
 
 const signingSecret = "absec_synthetic";
 const envelope: SignedEnvelope = {
@@ -66,7 +68,7 @@ describe("verifySignedExtensionRequest", () => {
 
     expect(() =>
       verifySignedExtensionRequest(reordered, signatureFor(reordered), signingSecret),
-    ).toThrow(SignedRequestError);
+    ).toThrow(SignedExtensionRequestError);
   });
 
   it("rejects additional signed fields at the strict schema boundary", () => {

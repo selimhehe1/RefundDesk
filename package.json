@@ -24,7 +24,7 @@
     "test:integration": "pnpm -r --if-present run test:integration",
     "test:sandbox": "pnpm --filter @refunddesk/platform test:sandbox",
     "audit:prod": "pnpm audit --prod --audit-level high",
-    "secrets:check": "node scripts/check-secrets.mjs",
+    "secrets:check": "node --test scripts/check-secrets.test.mjs && node scripts/check-secrets.mjs",
     "db:access:check": "node scripts/database-command.mjs check-access",
     "db:generate": "node scripts/database-command.mjs generate",
     "db:local:roles": "node scripts/database-command.mjs bootstrap-local-roles",

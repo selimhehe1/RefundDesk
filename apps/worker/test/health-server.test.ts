@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { startWorkerHealthServer, type RunningWorkerHealthServer } from "../src/health-server.js";
 import type { WorkerReadinessProbe } from "../src/readiness.js";
-import type { WorkerSignedRequestAuthority } from "../src/signed-request-authority.js";
+import {
+  WorkerSignedRequestAuthorityError,
+  type WorkerSignedRequestAuthority,
+} from "../src/signed-request-authority.js";
 
 interface CapturedResponse {
   readonly response: Response;
@@ -165,8 +168,11 @@ describe("worker health server", () => {
   it("keeps signed verification private, POST-only and body-bounded", async () => {
     let calls = 0;
     const authority: WorkerSignedRequestAuthority = {
-      verifyAndAttest: () => {
+      verifyAndAttest: (_rawText, signature) => {
         calls += 1;
+        if (signature === "invalid") {
+          return Promise.reject(new WorkerSignedRequestAuthorityError(401, "signature_invalid"));
+        }
         return Promise.resolve({
           approvalAttestationId: null,
           canonicalRequestHash: "0".repeat(64),
@@ -193,7 +199,21 @@ describe("worker health server", () => {
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      expect(unauthorized.response.status).toBe(401);
+      expect(unauthorized.response.status).toBe(403);
+      expect(unauthorized.body).toBe('{"status":"unauthorized"}');
+
+      const invalidBearer = await request(server, "/internal/v1/signed-requests/verify", {
+        body: "{}",
+        headers: {
+          Authorization: "Bearer invalid-service-token",
+          "Content-Type": "application/json",
+          "Stripe-Signature": "synthetic",
+        },
+        method: "POST",
+      });
+      expect(invalidBearer.response.status).toBe(403);
+      expect(invalidBearer.body).toBe('{"status":"unauthorized"}');
+      expect(calls).toBe(0);
 
       const wrongMethod = await request(server, "/internal/v1/signed-requests/verify", {
         headers: { Authorization: `Bearer ${token}` },
@@ -212,6 +232,18 @@ describe("worker health server", () => {
       });
       expect(oversized.response.status).toBe(413);
 
+      const invalidStripeSignature = await request(server, "/internal/v1/signed-requests/verify", {
+        body: "{}",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Stripe-Signature": "invalid",
+        },
+        method: "POST",
+      });
+      expect(invalidStripeSignature.response.status).toBe(401);
+      expect(invalidStripeSignature.body).toBe('{"status":"unauthorized"}');
+
       const verified = await request(server, "/internal/v1/signed-requests/verify", {
         body: "{}",
         headers: {
@@ -226,7 +258,7 @@ describe("worker health server", () => {
         approval_attestation_id: null,
         canonical_request_hash: "0".repeat(64),
       });
-      expect(calls).toBe(1);
+      expect(calls).toBe(2);
     } finally {
       await server.close();
     }

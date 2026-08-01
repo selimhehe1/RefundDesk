@@ -110,7 +110,7 @@ async function handleSignedRequestVerification(
   }
   if (!authorizationMatches(request.headers.authorization, authorizationToken)) {
     request.resume();
-    sendJson(response, 401, RESPONSE_UNAUTHORIZED);
+    sendJson(response, 403, RESPONSE_UNAUTHORIZED);
     return;
   }
   if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/json") {

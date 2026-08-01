@@ -219,27 +219,21 @@ describe("durable direct-account Stripe webhook ingress", () => {
     expect(JSON.stringify(persistence.inserts[0])).not.toContain('"object":"event"');
   });
 
-  it("feeds a verified and durably persisted Refund into the development Phase-0 observer", async () => {
+  it("returns only the durable receipt acknowledgement for a verified Refund", async () => {
     const persistence = new FakePersistence();
-    const observe = vi.fn(() => "internal" as const);
-    const response = await receiveAccountWebhook(signedRequest(refundEvent()), "test", {
-      ...dependencies(persistence),
-      phase0Observer: { observe },
-    });
+    const response = await receiveAccountWebhook(
+      signedRequest(refundEvent()),
+      "test",
+      dependencies(persistence),
+    );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ phase0_correlation: "internal" });
-    expect(observe).toHaveBeenCalledWith({
-      eventId: "evt_account_refund",
-      refundId: "re_account",
-      accountId: TEST_ACCOUNT_ID,
-      environment: "test",
-      paymentKey: "pi_account",
-      amountMinor: "500",
-      currency: "eur",
-      requestNonce: "cc3cb5d1-268c-49b4-831f-a6f392097189",
-      proof: "v1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      eventIdempotencyKey: null,
+    expect(await response.json()).toEqual({
+      received: true,
+      event_id: "evt_account_refund",
+      receipt_id: RECEIPT_ID,
+      duplicate: false,
+      queued_by: "durable_receipt_recovery",
     });
     expect(persistence.inserts).toHaveLength(1);
   });

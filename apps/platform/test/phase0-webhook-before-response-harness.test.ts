@@ -112,10 +112,14 @@ interface InsertCall {
 }
 
 class HarnessWebhookPersistence implements AccountWebhookPersistence {
+  readonly correlations: Array<ReturnType<Phase0Store["observe"]>> = [];
   readonly inserts: InsertCall[] = [];
   private readonly receipts = new Map<string, string>();
 
-  constructor(private readonly trace: string[]) {}
+  constructor(
+    private readonly trace: string[],
+    private readonly store: Phase0Store,
+  ) {}
 
   findExisting(
     endpoint: AccountWebhookEndpoint,
@@ -150,6 +154,27 @@ class HarnessWebhookPersistence implements AccountWebhookPersistence {
       payload: input.payload,
     });
     this.trace.push(`webhook_persisted:${input.stripeEventId}`);
+    if ("refund" in input.payload) {
+      const refund = input.payload.refund;
+      const paymentKey = refund.payment_intent_id ?? refund.charge_id;
+      if (paymentKey !== null) {
+        this.correlations.push(
+          this.store.observe({
+            eventId: input.stripeEventId,
+            refundId: refund.refund_id,
+            accountId: input.stripeAccountId,
+            environment: input.payload.environment,
+            paymentKey,
+            amountMinor: refund.amount_minor,
+            currency: refund.currency,
+            requestNonce: refund.metadata_request_id,
+            proof: refund.metadata_proof,
+            eventIdempotencyKey: input.payload.event_idempotency_key,
+          }),
+        );
+        this.trace.push(`webhook_observed:${input.stripeEventId}`);
+      }
+    }
     return Promise.resolve({
       inserted: existingReceiptId === undefined,
       receipt: { id: receiptId } as WebhookReceiptInsertResult["receipt"],
@@ -223,9 +248,7 @@ function signedWebhookRequest(event: Readonly<Record<string, unknown>>): Request
 
 async function deliverWebhook(input: {
   readonly event: Readonly<Record<string, unknown>>;
-  readonly store: Phase0Store;
   readonly persistence: HarnessWebhookPersistence;
-  readonly trace: string[];
 }): Promise<Readonly<Record<string, unknown>>> {
   const dependencies: AccountWebhookDependencies = {
     expectedApplicationId: "ca_refunddesk",
@@ -236,12 +259,6 @@ async function deliverWebhook(input: {
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300, undefined, EVENT_CREATED),
     persistence: input.persistence,
     now: () => RECEIVED_AT,
-    phase0Observer: {
-      observe: (refund) => {
-        input.trace.push(`webhook_observed:${refund.eventId}`);
-        return input.store.observe(refund);
-      },
-    },
   };
   const response = await receiveAccountWebhook(
     signedWebhookRequest(input.event),
@@ -257,7 +274,7 @@ describe("P0-WEBHOOK-005 deterministic webhook-before-response harness", () => {
     const trace: string[] = [];
     const store = new Phase0Store();
     const stripe = new DeferredRefundGateway(trace);
-    const persistence = new HarnessWebhookPersistence(trace);
+    const persistence = new HarnessWebhookPersistence(trace, store);
     const execution = executePhase0Probe(probeInput(), { stripe, store, proofKey: PROOF_KEY });
     const createInput = await stripe.waitForCreateCall();
 
@@ -266,15 +283,14 @@ describe("P0-WEBHOOK-005 deterministic webhook-before-response harness", () => {
 
     const webhookResult = await deliverWebhook({
       event: refundEvent(createInput, "evt_Phase0RaceBeforeResponse", FIRST_REFUND_ID, null),
-      store,
       persistence,
-      trace,
     });
 
     expect(webhookResult).toMatchObject({
       received: true,
-      phase0_correlation: "pending_correlation",
     });
+    expect(webhookResult).not.toHaveProperty("phase0_correlation");
+    expect(persistence.correlations).toEqual(["pending_correlation"]);
     expect(store.report(ACCOUNT_ID, "test").evidence.map((item) => item.correlation)).toEqual([
       "pending_correlation",
     ]);
@@ -315,7 +331,7 @@ describe("P0-WEBHOOK-005 deterministic webhook-before-response harness", () => {
     const trace: string[] = [];
     const store = new Phase0Store();
     const stripe = new DeferredRefundGateway(trace);
-    const persistence = new HarnessWebhookPersistence(trace);
+    const persistence = new HarnessWebhookPersistence(trace, store);
     const execution = executePhase0Probe(probeInput(), { stripe, store, proofKey: PROOF_KEY });
     const createInput = await stripe.waitForCreateCall();
 
@@ -326,15 +342,14 @@ describe("P0-WEBHOOK-005 deterministic webhook-before-response harness", () => {
         FIRST_REFUND_ID,
         createInput.idempotencyKey,
       ),
-      store,
       persistence,
-      trace,
     });
 
     expect(webhookResult).toMatchObject({
       received: true,
-      phase0_correlation: "internal",
     });
+    expect(webhookResult).not.toHaveProperty("phase0_correlation");
+    expect(persistence.correlations).toEqual(["internal"]);
     expect(store.report(ACCOUNT_ID, "test").evidence.map((item) => item.correlation)).toEqual([
       "internal",
     ]);
@@ -347,15 +362,14 @@ describe("P0-WEBHOOK-005 deterministic webhook-before-response harness", () => {
 
     const copiedProofResult = await deliverWebhook({
       event: refundEvent(createInput, "evt_Phase0RaceCopiedProof", SECOND_REFUND_ID, null),
-      store,
       persistence,
-      trace,
     });
 
     expect(copiedProofResult).toMatchObject({
       received: true,
-      phase0_correlation: "proof_replay",
     });
+    expect(copiedProofResult).not.toHaveProperty("phase0_correlation");
+    expect(persistence.correlations).toEqual(["internal", "proof_replay"]);
     expect(store.bindApiResponse(ACCOUNT_ID, "test", REQUEST_NONCE, FIRST_REFUND_ID)).toBe(
       "internal",
     );
