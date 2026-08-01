@@ -1078,7 +1078,24 @@ async function checkQueueAccess() {
     await verifyLogin(client, queuePrincipal, ["refunddesk_queue"]);
     await verifyNoDirectRuntimeAuthority(client);
     const privileges = await client.query(
-      `SELECT
+      `WITH rate_limit_routine AS (
+         SELECT routine.oid
+         FROM pg_catalog.pg_proc AS routine
+         INNER JOIN pg_catalog.pg_namespace AS routine_namespace
+           ON routine_namespace.oid = routine.pronamespace
+         INNER JOIN pg_catalog.pg_type AS environment_type
+           ON environment_type.oid = routine.proargtypes[1]
+         INNER JOIN pg_catalog.pg_namespace AS environment_namespace
+           ON environment_namespace.oid = environment_type.typnamespace
+         WHERE routine_namespace.nspname = 'public'
+           AND routine.proname = 'refunddesk_consume_signed_request_rate_limit'
+           AND routine.pronargs = 3
+           AND routine.proargtypes[0] = 'pg_catalog.varchar'::pg_catalog.regtype
+           AND environment_namespace.nspname = 'public'
+           AND environment_type.typname = 'stripe_environment'
+           AND routine.proargtypes[2] = 'pg_catalog.varchar'::pg_catalog.regtype
+       )
+       SELECT
          has_schema_privilege(current_user, 'pgboss', 'USAGE') AS schema_usage,
          has_schema_privilege(current_user, 'pgboss', 'CREATE') AS schema_create,
          has_schema_privilege(current_user, 'public', 'USAGE') AS public_usage,
@@ -1124,10 +1141,16 @@ async function checkQueueAccess() {
            'pgboss.create_queue(text,jsonb)',
            'EXECUTE'
          ) AS create_queue_execute,
-         has_function_privilege(
-           current_user,
-           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
-           'EXECUTE'
+         COALESCE(
+           (
+             SELECT has_function_privilege(
+               current_user,
+               rate_limit_routine.oid,
+               'EXECUTE'
+             )
+             FROM rate_limit_routine
+           ),
+           false
          ) AS rate_limit_execute`,
     );
     const value = privileges.rows[0];

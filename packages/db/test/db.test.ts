@@ -437,6 +437,14 @@ describe("migration hardening", () => {
     expect(runtimeRoles).not.toMatch(/GRANT [^;]+ ON signed_request_rate_limit_buckets\s+TO /u);
     expect(accessCheck).toContain("no_rate_limit_table_access");
     expect(accessCheck).toContain("rate_limit_execute");
+    const queueAccessCheckStart = accessCheck.indexOf("async function checkQueueAccess()");
+    expect(queueAccessCheckStart).toBeGreaterThanOrEqual(0);
+    const queueAccessCheck = accessCheck.slice(queueAccessCheckStart);
+    expect(queueAccessCheck).toContain("WITH rate_limit_routine AS (");
+    expect(queueAccessCheck).toContain("rate_limit_routine.oid");
+    expect(queueAccessCheck).not.toContain(
+      "'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)'",
+    );
   });
 
   it("adds account-scoped webhook endpoints with account-global Event deduplication", async () => {
