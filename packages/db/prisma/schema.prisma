@@ -536,6 +536,15 @@ model ReconciliationCheckpoint {
   @@map("reconciliation_checkpoints")
 }
 
+model SignedRequestRateLimitBucket {
+  scopeKey                 Bytes    @id @map("scope_key") @db.ByteA
+  theoreticalArrivalAt     DateTime @map("theoretical_arrival_at") @db.Timestamptz(6)
+  lastSeenAt               DateTime @map("last_seen_at") @db.Timestamptz(6)
+
+  @@index([lastSeenAt], map: "signed_request_rate_limit_buckets_last_seen_idx")
+  @@map("signed_request_rate_limit_buckets")
+}
+
 model PurgeCertificate {
   id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantPseudonym  String   @unique(map: "purge_certificates_tenant_pseudonym_key") @map("tenant_pseudonym") @db.VarChar(64)

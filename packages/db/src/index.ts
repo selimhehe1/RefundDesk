@@ -1,6 +1,7 @@
 export * from "./client.js";
 export * from "./connected-webhook.js";
 export * from "./installations.js";
+export * from "./rate-limits.js";
 export * from "./refund-candidate-policy.js";
 export * from "./tenant-repositories.js";
 export * from "./tenant-transaction.js";

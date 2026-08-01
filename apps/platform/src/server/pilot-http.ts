@@ -10,7 +10,6 @@ import {
 
 import { apiError, jsonResponse } from "./http";
 import {
-  sandboxSignedRequestRateLimiter,
   type SignedRequestRateLimiter,
   type SignedRequestRateLimitScope,
 } from "./mutation-rate-limit";
@@ -31,7 +30,7 @@ export type PilotOperationalSignal = "signed_request_rate_limiter_unavailable";
 
 export interface PilotHttpDependencies {
   readonly emitOperationalSignal: (signal: PilotOperationalSignal) => void;
-  readonly signedRequestRateLimiter?: SignedRequestRateLimiter;
+  readonly signedRequestRateLimiter: SignedRequestRateLimiter;
   readonly service: PilotService;
   readonly signedRequestVerifier: SignedRequestVerifier;
 }
@@ -55,14 +54,14 @@ function retryableCapacityResponse(
   return response;
 }
 
-function signedRequestCapacityResponse(
+async function signedRequestCapacityResponse(
   limiter: SignedRequestRateLimiter,
   scope: SignedRequestRateLimitScope,
   requestId: ReturnType<typeof randomUUID>,
   emitOperationalSignal: PilotHttpDependencies["emitOperationalSignal"],
-): Response | null {
+): Promise<Response | null> {
   try {
-    const decision = limiter.consume(scope);
+    const decision = await limiter.consume(scope);
     if (decision.allowed === true && decision.retryAfterSeconds === undefined) {
       return null;
     }
@@ -222,8 +221,8 @@ export async function handlePilotRoute(
       reject("LIVE_MODE_DISABLED", 403, "RefundDesk pilot operations are disabled in live mode.");
     }
 
-    const capacityResponse = signedRequestCapacityResponse(
-      dependencies.signedRequestRateLimiter ?? sandboxSignedRequestRateLimiter(),
+    const capacityResponse = await signedRequestCapacityResponse(
+      dependencies.signedRequestRateLimiter,
       {
         accountId: envelope.account_id,
         environment: envelope.is_sandbox ? "sandbox" : "test",

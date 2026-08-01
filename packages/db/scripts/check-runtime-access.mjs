@@ -859,17 +859,34 @@ async function verifyWebDataCapabilities(client) {
            'refund_correlation_candidates',
            'SELECT'
          )
-       ) AS candidate_read,
-       NOT EXISTS (
-         SELECT 1
-         FROM worker_owned
-         WHERE has_table_privilege(current_user, relation_name, 'INSERT')
-            OR has_any_column_privilege(current_user, relation_name, 'INSERT')
-            OR has_table_privilege(current_user, relation_name, 'UPDATE')
-            OR has_any_column_privilege(current_user, relation_name, 'UPDATE')
-            OR has_table_privilege(current_user, relation_name, 'DELETE')
-            OR has_table_privilege(current_user, relation_name, 'TRUNCATE')
-       ) AS no_worker_owned_writes`,
+        ) AS candidate_read,
+        NOT (
+          has_table_privilege(
+            current_user,
+            'signed_request_rate_limit_buckets',
+            'SELECT,INSERT,UPDATE,DELETE,TRUNCATE'
+          )
+          OR has_any_column_privilege(
+            current_user,
+            'signed_request_rate_limit_buckets',
+            'SELECT,INSERT,UPDATE'
+          )
+        ) AS no_rate_limit_table_access,
+        has_function_privilege(
+          current_user,
+          'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+          'EXECUTE'
+        ) AS rate_limit_execute,
+        NOT EXISTS (
+          SELECT 1
+          FROM worker_owned
+          WHERE has_table_privilege(current_user, relation_name, 'INSERT')
+             OR has_any_column_privilege(current_user, relation_name, 'INSERT')
+             OR has_table_privilege(current_user, relation_name, 'UPDATE')
+             OR has_any_column_privilege(current_user, relation_name, 'UPDATE')
+             OR has_table_privilege(current_user, relation_name, 'DELETE')
+             OR has_table_privilege(current_user, relation_name, 'TRUNCATE')
+        ) AS no_worker_owned_writes`,
   );
   const capabilities = result.rows[0];
   if (
@@ -883,6 +900,8 @@ async function verifyWebDataCapabilities(client) {
     capabilities.execution_read !== true ||
     capabilities.attempt_read !== true ||
     capabilities.candidate_read !== false ||
+    capabilities.no_rate_limit_table_access !== true ||
+    capabilities.rate_limit_execute !== true ||
     capabilities.no_worker_owned_writes !== true
   ) {
     throw new Error("DATABASE_WEB_DATA_CAPABILITY_CHECK_FAILED");
@@ -925,7 +944,24 @@ async function verifyWorkerDataCapabilities(client) {
          OR has_any_column_privilege(current_user, 'approval_attestations', 'UPDATE')
          OR has_table_privilege(current_user, 'approval_attestations', 'DELETE')
          OR has_table_privilege(current_user, 'approval_attestations', 'TRUNCATE')
-         AS attestation_mutation`,
+         AS attestation_mutation,
+       NOT (
+         has_table_privilege(
+           current_user,
+           'signed_request_rate_limit_buckets',
+           'SELECT,INSERT,UPDATE,DELETE,TRUNCATE'
+         )
+         OR has_any_column_privilege(
+           current_user,
+           'signed_request_rate_limit_buckets',
+           'SELECT,INSERT,UPDATE'
+         )
+       ) AS no_rate_limit_table_access,
+       has_function_privilege(
+         current_user,
+         'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+         'EXECUTE'
+       ) AS rate_limit_execute`,
   );
   const capabilities = result.rows[0];
   if (
@@ -936,7 +972,9 @@ async function verifyWorkerDataCapabilities(client) {
     capabilities.decision_insert !== false ||
     capabilities.attestation_select !== true ||
     capabilities.attestation_insert !== true ||
-    capabilities.attestation_mutation !== false
+    capabilities.attestation_mutation !== false ||
+    capabilities.no_rate_limit_table_access !== true ||
+    capabilities.rate_limit_execute !== false
   ) {
     throw new Error("DATABASE_WORKER_DATA_CAPABILITY_CHECK_FAILED");
   }
@@ -1085,7 +1123,12 @@ async function checkQueueAccess() {
            current_user,
            'pgboss.create_queue(text,jsonb)',
            'EXECUTE'
-         ) AS create_queue_execute`,
+         ) AS create_queue_execute,
+         has_function_privilege(
+           current_user,
+           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+           'EXECUTE'
+         ) AS rate_limit_execute`,
     );
     const value = privileges.rows[0];
     if (
@@ -1097,7 +1140,8 @@ async function checkQueueAccess() {
       value.public_sequence_access !== false ||
       value.job_dml !== true ||
       value.job_excess_authority !== false ||
-      value.create_queue_execute !== true
+      value.create_queue_execute !== true ||
+      value.rate_limit_execute !== false
     ) {
       throw new Error("DATABASE_PGBOSS_PRIVILEGE_CHECK_FAILED");
     }

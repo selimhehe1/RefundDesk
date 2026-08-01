@@ -1268,6 +1268,160 @@ databaseDescribe("PostgreSQL security invariants", () => {
     expect(tenantBEvents.rowCount).toBe(1);
   });
 
+  it("exposes only the durable signed-request capacity function to the web runtime", async () => {
+    await client.query("RESET ROLE");
+    const privileges = await client.query<{
+      maintenance_execute: boolean;
+      public_execute: boolean;
+      queue_execute: boolean;
+      web_direct_table_access: boolean;
+      web_execute: boolean;
+      worker_direct_table_access: boolean;
+      worker_execute: boolean;
+    }>(
+      `SELECT
+         has_function_privilege(
+           'refunddesk_web_login',
+           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+           'EXECUTE'
+         ) AS web_execute,
+         has_function_privilege(
+           'refunddesk_worker_login',
+           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+           'EXECUTE'
+         ) AS worker_execute,
+         has_function_privilege(
+           'refunddesk_queue_login',
+           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+           'EXECUTE'
+         ) AS queue_execute,
+         has_function_privilege(
+           'refunddesk_maintenance_login',
+           'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)',
+           'EXECUTE'
+         ) AS maintenance_execute,
+         EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_proc AS routine
+           CROSS JOIN LATERAL pg_catalog.aclexplode(
+             COALESCE(routine.proacl, pg_catalog.acldefault('f', routine.proowner))
+           ) AS privilege
+           WHERE routine.oid =
+             'public.refunddesk_consume_signed_request_rate_limit(character varying,public.stripe_environment,character varying)'::REGPROCEDURE
+             AND privilege.grantee = 0
+             AND privilege.privilege_type = 'EXECUTE'
+         ) AS public_execute,
+         has_table_privilege(
+           'refunddesk_web_login',
+           'signed_request_rate_limit_buckets',
+           'SELECT,INSERT,UPDATE,DELETE,TRUNCATE'
+         ) AS web_direct_table_access,
+         has_table_privilege(
+           'refunddesk_worker_login',
+           'signed_request_rate_limit_buckets',
+           'SELECT,INSERT,UPDATE,DELETE,TRUNCATE'
+         ) AS worker_direct_table_access`,
+    );
+    expect(privileges.rows[0]).toEqual({
+      maintenance_execute: false,
+      public_execute: false,
+      queue_execute: false,
+      web_direct_table_access: false,
+      web_execute: true,
+      worker_direct_table_access: false,
+      worker_execute: false,
+    });
+
+    await client.query("SET ROLE refunddesk_runtime");
+    const consumeBurst = (attempts: number, accountId: string, requestClass: "mutation" | "read") =>
+      client.query<{ allowed: boolean; retry_after_seconds: number | null }>(
+        `SELECT decision.allowed, decision.retry_after_seconds
+         FROM generate_series(1, $1::INTEGER) AS attempt(sequence)
+         CROSS JOIN LATERAL refunddesk_consume_signed_request_rate_limit(
+           ($2::TEXT || pg_catalog.repeat('', attempt.sequence))::VARCHAR,
+           'test',
+           $3::VARCHAR
+         ) AS decision`,
+        [attempts, accountId, requestClass],
+      );
+    const mutationDecisions = await consumeBurst(31, "acct_SecurityLimiterMutation", "mutation");
+    const readDecisions = await consumeBurst(61, "acct_SecurityLimiterRead", "read");
+    for (const [decisions, capacity] of [
+      [mutationDecisions.rows, 30],
+      [readDecisions.rows, 60],
+    ] as const) {
+      expect(decisions.filter((decision) => decision.allowed)).toHaveLength(capacity);
+      const denied = decisions.filter((decision) => !decision.allowed);
+      expect(denied).toHaveLength(1);
+      expect(denied[0]?.retry_after_seconds).toBeGreaterThanOrEqual(1);
+    }
+
+    await client.query("RESET ROLE");
+    const refillBoundary = await client.query(
+      `WITH observed AS (
+         SELECT pg_catalog.clock_timestamp() AS at
+       ), scope(account_id, request_class, tolerated_debt) AS (
+         VALUES
+           ('acct_SecurityLimiterMutation', 'mutation', INTERVAL '58 seconds'),
+           ('acct_SecurityLimiterRead', 'read', INTERVAL '59 seconds')
+       )
+       UPDATE signed_request_rate_limit_buckets AS bucket
+       SET
+         theoretical_arrival_at = observed.at + scope.tolerated_debt,
+         last_seen_at = observed.at
+       FROM observed, scope
+       WHERE bucket.scope_key = public.digest(
+         pg_catalog.convert_to(
+           scope.account_id || ':test:' || scope.request_class,
+           'UTF8'
+         ),
+         'sha256'
+       )`,
+    );
+    expect(refillBoundary.rowCount).toBe(2);
+
+    await client.query("SET ROLE refunddesk_runtime");
+    await expect(
+      client.query(
+        `SELECT allowed, retry_after_seconds
+         FROM refunddesk_consume_signed_request_rate_limit(
+           'acct_SecurityLimiterMutation',
+           'test',
+           'mutation'
+         )`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ allowed: true, retry_after_seconds: null }] });
+    await expect(
+      client.query(
+        `SELECT allowed, retry_after_seconds
+         FROM refunddesk_consume_signed_request_rate_limit(
+           'acct_SecurityLimiterRead',
+           'test',
+           'read'
+         )`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ allowed: true, retry_after_seconds: null }] });
+
+    await client.query("SAVEPOINT before_invalid_rate_limit_scope");
+    await expect(
+      client.query(
+        `SELECT allowed
+         FROM refunddesk_consume_signed_request_rate_limit(
+           'invalid_account',
+           'test',
+           'mutation'
+         )`,
+      ),
+    ).rejects.toMatchObject({ code: "22023" });
+    await client.query("ROLLBACK TO SAVEPOINT before_invalid_rate_limit_scope");
+
+    await client.query("SAVEPOINT before_rate_limit_table_read");
+    await expect(
+      client.query("SELECT scope_key FROM signed_request_rate_limit_buckets"),
+    ).rejects.toMatchObject({ code: "42501" });
+    await client.query("ROLLBACK TO SAVEPOINT before_rate_limit_table_read");
+  });
+
   it("selects due tenants with explicit blockers and keeps eligible tenants first", async () => {
     const deauthorizedAt = new Date("2020-03-01T12:00:00.000Z");
     const pendingDeleteAt = new Date(deauthorizedAt.getTime() + 30 * 24 * 60 * 60 * 1_000);
@@ -2047,5 +2201,94 @@ databaseDescribe("PostgreSQL security invariants", () => {
       [new Date(deauthorizedAt.getTime() + 1_000)],
     );
     expect(current.rows[0]).toMatchObject({ applied: true, status: "active" });
+  });
+
+  it("bounds limiter cardinality and replaces only an inactive debt-free scope", async () => {
+    await client.query("RESET ROLE");
+    await client.query("TRUNCATE signed_request_rate_limit_buckets");
+    const seeded = await client.query<{ scope_key: Buffer }>(
+      `WITH observed AS (
+         SELECT pg_catalog.clock_timestamp() AS at
+       )
+       INSERT INTO signed_request_rate_limit_buckets (
+         scope_key,
+         theoretical_arrival_at,
+         last_seen_at
+       )
+       SELECT
+         public.digest(
+           pg_catalog.convert_to('rate-limit-fixture:' || scope.ordinality::TEXT, 'UTF8'),
+           'sha256'
+         ),
+         observed.at + INTERVAL '5 minutes',
+         observed.at
+       FROM generate_series(1, 256) AS scope(ordinality)
+       CROSS JOIN observed
+       RETURNING scope_key`,
+    );
+    expect(seeded.rowCount).toBe(256);
+    const staleScopeKey = seeded.rows[0]?.scope_key;
+    if (staleScopeKey === undefined) {
+      throw new Error("Rate-limit cardinality fixture was not created");
+    }
+
+    await client.query("SET ROLE refunddesk_runtime");
+    await client.query("SAVEPOINT before_rate_limit_capacity_failure");
+    await expect(
+      client.query(
+        `SELECT allowed
+         FROM refunddesk_consume_signed_request_rate_limit(
+           'acct_CardinalityAdmission',
+           'test',
+           'mutation'
+         )`,
+      ),
+    ).rejects.toMatchObject({ code: "54000" });
+    await client.query("ROLLBACK TO SAVEPOINT before_rate_limit_capacity_failure");
+
+    await client.query("RESET ROLE");
+    await client.query(
+      `UPDATE signed_request_rate_limit_buckets AS bucket
+       SET
+         theoretical_arrival_at = observed.at - INTERVAL '10 minutes',
+         last_seen_at = observed.at - INTERVAL '11 minutes'
+       FROM (SELECT pg_catalog.clock_timestamp() AS at) AS observed
+       WHERE bucket.scope_key = $1::BYTEA`,
+      [staleScopeKey],
+    );
+
+    await client.query("SET ROLE refunddesk_runtime");
+    const admitted = await client.query<{ allowed: boolean; retry_after_seconds: number | null }>(
+      `SELECT allowed, retry_after_seconds
+       FROM refunddesk_consume_signed_request_rate_limit(
+         'acct_CardinalityAdmission',
+         'test',
+         'mutation'
+       )`,
+    );
+    expect(admitted.rows).toEqual([{ allowed: true, retry_after_seconds: null }]);
+
+    await client.query("RESET ROLE");
+    const persisted = await client.query<{
+      admitted_count: string;
+      bucket_count: string;
+      stale_count: string;
+    }>(
+      `SELECT
+         COUNT(*)::TEXT AS bucket_count,
+         COUNT(*) FILTER (WHERE scope_key = $1::BYTEA)::TEXT AS stale_count,
+         COUNT(*) FILTER (
+           WHERE scope_key = public.digest(
+             pg_catalog.convert_to('acct_CardinalityAdmission:test:mutation', 'UTF8'),
+             'sha256'
+           )
+         )::TEXT AS admitted_count
+       FROM signed_request_rate_limit_buckets`,
+      [staleScopeKey],
+    );
+    expect(persisted.rows).toEqual([
+      { admitted_count: "1", bucket_count: "256", stale_count: "0" },
+    ]);
+    await client.query("SET ROLE refunddesk_runtime");
   });
 });

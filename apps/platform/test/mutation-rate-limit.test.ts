@@ -1,147 +1,62 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import {
-  BoundedSignedRequestRateLimiter,
-  RateLimiterUnavailableError,
-} from "../src/server/mutation-rate-limit.js";
+import type { PrismaClient } from "@refunddesk/db";
 
-const policies = {
-  mutation: {
-    capacity: 2,
-    refillTokensPerSecond: 0.5,
-  },
-  read: {
-    capacity: 1,
-    refillTokensPerSecond: 1,
-  },
-} as const;
+import { PostgresSignedRequestRateLimiter } from "../src/server/mutation-rate-limit.js";
 
-describe("bounded signed-request rate limiter", () => {
-  it("uses an injectable monotonic clock for burst, denial and refill", () => {
-    let now = 0;
-    const limiter = new BoundedSignedRequestRateLimiter({
-      idleTtlMilliseconds: 10_000,
-      maxScopes: 8,
-      monotonicNow: () => now,
-      policies,
-    });
-    const scope = {
-      accountId: "acct_A",
-      environment: "test",
-      requestClass: "mutation",
-    } as const;
-
-    expect(limiter.consume(scope)).toEqual({ allowed: true });
-    expect(limiter.consume(scope)).toEqual({ allowed: true });
-    expect(limiter.consume(scope)).toEqual({ allowed: false, retryAfterSeconds: 2 });
-
-    now = 1_000;
-    expect(limiter.consume(scope)).toEqual({ allowed: false, retryAfterSeconds: 1 });
-
-    now = 2_000;
-    expect(limiter.consume(scope)).toEqual({ allowed: true });
+function clientReturning(rows: readonly unknown[]): {
+  readonly calls: Array<{
+    readonly query: TemplateStringsArray;
+    readonly values: readonly unknown[];
+  }>;
+  readonly client: PrismaClient;
+  readonly queryRaw: ReturnType<typeof vi.fn>;
+} {
+  const calls: Array<{
+    readonly query: TemplateStringsArray;
+    readonly values: readonly unknown[];
+  }> = [];
+  const queryRaw = vi.fn((query: TemplateStringsArray, ...values: readonly unknown[]) => {
+    calls.push({ query, values });
+    return Promise.resolve(rows);
   });
+  return {
+    calls,
+    client: { $queryRaw: queryRaw } as unknown as PrismaClient,
+    queryRaw,
+  };
+}
 
-  it("isolates account, environment and read/mutation capacity", () => {
-    const limiter = new BoundedSignedRequestRateLimiter({
-      idleTtlMilliseconds: 10_000,
-      maxScopes: 8,
-      monotonicNow: () => 0,
-      policies,
-    });
-    const mutationTest = {
-      accountId: "acct_A",
-      environment: "test",
-      requestClass: "mutation",
-    } as const;
+describe("PostgreSQL signed-request rate limiter adapter", () => {
+  it("delegates the authenticated scope to the durable database function", async () => {
+    const { calls, client, queryRaw } = clientReturning([
+      { allowed: false, retry_after_seconds: 2 },
+    ]);
+    const limiter = new PostgresSignedRequestRateLimiter(client);
 
-    expect(limiter.consume(mutationTest)).toEqual({ allowed: true });
-    expect(limiter.consume(mutationTest)).toEqual({ allowed: true });
-    expect(limiter.consume(mutationTest)).toEqual({
-      allowed: false,
-      retryAfterSeconds: 2,
-    });
-    expect(limiter.consume({ ...mutationTest, accountId: "acct_B" })).toEqual({ allowed: true });
-    expect(limiter.consume({ ...mutationTest, environment: "sandbox" })).toEqual({ allowed: true });
-    expect(limiter.consume({ ...mutationTest, requestClass: "read" })).toEqual({ allowed: true });
-  });
-
-  it("bounds scope cardinality without evicting an active bucket", () => {
-    let now = 0;
-    const limiter = new BoundedSignedRequestRateLimiter({
-      idleTtlMilliseconds: 4_000,
-      maxScopes: 2,
-      monotonicNow: () => now,
-      policies,
-    });
-
-    expect(
+    await expect(
       limiter.consume({
-        accountId: "acct_A",
-        environment: "test",
+        accountId: "acct_DurableLimiter",
+        environment: "sandbox",
         requestClass: "mutation",
       }),
-    ).toEqual({ allowed: true });
-    expect(
-      limiter.consume({
-        accountId: "acct_B",
-        environment: "test",
-        requestClass: "mutation",
-      }),
-    ).toEqual({ allowed: true });
-    expect(() =>
-      limiter.consume({
-        accountId: "acct_C",
-        environment: "test",
-        requestClass: "mutation",
-      }),
-    ).toThrow(RateLimiterUnavailableError);
+    ).resolves.toEqual({ allowed: false, retryAfterSeconds: 2 });
 
-    now = 4_000;
-    expect(
-      limiter.consume({
-        accountId: "acct_C",
-        environment: "test",
-        requestClass: "mutation",
-      }),
-    ).toEqual({ allowed: true });
+    expect(queryRaw).toHaveBeenCalledOnce();
+    expect(calls[0]?.query.join("?")).toContain("refunddesk_consume_signed_request_rate_limit");
+    expect(calls[0]?.values).toEqual(["acct_DurableLimiter", "sandbox", "mutation"]);
   });
 
-  it("fails closed for a non-finite or backwards monotonic reading", () => {
-    let now = 10_000;
-    const limiter = new BoundedSignedRequestRateLimiter({
-      idleTtlMilliseconds: 10_000,
-      maxScopes: 8,
-      monotonicNow: () => now,
-      policies,
-    });
-    const scope = {
-      accountId: "acct_A",
-      environment: "test",
-      requestClass: "read",
-    } as const;
+  it("fails closed when PostgreSQL returns no decision", async () => {
+    const { client } = clientReturning([]);
+    const limiter = new PostgresSignedRequestRateLimiter(client);
 
-    expect(limiter.consume(scope)).toEqual({ allowed: true });
-    now = 9_999;
-    expect(() => limiter.consume(scope)).toThrow(RateLimiterUnavailableError);
-
-    const invalidClockLimiter = new BoundedSignedRequestRateLimiter({
-      idleTtlMilliseconds: 10_000,
-      maxScopes: 8,
-      monotonicNow: () => Number.NaN,
-      policies,
-    });
-    expect(() => invalidClockLimiter.consume(scope)).toThrow(RateLimiterUnavailableError);
-  });
-
-  it("rejects an eviction TTL that could reset a bucket faster than refill", () => {
-    expect(
-      () =>
-        new BoundedSignedRequestRateLimiter({
-          idleTtlMilliseconds: 3_999,
-          maxScopes: 8,
-          policies,
-        }),
-    ).toThrow("cannot be shorter than a complete bucket refill");
+    await expect(
+      limiter.consume({
+        accountId: "acct_DurableLimiter",
+        environment: "test",
+        requestClass: "read",
+      }),
+    ).rejects.toThrow("invalid row count");
   });
 });

@@ -25,7 +25,10 @@ import { createPilotAuditToken, verifyPilotAuditToken } from "../src/server/pilo
 import { TestAndSandboxAccessPolicy } from "../src/server/pilot-access-policy.js";
 import { PilotApiError } from "../src/server/pilot-errors.js";
 import { handlePilotRoute, type PilotHttpDependencies } from "../src/server/pilot-http.js";
-import type { SignedRequestRateLimiter } from "../src/server/mutation-rate-limit.js";
+import type {
+  SignedRequestRateLimiter,
+  SignedRequestRateLimitDecision,
+} from "../src/server/mutation-rate-limit.js";
 import type {
   PilotExternalAlert,
   PilotMutation,
@@ -383,7 +386,7 @@ describe("signed pilot API boundary", () => {
     service = new PilotService(repository, paymentReader, new TestAndSandboxAccessPolicy());
     emitOperationalSignal = vi.fn();
     signedRequestRateLimiter = {
-      consume: () => ({ allowed: true }),
+      consume: () => Promise.resolve({ allowed: true }),
     };
   });
 
@@ -438,7 +441,7 @@ describe("signed pilot API boundary", () => {
     });
     const consume = vi.fn(() => {
       calls.push("limit");
-      return { allowed: false, retryAfterSeconds: 7 };
+      return Promise.resolve({ allowed: false, retryAfterSeconds: 7 });
     });
 
     const response = await handlePilotRoute(
@@ -467,6 +470,39 @@ describe("signed pilot API boundary", () => {
     expect(repository.resolutionOptions).toHaveLength(0);
   });
 
+  it("awaits the limiter decision before dispatching or accessing the repository", async () => {
+    let allowRequest: (() => void) | undefined;
+    const pendingDecision = new Promise<Awaited<ReturnType<SignedRequestRateLimiter["consume"]>>>(
+      (resolve) => {
+        allowRequest = () => resolve({ allowed: true });
+      },
+    );
+    const consume = vi.fn(() => pendingDecision);
+    const dispatch = vi.spyOn(service, "dispatch");
+
+    const responsePromise = handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.settingsGet),
+      PILOT_ROUTE_SPECS.settingsGet,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    await vi.waitFor(() => expect(consume).toHaveBeenCalledOnce());
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(repository.resolutionOptions).toHaveLength(0);
+
+    allowRequest?.();
+    const response = await responsePromise;
+
+    expect(response.status).toBe(200);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(repository.resolutionOptions).toHaveLength(1);
+  });
+
   it("rate-limits signed reads independently from mutations", async () => {
     repository.context = {
       ...defaultContext(),
@@ -474,9 +510,9 @@ describe("signed pilot API boundary", () => {
     };
     const consume = vi.fn((scope: Parameters<SignedRequestRateLimiter["consume"]>[0]) => {
       if (scope.requestClass === "read") {
-        return { allowed: false, retryAfterSeconds: 3 };
+        return Promise.resolve({ allowed: false, retryAfterSeconds: 3 });
       }
-      return { allowed: true };
+      return Promise.resolve({ allowed: true });
     });
 
     const readResponse = await handlePilotRoute(
@@ -527,7 +563,7 @@ describe("signed pilot API boundary", () => {
   });
 
   it("does not create a limiter scope for an invalid signature", async () => {
-    const consume = vi.fn(() => ({ allowed: true }));
+    const consume = vi.fn(() => Promise.resolve({ allowed: true }));
     const response = await handlePilotRoute(
       signedRequest(PILOT_ROUTE_SPECS.contextSync, {
         signingSecret: "absec_wrong",
@@ -555,7 +591,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal: signal,
         signedRequestRateLimiter: {
           consume() {
-            throw new Error("secret internal limiter detail");
+            return Promise.reject(new Error("secret internal limiter detail"));
           },
         },
         service,
@@ -579,9 +615,36 @@ describe("signed pilot API boundary", () => {
     expect(repository.resolutionOptions).toHaveLength(0);
   });
 
+  it.each([
+    { allowed: true, retryAfterSeconds: 1 },
+    { allowed: false },
+    { allowed: false, retryAfterSeconds: 0 },
+    { allowed: false, retryAfterSeconds: Number.MAX_SAFE_INTEGER + 1 },
+  ])("fails closed for an inconsistent limiter decision %#", async (decision) => {
+    const signal = vi.fn();
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.settingsGet),
+      PILOT_ROUTE_SPECS.settingsGet,
+      {
+        emitOperationalSignal: signal,
+        signedRequestRateLimiter: {
+          consume: () => Promise.resolve(decision as SignedRequestRateLimitDecision),
+        },
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(await errorBody(response)).toMatchObject({ code: "RATE_LIMITER_UNAVAILABLE" });
+    expect(signal).toHaveBeenCalledWith("signed_request_rate_limiter_unavailable");
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
   it("rejects declared and streamed oversized bodies before verifier allocation", async () => {
     const verify = vi.fn();
-    const consume = vi.fn(() => ({ allowed: true }));
+    const consume = vi.fn(() => Promise.resolve({ allowed: true }));
     const declaredOversized = new Request(
       `https://api.refunddesk.example${PILOT_ROUTE_SPECS.paymentEligibility.path}`,
       {
@@ -644,7 +707,7 @@ describe("signed pilot API boundary", () => {
       throw new Error("body must not be consumed");
     });
     const verify = vi.fn();
-    const consume = vi.fn(() => ({ allowed: true }));
+    const consume = vi.fn(() => Promise.resolve({ allowed: true }));
     const missingSignature = {
       body: { getReader },
       headers: new Headers(),

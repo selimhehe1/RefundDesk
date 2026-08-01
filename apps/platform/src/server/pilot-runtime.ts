@@ -4,6 +4,7 @@ import { createLogger } from "@refunddesk/observability";
 import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
 import { createFieldEncryptionKeyring } from "./field-keyring";
+import { PostgresSignedRequestRateLimiter } from "./mutation-rate-limit";
 import type { PilotOperationalSignal } from "./pilot-http";
 import { TestAndSandboxAccessPolicy } from "./pilot-access-policy";
 import { DirectStripePaymentReader } from "./pilot-payment-reader";
@@ -15,6 +16,7 @@ export interface PilotRuntime {
   readonly auditSigningKey: Uint8Array;
   readonly client: PrismaClient;
   readonly emitOperationalSignal: (signal: PilotOperationalSignal) => void;
+  readonly signedRequestRateLimiter: PostgresSignedRequestRateLimiter;
   readonly service: PilotService;
   readonly signedRequestVerifier: SignedRequestVerifier;
 }
@@ -60,6 +62,7 @@ export function getPilotRuntime(): PilotRuntime {
       new DirectStripePaymentReader(stripeClient),
       new TestAndSandboxAccessPolicy(),
     ),
+    signedRequestRateLimiter: new PostgresSignedRequestRateLimiter(client),
     signedRequestVerifier: new RemoteSignedRequestVerifier(
       config.signedRequestVerifierUrl,
       config.signedRequestVerifierToken,

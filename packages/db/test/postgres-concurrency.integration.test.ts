@@ -1,5 +1,6 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,6 +25,17 @@ interface SqlOutcome {
 
 interface Barrier {
   arrive(): Promise<void>;
+}
+
+interface DatabaseRateLimitDecision {
+  readonly allowed: boolean;
+  readonly retryAfterSeconds: number | null;
+}
+
+interface DatabaseRateLimitScope {
+  readonly accountId: string;
+  readonly environment: "sandbox" | "test";
+  readonly requestClass: "mutation" | "read";
 }
 
 interface SucceededRefundFixture {
@@ -124,6 +136,56 @@ async function closeQuietly(client: Client | undefined): Promise<void> {
   }
 }
 
+function rateLimitScopeKey(scope: DatabaseRateLimitScope): Buffer {
+  return createHash("sha256")
+    .update(`${scope.accountId}:${scope.environment}:${scope.requestClass}`, "utf8")
+    .digest();
+}
+
+async function consumeDatabaseRateLimit(
+  client: Client,
+  scope: DatabaseRateLimitScope,
+): Promise<DatabaseRateLimitDecision> {
+  const result = await client.query<{
+    allowed: boolean;
+    retry_after_seconds: number | null;
+  }>(
+    `SELECT allowed, retry_after_seconds
+     FROM refunddesk_consume_signed_request_rate_limit(
+       $1::VARCHAR,
+       $2::stripe_environment,
+       $3::VARCHAR
+     )`,
+    [scope.accountId, scope.environment, scope.requestClass],
+  );
+  const row = result.rows[0];
+  if (result.rows.length !== 1 || row === undefined) {
+    throw new Error("PostgreSQL rate limiter returned an invalid row count");
+  }
+  return {
+    allowed: row.allowed,
+    retryAfterSeconds: row.retry_after_seconds,
+  };
+}
+
+async function forceExhaustedDatabaseRateLimit(
+  ownerClient: Client,
+  scope: DatabaseRateLimitScope,
+): Promise<void> {
+  const result = await ownerClient.query(
+    `UPDATE signed_request_rate_limit_buckets AS bucket
+     SET
+       theoretical_arrival_at = observed.at + INTERVAL '5 minutes',
+       last_seen_at = observed.at
+     FROM (SELECT clock_timestamp() AS at) AS observed
+     WHERE bucket.scope_key = $1::BYTEA`,
+    [rateLimitScopeKey(scope)],
+  );
+  if (result.rowCount !== 1) {
+    throw new Error("PostgreSQL rate-limit fixture was not found");
+  }
+}
+
 databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
   let controlClient: Client | undefined;
   let fixtureClient: Client | undefined;
@@ -141,6 +203,18 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
       connectionString: ephemeralDatabaseUrl,
       application_name: "refunddesk-postgres-concurrency-test",
     });
+
+  const newRuntimeClient = async (): Promise<Client> => {
+    const client = newEphemeralClient();
+    await client.connect();
+    try {
+      await client.query("SET SESSION AUTHORIZATION refunddesk_runtime");
+      return client;
+    } catch (error) {
+      await closeQuietly(client);
+      throw error;
+    }
+  };
 
   const setTenantContext = async (client: Client): Promise<void> => {
     await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
@@ -529,6 +603,175 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
       installation: { id: installationId, tenantId },
       execution: null,
     });
+  });
+
+  it("serializes a signed-request burst across PostgreSQL clients without exceeding capacity", async () => {
+    const scope = {
+      accountId: `acct_RateLimitRace${randomBytes(6).toString("hex")}`,
+      environment: "test",
+      requestClass: "mutation",
+    } as const;
+    const clients = await Promise.all(Array.from({ length: 8 }, () => newRuntimeClient()));
+
+    try {
+      const startedAt = performance.now();
+      const decisions = await Promise.all(
+        Array.from({ length: 40 }, (_, index) =>
+          consumeDatabaseRateLimit(clients[index % clients.length] as Client, scope),
+        ),
+      );
+      const elapsedMilliseconds = performance.now() - startedAt;
+      const allowedCount = decisions.filter((decision) => decision.allowed).length;
+      const maximumAllowedForElapsedWindow = 30 + Math.floor(elapsedMilliseconds / 2_000);
+
+      expect(allowedCount).toBeLessThanOrEqual(maximumAllowedForElapsedWindow);
+      expect(decisions.some((decision) => !decision.allowed)).toBe(true);
+      expect(
+        decisions
+          .filter((decision) => !decision.allowed)
+          .every(
+            (decision) =>
+              Number.isSafeInteger(decision.retryAfterSeconds) &&
+              (decision.retryAfterSeconds ?? 0) > 0,
+          ),
+      ).toBe(true);
+
+      const owner = fixtureClient;
+      if (owner === undefined) {
+        throw new Error("PostgreSQL fixture client is not initialized");
+      }
+      const bucket = await owner.query<{ bucket_count: string }>(
+        `SELECT COUNT(*)::TEXT AS bucket_count
+         FROM signed_request_rate_limit_buckets
+         WHERE scope_key = $1::BYTEA`,
+        [rateLimitScopeKey(scope)],
+      );
+      expect(bucket.rows).toEqual([{ bucket_count: "1" }]);
+    } finally {
+      await Promise.all(clients.map((client) => closeQuietly(client)));
+    }
+  });
+
+  it("keeps an exhausted signed-request bucket authoritative for a second client", async () => {
+    const owner = fixtureClient;
+    if (owner === undefined) {
+      throw new Error("PostgreSQL fixture client is not initialized");
+    }
+    const scope = {
+      accountId: `acct_RateLimitRestart${randomBytes(6).toString("hex")}`,
+      environment: "test",
+      requestClass: "mutation",
+    } as const;
+    const firstClient = await newRuntimeClient();
+    const secondClient = await newRuntimeClient();
+
+    try {
+      await expect(consumeDatabaseRateLimit(firstClient, scope)).resolves.toEqual({
+        allowed: true,
+        retryAfterSeconds: null,
+      });
+      await forceExhaustedDatabaseRateLimit(owner, scope);
+      await closeQuietly(firstClient);
+
+      const persistedDecision = await consumeDatabaseRateLimit(secondClient, scope);
+      expect(persistedDecision.allowed).toBe(false);
+      expect(persistedDecision.retryAfterSeconds).toEqual(expect.any(Number));
+      expect(persistedDecision.retryAfterSeconds ?? 0).toBeGreaterThan(0);
+    } finally {
+      await closeQuietly(firstClient);
+      await closeQuietly(secondClient);
+    }
+  });
+
+  it("fails closed after the bounded wait when another transaction locks the scope", async () => {
+    const owner = fixtureClient;
+    if (owner === undefined) {
+      throw new Error("PostgreSQL fixture client is not initialized");
+    }
+    const scope = {
+      accountId: `acct_RateLimitLock${randomBytes(6).toString("hex")}`,
+      environment: "test",
+      requestClass: "mutation",
+    } as const;
+    const runtimeClient = await newRuntimeClient();
+    let ownerTransactionOpen = false;
+
+    try {
+      await expect(consumeDatabaseRateLimit(runtimeClient, scope)).resolves.toEqual({
+        allowed: true,
+        retryAfterSeconds: null,
+      });
+      await owner.query("BEGIN");
+      ownerTransactionOpen = true;
+      const locked = await owner.query(
+        `SELECT scope_key
+         FROM signed_request_rate_limit_buckets
+         WHERE scope_key = $1::BYTEA
+         FOR UPDATE`,
+        [rateLimitScopeKey(scope)],
+      );
+      expect(locked.rowCount).toBe(1);
+
+      await expect(consumeDatabaseRateLimit(runtimeClient, scope)).rejects.toMatchObject({
+        code: "55P03",
+      });
+
+      await owner.query("ROLLBACK");
+      ownerTransactionOpen = false;
+      await expect(consumeDatabaseRateLimit(runtimeClient, scope)).resolves.toEqual({
+        allowed: true,
+        retryAfterSeconds: null,
+      });
+    } finally {
+      if (ownerTransactionOpen) {
+        await rollbackQuietly(owner);
+      }
+      await closeQuietly(runtimeClient);
+    }
+  });
+
+  it("isolates durable capacity by request class, environment and account", async () => {
+    const owner = fixtureClient;
+    if (owner === undefined) {
+      throw new Error("PostgreSQL fixture client is not initialized");
+    }
+    const accountId = `acct_RateLimitScope${randomBytes(6).toString("hex")}`;
+    const exhaustedScope = {
+      accountId,
+      environment: "test",
+      requestClass: "mutation",
+    } as const;
+    const runtimeClient = await newRuntimeClient();
+
+    try {
+      expect(await consumeDatabaseRateLimit(runtimeClient, exhaustedScope)).toEqual({
+        allowed: true,
+        retryAfterSeconds: null,
+      });
+      await forceExhaustedDatabaseRateLimit(owner, exhaustedScope);
+
+      expect((await consumeDatabaseRateLimit(runtimeClient, exhaustedScope)).allowed).toBe(false);
+      await expect(
+        consumeDatabaseRateLimit(runtimeClient, {
+          ...exhaustedScope,
+          requestClass: "read",
+        }),
+      ).resolves.toEqual({ allowed: true, retryAfterSeconds: null });
+      await expect(
+        consumeDatabaseRateLimit(runtimeClient, {
+          ...exhaustedScope,
+          environment: "sandbox",
+        }),
+      ).resolves.toEqual({ allowed: true, retryAfterSeconds: null });
+      await expect(
+        consumeDatabaseRateLimit(runtimeClient, {
+          ...exhaustedScope,
+          accountId: `acct_RateLimitOther${randomBytes(6).toString("hex")}`,
+        }),
+      ).resolves.toEqual({ allowed: true, retryAfterSeconds: null });
+    } finally {
+      await closeQuietly(runtimeClient);
+    }
   });
 
   it("persists runtime deauthorization atomically through the adapter advisory lock", async () => {

@@ -394,6 +394,51 @@ describe("migration hardening", () => {
     );
   });
 
+  it("persists signed-request capacity behind one narrow runtime capability", async () => {
+    const [sql, runtimeRoles, schema, accessCheck] = await Promise.all([
+      readFile(
+        new URL(
+          "../prisma/migrations/20260801130000_durable_signed_request_rate_limit/migration.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      readFile(new URL("../prisma/runtime-roles.sql", import.meta.url), "utf8"),
+      readFile(new URL("../prisma/schema.prisma", import.meta.url), "utf8"),
+      readFile(new URL("../scripts/check-runtime-access.mjs", import.meta.url), "utf8"),
+    ]);
+
+    expect(sql).toMatch(/^BEGIN;[\s\S]+COMMIT;\s*$/u);
+    expect(sql).toContain('CREATE TABLE "signed_request_rate_limit_buckets"');
+    expect(sql).toContain('CHECK (octet_length("scope_key") = 32)');
+    expect(sql).toContain('CREATE FUNCTION "refunddesk_consume_signed_request_rate_limit"');
+    expect(sql).toMatch(
+      /CREATE FUNCTION "refunddesk_consume_signed_request_rate_limit"\([\s\S]*?SECURITY DEFINER\s+SET search_path = pg_catalog\s+SET lock_timeout = '500ms'/u,
+    );
+    expect(sql).toContain("public.digest(");
+    expect(sql).toContain("pg_catalog.clock_timestamp()");
+    expect(sql).toContain("FOR UPDATE;");
+    expect(sql).toContain("pg_catalog.pg_advisory_xact_lock");
+    expect(sql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(sql).toContain("LIMIT 256");
+    expect(sql).toContain("scope_count >= 256");
+    expect(sql).toContain("INTERVAL '10 minutes'");
+    expect(sql).toContain("burst_capacity := 30");
+    expect(sql).toContain("token_interval := INTERVAL '2 seconds'");
+    expect(sql).toContain("burst_capacity := 60");
+    expect(sql).toContain("token_interval := INTERVAL '1 second'");
+    expect(sql).toContain('REVOKE ALL ON FUNCTION "refunddesk_consume_signed_request_rate_limit"');
+
+    expect(schema).toContain("model SignedRequestRateLimitBucket");
+    expect(schema).toContain('@@map("signed_request_rate_limit_buckets")');
+    expect(runtimeRoles).toContain(
+      "GRANT EXECUTE ON FUNCTION refunddesk_consume_signed_request_rate_limit(\n  VARCHAR,\n  stripe_environment,\n  VARCHAR\n) TO refunddesk_runtime",
+    );
+    expect(runtimeRoles).not.toMatch(/GRANT [^;]+ ON signed_request_rate_limit_buckets\s+TO /u);
+    expect(accessCheck).toContain("no_rate_limit_table_access");
+    expect(accessCheck).toContain("rate_limit_execute");
+  });
+
   it("adds account-scoped webhook endpoints with account-global Event deduplication", async () => {
     const [enumSql, sql] = await Promise.all([
       readFile(

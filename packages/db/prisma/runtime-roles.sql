@@ -368,6 +368,11 @@ GRANT EXECUTE ON FUNCTION refunddesk_lock_payment_scope(
 ) TO refunddesk_runtime, refunddesk_worker;
 GRANT EXECUTE ON FUNCTION refunddesk_resolve_installation(VARCHAR, stripe_environment)
   TO refunddesk_runtime, refunddesk_worker;
+GRANT EXECUTE ON FUNCTION refunddesk_consume_signed_request_rate_limit(
+  VARCHAR,
+  stripe_environment,
+  VARCHAR
+) TO refunddesk_runtime;
 GRANT EXECUTE ON FUNCTION refunddesk_provision_installation(VARCHAR, stripe_environment)
   TO refunddesk_runtime;
 GRANT EXECUTE ON FUNCTION refunddesk_provision_webhook_installation(
