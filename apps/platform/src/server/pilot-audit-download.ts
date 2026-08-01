@@ -8,6 +8,11 @@ import {
 } from "@refunddesk/db";
 import { isStripeAdministratorRole } from "@refunddesk/domain";
 
+import {
+  getEdgeAdmissionGate,
+  type EdgeAdmissionGate,
+  type EdgeAdmissionLease,
+} from "./edge-admission";
 import { apiError } from "./http";
 import { verifyPilotAuditToken } from "./pilot-audit-token";
 import { asSafePilotError, PilotApiError } from "./pilot-errors";
@@ -18,6 +23,70 @@ const AUDIT_EXPORT_LIMIT = 10_000;
 export interface PilotAuditDownloadDependencies {
   readonly auditSigningKey: Uint8Array;
   readonly client: PrismaClient;
+  readonly edgeAdmissionGate?: EdgeAdmissionGate;
+  readonly emitOperationalSignal: (
+    signal: "edge_admission_unavailable" | "edge_rate_limited",
+  ) => void;
+}
+
+function emitSignalSafely(
+  emitOperationalSignal: PilotAuditDownloadDependencies["emitOperationalSignal"],
+  signal: "edge_admission_unavailable" | "edge_rate_limited",
+): void {
+  try {
+    emitOperationalSignal(signal);
+  } catch {
+    // Observability never changes a fail-closed admission result.
+  }
+}
+
+function auditEdgeDeniedResponse(
+  status: 429 | 503,
+  requestId: ReturnType<typeof randomUUID>,
+  retryAfterSeconds: number,
+): Response {
+  const response = apiError(
+    status === 429 ? "EDGE_RATE_LIMITED" : "EDGE_ADMISSION_UNAVAILABLE",
+    status === 429
+      ? "Audit download capacity is temporarily exhausted."
+      : "Audit download admission is temporarily unavailable.",
+    status,
+    requestId,
+  );
+  response.headers.set("Retry-After", String(retryAfterSeconds));
+  return response;
+}
+
+function acquireAuditEdgeAdmission(
+  request: Request,
+  dependencies: PilotAuditDownloadDependencies,
+  requestId: ReturnType<typeof randomUUID>,
+): { readonly lease: EdgeAdmissionLease } | { readonly response: Response } {
+  let decision;
+  try {
+    decision = (dependencies.edgeAdmissionGate ?? getEdgeAdmissionGate()).acquire(
+      request.headers,
+      "audit_download",
+    );
+  } catch {
+    emitSignalSafely(dependencies.emitOperationalSignal, "edge_admission_unavailable");
+    return { response: auditEdgeDeniedResponse(503, requestId, 60) };
+  }
+  if (decision.allowed) {
+    return { lease: decision.lease };
+  }
+  if (
+    decision.status === 429 &&
+    Number.isSafeInteger(decision.retryAfterSeconds) &&
+    (decision.retryAfterSeconds ?? 0) > 0
+  ) {
+    emitSignalSafely(dependencies.emitOperationalSignal, "edge_rate_limited");
+    return {
+      response: auditEdgeDeniedResponse(429, requestId, decision.retryAfterSeconds ?? 1),
+    };
+  }
+  emitSignalSafely(dependencies.emitOperationalSignal, "edge_admission_unavailable");
+  return { response: auditEdgeDeniedResponse(503, requestId, 60) };
 }
 
 export function isStoredStripeAdministrator(roles: Prisma.JsonValue): boolean {
@@ -114,7 +183,13 @@ export async function handlePilotAuditDownload(
   dependencies: PilotAuditDownloadDependencies,
 ): Promise<Response> {
   const requestId = randomUUID();
+  let edgeLease: EdgeAdmissionLease | null = null;
   try {
+    const edgeAdmission = acquireAuditEdgeAdmission(request, dependencies, requestId);
+    if ("response" in edgeAdmission) {
+      return edgeAdmission.response;
+    }
+    edgeLease = edgeAdmission.lease;
     const url = assertDownloadRoute(request);
     const rawToken = url.searchParams.get("token");
     if (rawToken === null || rawToken.length > 4_096) {
@@ -197,5 +272,7 @@ export async function handlePilotAuditDownload(
   } catch (error) {
     const safeError = asSafePilotError(error);
     return apiError(safeError.code, safeError.message, safeError.status, requestId);
+  } finally {
+    edgeLease?.release();
   }
 }

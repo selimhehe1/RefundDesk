@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AuditEvent, Prisma, PrismaClient } from "@refunddesk/db";
 
+import { EdgeAdmissionDeniedReason, type EdgeAdmissionGate } from "../src/server/edge-admission.js";
 import { handlePilotAuditDownload } from "../src/server/pilot-audit-download.js";
 import {
   createPilotAuditToken,
@@ -284,11 +285,21 @@ async function errorBody(response: Response): Promise<Readonly<Record<string, un
   return value as Readonly<Record<string, unknown>>;
 }
 
-async function download(token: string, database: FakeAuditDatabase): Promise<Response> {
-  return handlePilotAuditDownload(requestForToken(token), {
+const allowingEdgeGate: EdgeAdmissionGate = {
+  acquire: () => ({ allowed: true, lease: { release: () => undefined } }),
+};
+
+function auditDependencies(database: FakeAuditDatabase) {
+  return {
     auditSigningKey: SIGNING_KEY,
     client: database.client,
-  });
+    edgeAdmissionGate: allowingEdgeGate,
+    emitOperationalSignal: () => undefined,
+  } as const;
+}
+
+async function download(token: string, database: FakeAuditDatabase): Promise<Response> {
+  return handlePilotAuditDownload(requestForToken(token), auditDependencies(database));
 }
 
 describe("pilot audit download handler", () => {
@@ -298,6 +309,59 @@ describe("pilot audit download handler", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("rejects edge capacity before reading the bearer key or opening a transaction", async () => {
+    const database = new FakeAuditDatabase();
+    const acquire = vi.fn(() => ({
+      allowed: false as const,
+      reason: EdgeAdmissionDeniedReason.GlobalRateLimited,
+      retryAfterSeconds: 4,
+      status: 429 as const,
+    }));
+    const emitOperationalSignal = vi.fn();
+    let signingKeyRead = false;
+    const dependencies = {
+      get auditSigningKey(): Uint8Array {
+        signingKeyRead = true;
+        throw new Error("audit signing key must not be read");
+      },
+      client: database.client,
+      edgeAdmissionGate: { acquire },
+      emitOperationalSignal,
+    };
+
+    const response = await handlePilotAuditDownload(
+      requestForToken("must-not-be-verified"),
+      dependencies,
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("4");
+    expect(await errorBody(response)).toMatchObject({ code: "EDGE_RATE_LIMITED" });
+    expect(acquire).toHaveBeenCalledWith(expect.any(Headers), "audit_download");
+    expect(emitOperationalSignal).toHaveBeenCalledOnce();
+    expect(emitOperationalSignal).toHaveBeenCalledWith("edge_rate_limited");
+    expect(signingKeyRead).toBe(false);
+    expect(database.transactionCount).toBe(0);
+  });
+
+  it("releases audit-download concurrency after a rejected bearer", async () => {
+    const database = new FakeAuditDatabase();
+    const release = vi.fn();
+    const response = await handlePilotAuditDownload(requestForToken("invalid"), {
+      auditSigningKey: SIGNING_KEY,
+      client: database.client,
+      edgeAdmissionGate: {
+        acquire: () => ({ allowed: true, lease: { release } }),
+      },
+      emitOperationalSignal: vi.fn(),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await errorBody(response)).toMatchObject({ code: "UNAUTHORIZED" });
+    expect(release).toHaveBeenCalledOnce();
+    expect(database.transactionCount).toBe(0);
   });
 
   it("rejects malformed routes and invalid bearer links before opening a transaction", async () => {
@@ -354,10 +418,10 @@ describe("pilot audit download handler", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const response = await handlePilotAuditDownload(testCase.request, {
-        auditSigningKey: SIGNING_KEY,
-        client: database.client,
-      });
+      const response = await handlePilotAuditDownload(
+        testCase.request,
+        auditDependencies(database),
+      );
       expect(response.status).toBe(testCase.status);
       expect(await errorBody(response)).toMatchObject({ code: testCase.code });
     }

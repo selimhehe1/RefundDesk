@@ -36,6 +36,7 @@ while (( $# > 0 )); do
 done
 
 require_root
+require_command base64
 require_command curl
 require_command docker
 require_command jq
@@ -122,8 +123,23 @@ fi
 
 ORIGIN_FILE="${REFUNDDESK_CONFIG_ROOT}/public-origin"
 CADDY_ENV="${REFUNDDESK_CONFIG_ROOT}/caddy.env"
+CADDY_CONFIG_DIRECTORY="/var/lib/refunddesk/caddy-public/config"
+CADDY_AUTOSAVE_DIRECTORY="${CADDY_CONFIG_DIRECTORY}/caddy"
+CADDY_AUTOSAVE_PATH="${CADDY_AUTOSAVE_DIRECTORY}/autosave.json"
 assert_root_secret_file "${ORIGIN_FILE}"
 assert_root_secret_file "${CADDY_ENV}"
+[[ -d "${CADDY_CONFIG_DIRECTORY}" && ! -L "${CADDY_CONFIG_DIRECTORY}" ]] ||
+  die "Caddy config directory is not a real directory"
+[[ "$(readlink --canonicalize-existing -- "${CADDY_CONFIG_DIRECTORY}")" ==
+  "${CADDY_CONFIG_DIRECTORY}" ]] || die "Caddy config directory escaped its fixed path"
+if [[ -e "${CADDY_AUTOSAVE_DIRECTORY}" || -L "${CADDY_AUTOSAVE_DIRECTORY}" ]]; then
+  [[ -d "${CADDY_AUTOSAVE_DIRECTORY}" && ! -L "${CADDY_AUTOSAVE_DIRECTORY}" ]] ||
+    die "Caddy autosave directory is not a real directory"
+  [[ "$(readlink --canonicalize-existing -- "${CADDY_AUTOSAVE_DIRECTORY}")" ==
+    "${CADDY_AUTOSAVE_DIRECTORY}" ]] || die "Caddy autosave directory escaped its fixed path"
+fi
+[[ ! -e "${CADDY_AUTOSAVE_PATH}" && ! -L "${CADDY_AUTOSAVE_PATH}" ]] ||
+  die "Caddy autosave residue is present"
 IFS= read -r CONFIGURED_PUBLIC_ORIGIN <"${ORIGIN_FILE}"
 if [[ -n "${PUBLIC_ORIGIN}" && "${PUBLIC_ORIGIN}" != "${CONFIGURED_PUBLIC_ORIGIN}" ]]; then
   die "supplied public origin differs from the root-owned origin file"
@@ -137,9 +153,11 @@ VIEWER_HOST="${PUBLIC_ORIGIN#https://}"
 
 CADDY_PUBLIC_HOST=""
 CADDY_ACME_EMAIL_SEEN=false
+CADDY_EDGE_ORIGIN_TOKEN=""
+CADDY_EDGE_ORIGIN_TOKEN_SEEN=false
 mapfile -t caddy_environment_lines <"${CADDY_ENV}"
-(( ${#caddy_environment_lines[@]} == 2 )) ||
-  die "Caddy environment must contain exactly two bindings"
+(( ${#caddy_environment_lines[@]} == 3 )) ||
+  die "Caddy environment must contain exactly three bindings"
 for caddy_environment_line in "${caddy_environment_lines[@]}"; do
   case "${caddy_environment_line}" in
     REFUNDDESK_PUBLIC_HOST=*)
@@ -153,25 +171,63 @@ for caddy_environment_line in "${caddy_environment_lines[@]}"; do
         die "Caddy ACME email binding is invalid"
       CADDY_ACME_EMAIL_SEEN=true
       ;;
+    REFUNDDESK_EDGE_ORIGIN_TOKEN=*)
+      [[ "${CADDY_EDGE_ORIGIN_TOKEN_SEEN}" == "false" ]] ||
+        die "Caddy edge-origin token is duplicated"
+      CADDY_EDGE_ORIGIN_TOKEN="${caddy_environment_line#REFUNDDESK_EDGE_ORIGIN_TOKEN=}"
+      [[ "${CADDY_EDGE_ORIGIN_TOKEN}" =~ ^[A-Za-z0-9_-]{43}$ ]] ||
+        die "Caddy edge-origin token is invalid"
+      [[ "${CADDY_EDGE_ORIGIN_TOKEN}" != "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws" ]] ||
+        die "Caddy edge-origin token is a known non-secret value"
+      CADDY_EDGE_ORIGIN_TOKEN_SEEN=true
+      ;;
     *)
       die "Caddy environment contains an unexpected binding"
       ;;
   esac
 done
+canonical_edge_origin_token="$(
+  printf '%s=' "${CADDY_EDGE_ORIGIN_TOKEN}" |
+    tr -- '_-' '/+' |
+    base64 --decode 2>/dev/null |
+    base64 --wrap=0 |
+    tr -- '+/' '-_' |
+    tr --delete '='
+)" || die "Caddy edge-origin token is invalid"
+[[ "${canonical_edge_origin_token}" == "${CADDY_EDGE_ORIGIN_TOKEN}" ]] ||
+  die "Caddy edge-origin token is invalid"
+unset canonical_edge_origin_token
 [[ "${CADDY_PUBLIC_HOST}" =~ ^[A-Za-z0-9.-]+$ &&
   "${CADDY_PUBLIC_HOST}" != "${VIEWER_HOST}" &&
   "${CADDY_PUBLIC_HOST}" != *.cloudfront.net &&
-  "${CADDY_ACME_EMAIL_SEEN}" == "true" ]] ||
+  "${CADDY_ACME_EMAIL_SEEN}" == "true" &&
+  "${CADDY_EDGE_ORIGIN_TOKEN_SEEN}" == "true" ]] ||
   die "Caddy origin host is invalid or not separated from the public viewer"
 CADDY_ORIGIN="https://${CADDY_PUBLIC_HOST}"
 
-curl_local_origin() {
+curl_local_origin_transport() {
   curl \
     --resolve "${CADDY_PUBLIC_HOST}:443:127.0.0.1" \
     --noproxy '*' \
     --proto '=https' \
     --tlsv1.2 \
     "$@"
+}
+
+curl_local_origin_with_edge_token() {
+  local supplied_edge_origin_token="$1"
+  shift
+  curl_local_origin_transport \
+    --header @<(printf 'X-RefundDesk-Origin-Token: %s\n' "${supplied_edge_origin_token}") \
+    "$@"
+}
+
+curl_local_origin() {
+  curl_local_origin_with_edge_token "${CADDY_EDGE_ORIGIN_TOKEN}" "$@"
+}
+
+curl_local_origin_without_edge_token() {
+  curl_local_origin_transport "$@"
 }
 
 curl_public_viewer() {
@@ -329,6 +385,42 @@ until curl_local_origin \
   sleep 3
 done
 
+correct_edge_token_status="$(
+  curl_local_origin \
+    --silent --show-error \
+    --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 \
+    "${CADDY_ORIGIN}/api/health"
+)" || die "local origin token-authenticated probe failed"
+[[ "${correct_edge_token_status}" == "200" ]] ||
+  die "local origin rejected the configured CloudFront token"
+
+missing_edge_token_status="$(
+  curl_local_origin_without_edge_token \
+    --silent --show-error \
+    --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 \
+    "${CADDY_ORIGIN}/api/health"
+)" || die "local origin no-token probe failed"
+[[ "${missing_edge_token_status}" == "404" ]] ||
+  die "local origin accepted a request without the CloudFront token"
+
+if [[ "${CADDY_EDGE_ORIGIN_TOKEN:0:1}" == "A" ]]; then
+  WRONG_EDGE_ORIGIN_TOKEN="B${CADDY_EDGE_ORIGIN_TOKEN:1}"
+else
+  WRONG_EDGE_ORIGIN_TOKEN="A${CADDY_EDGE_ORIGIN_TOKEN:1}"
+fi
+wrong_edge_token_status="$(
+  curl_local_origin_with_edge_token "${WRONG_EDGE_ORIGIN_TOKEN}" \
+    --silent --show-error \
+    --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 5 --max-time 15 \
+    "${CADDY_ORIGIN}/api/health"
+)" || die "local origin wrong-token probe failed"
+unset WRONG_EDGE_ORIGIN_TOKEN
+[[ "${wrong_edge_token_status}" == "404" ]] ||
+  die "local origin accepted an invalid CloudFront token"
+
 local_health_headers="$(
   curl_local_origin \
     --fail --silent --show-error \
@@ -343,6 +435,9 @@ grep -Eiq \
   die "local Caddy origin does not identify the exact verified revision"
 grep -Eiq '^cache-control:[[:space:]]*no-store$' <<<"${local_health_headers}" ||
   die "local Caddy origin does not disable response storage"
+if grep -Eiq '^x-refunddesk-origin-token:' <<<"${local_health_headers}"; then
+  die "local Caddy origin returned its CloudFront token in response headers"
+fi
 
 public_ready_status="$(
   curl_local_origin --silent --show-error \
@@ -353,21 +448,26 @@ public_ready_status="$(
 [[ "${public_ready_status}" == "404" ]] ||
   die "private platform readiness route is reachable through public ingress"
 
-public_internal_status="$(
-  curl_local_origin --silent --show-error \
-    --output /dev/null --write-out '%{http_code}' \
-    --connect-timeout 5 --max-time 15 \
-    --request POST --header 'content-type: application/json' --data '{}' \
-    "${CADDY_ORIGIN}/internal/v1/signed-requests/verify"
-)"
-[[ "${public_internal_status}" == "404" ]] ||
-  die "private verifier route is reachable through public ingress"
+for authority_action in verify attest; do
+  public_internal_status="$(
+    curl_local_origin --silent --show-error \
+      --output /dev/null --write-out '%{http_code}' \
+      --connect-timeout 5 --max-time 15 \
+      --request POST --header 'content-type: application/json' --data '{}' \
+      "${CADDY_ORIGIN}/internal/v1/signed-requests/${authority_action}"
+  )"
+  [[ "${public_internal_status}" == "404" ]] ||
+    die "private signed-request authority route is reachable through public ingress"
+done
 
 public_post_status() {
   curl_local_origin --silent --show-error \
     --output /dev/null --write-out '%{http_code}' \
     --connect-timeout 5 --max-time 15 \
-    --request POST --header 'content-type: application/json' --data '{}' \
+    --request POST \
+    --header 'content-type: application/json' \
+    --header 'X-Forwarded-For: 3.18.12.63' \
+    --data '{}' \
     "${CADDY_ORIGIN}${1}"
 }
 
@@ -406,11 +506,13 @@ for viewer_probe in 1 2; do
     die "CloudFront viewer omitted the no-store response contract"
   grep -Eiq '^x-cache:[[:space:]]*Miss from cloudfront$' <<<"${viewer_health_headers}" ||
     die "CloudFront viewer returned a cache state outside the disabled-cache contract"
+  if grep -Eiq '^x-refunddesk-origin-token:' <<<"${viewer_health_headers}"; then
+    die "CloudFront viewer returned the origin token in response headers"
+  fi
 done
 
-refunddesk_compose exec \
-  --env "REFUNDDESK_EXPECTED_REVISION=${EXPECTED_REVISION}" \
-  --no-TTY web node --input-type=module -e '
+signed_webhook_probe="$({
+  refunddesk_compose exec --no-TTY web node --input-type=module -e '
     const { createHmac } = await import("node:crypto");
     const timestamp = Math.floor(Date.now() / 1000);
     const eventId = `evt_RefundDeskReleaseProbe${timestamp}`;
@@ -431,24 +533,67 @@ refunddesk_compose exec \
     )
       .update(`${timestamp}.${payload}`)
       .digest("hex");
+    console.log(JSON.stringify({
+      event_id: eventId,
+      payload_base64: Buffer.from(payload, "utf8").toString("base64"),
+      stripe_signature: `t=${timestamp},v1=${signature}`,
+    }));
+  '
+} 2>/dev/null)" || die "synthetic webhook probe could not be prepared"
+synthetic_event_id="$(jq --exit-status --raw-output '.event_id' <<<"${signed_webhook_probe}")" ||
+  die "synthetic webhook probe identifier is invalid"
+synthetic_payload="$({
+  jq --exit-status --raw-output '.payload_base64' <<<"${signed_webhook_probe}" |
+    base64 --decode
+} 2>/dev/null)" || die "synthetic webhook probe payload is invalid"
+synthetic_signature="$(
+  jq --exit-status --raw-output '.stripe_signature' <<<"${signed_webhook_probe}"
+)" || die "synthetic webhook probe signature is invalid"
+[[ "${synthetic_event_id}" =~ ^evt_RefundDeskReleaseProbe[0-9]+$ &&
+  "${synthetic_signature}" =~ ^t=[0-9]+,v1=[0-9a-f]{64}$ ]] ||
+  die "synthetic webhook probe contract is invalid"
+
+local_webhook_result="$({
+  curl_local_origin \
+    --silent --show-error \
+    --connect-timeout 5 --max-time 20 \
+    --request POST \
+    --header 'content-type: application/json' \
+    --header 'X-Forwarded-For: 3.18.12.63' \
+    --header @<(printf 'Stripe-Signature: %s\n' "${synthetic_signature}") \
+    --data-binary @<(printf '%s' "${synthetic_payload}") \
+    --write-out $'\n%{http_code}' \
+    "${CADDY_ORIGIN}/api/webhooks/stripe-account/test"
+} 2>/dev/null)" || die "local signed raw-body webhook relay failed"
+local_webhook_status="${local_webhook_result##*$'\n'}"
+local_webhook_body="${local_webhook_result%$'\n'*}"
+if [[ "${local_webhook_status}" != "200" ]] ||
+  ! jq --exit-status --arg event_id "${synthetic_event_id}" '
+    .received == true
+    and .ignored == true
+    and .event_id == $event_id
+  ' <<<"${local_webhook_body}" >/dev/null; then
+  die "local Caddy changed the signed raw body, forwarded the origin token or bypassed the trusted edge relay"
+fi
+unset signed_webhook_probe synthetic_event_id synthetic_payload synthetic_signature
+unset local_webhook_result local_webhook_status local_webhook_body
+
+refunddesk_compose exec \
+  --env "REFUNDDESK_EXPECTED_REVISION=${EXPECTED_REVISION}" \
+  --no-TTY web node --input-type=module -e '
     const response = await fetch(
       `${process.env.APP_BASE_URL}/api/webhooks/stripe-account/test`,
       {
-        body: payload,
-        headers: {
-          "content-type": "application/json",
-          "stripe-signature": `t=${timestamp},v1=${signature}`,
-        },
+        body: "{}",
+        headers: { "content-type": "application/json" },
         method: "POST",
         signal: AbortSignal.timeout(20000),
       },
     );
     const body = await response.json().catch(() => null);
     if (
-      response.status !== 200
-      || body?.received !== true
-      || body?.ignored !== true
-      || body?.event_id !== eventId
+      response.status !== 403
+      || body?.code !== "WEBHOOK_SOURCE_FORBIDDEN"
       || response.headers.get("x-refunddesk-revision")
         !== process.env.REFUNDDESK_EXPECTED_REVISION
       || response.headers.get("cache-control") !== "no-store"
@@ -457,7 +602,7 @@ refunddesk_compose exec \
     ) {
       process.exit(1);
     }
-  ' || die "CloudFront changed or bypassed the signed raw-body webhook relay"
+  ' || die "CloudFront webhook source allowlist is not enforced"
 
 local_options_status="$(
   curl_local_origin --silent --show-error \

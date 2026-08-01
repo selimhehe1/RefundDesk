@@ -15,9 +15,22 @@ import {
   type PrismaClient,
   type WebhookReceiptInsertResult,
 } from "@refunddesk/db";
+import { createLogger } from "@refunddesk/observability";
 
+import {
+  EdgeAdmissionDeniedReason,
+  getEdgeAdmissionGate,
+  type EdgeAdmissionGate,
+  type EdgeAdmissionLease,
+} from "./edge-admission";
+import {
+  BoundedRequestBodyError,
+  readBoundedRequestBody,
+  REQUEST_BODY_DEADLINE_MS,
+} from "./bounded-request-body";
 import { apiError, jsonResponse } from "./http";
 import { getPilotRuntime } from "./pilot-runtime";
+import { SampledSignalEmitter } from "./sampled-signal-emitter";
 
 export type AccountWebhookRouteEnvironment = "live" | "test" | "sandbox";
 
@@ -34,6 +47,73 @@ const SUPPORTED_EVENT_TYPES = new Set<AccountWebhookEventType>([
   "account.application.authorized",
   "account.application.deauthorized",
 ]);
+const logger = createLogger("platform-webhook");
+type WebhookIngressSignal =
+  "edge_admission_unavailable" | "edge_rate_limited" | "webhook_source_rejected";
+const edgeSignalEmitter = new SampledSignalEmitter<WebhookIngressSignal>({
+  emit({ observedCount, signal, suppressedCount }) {
+    logger.warn(
+      {
+        event: signal,
+        observed_count: observedCount,
+        suppressed_count: suppressedCount,
+      },
+      "Webhook ingress operational signal",
+    );
+  },
+});
+
+function emitEdgeSignal(event: WebhookIngressSignal): void {
+  try {
+    edgeSignalEmitter.emit(event);
+  } catch {
+    // Observability must never alter a fail-closed admission decision.
+  }
+}
+
+function retryableEdgeResponse(status: 429 | 503, retryAfterSeconds: number): Response {
+  const response = apiError(
+    status === 429 ? "EDGE_RATE_LIMITED" : "EDGE_ADMISSION_UNAVAILABLE",
+    status === 429
+      ? "Webhook admission capacity is temporarily exhausted"
+      : "Webhook admission is temporarily unavailable",
+    status,
+  );
+  response.headers.set("Retry-After", String(retryAfterSeconds));
+  return response;
+}
+
+function acquireWebhookAdmission(
+  request: Request,
+  gate: EdgeAdmissionGate,
+): { readonly lease: EdgeAdmissionLease } | { readonly response: Response } {
+  let decision;
+  try {
+    decision = gate.acquire(request.headers, "account_webhook");
+  } catch {
+    emitEdgeSignal("edge_admission_unavailable");
+    return { response: retryableEdgeResponse(503, 60) };
+  }
+  if (decision.allowed) {
+    return { lease: decision.lease };
+  }
+  if (decision.reason === EdgeAdmissionDeniedReason.WebhookSourceForbidden) {
+    emitEdgeSignal("webhook_source_rejected");
+    return {
+      response: apiError("WEBHOOK_SOURCE_FORBIDDEN", "Webhook source is not accepted", 403),
+    };
+  }
+  if (
+    decision.status === 429 &&
+    Number.isSafeInteger(decision.retryAfterSeconds) &&
+    (decision.retryAfterSeconds ?? 0) > 0
+  ) {
+    emitEdgeSignal("edge_rate_limited");
+    return { response: retryableEdgeResponse(429, decision.retryAfterSeconds ?? 1) };
+  }
+  emitEdgeSignal("edge_admission_unavailable");
+  return { response: retryableEdgeResponse(503, 60) };
+}
 
 function supportsEventApiVersion(
   event: Stripe.Event,
@@ -283,14 +363,13 @@ function normalizeEvent(
   return null;
 }
 
-export async function receiveAccountWebhook(
+async function receiveAdmittedAccountWebhook(
   request: Request,
-  endpoint: AccountWebhookRouteEnvironment,
+  endpoint: Exclude<AccountWebhookRouteEnvironment, "live">,
   injectedDependencies?: AccountWebhookDependencies,
+  releaseVerificationLease: () => void = () => undefined,
+  verificationDeadlineAtMs = Date.now() + REQUEST_BODY_DEADLINE_MS,
 ): Promise<Response> {
-  if (endpoint === "live") {
-    return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
-  }
   const dependencies = injectedDependencies ?? defaultDependencies(endpoint);
   if (dependencies.signingSecret === "disabled") {
     return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
@@ -306,9 +385,23 @@ export async function receiveAccountWebhook(
   if (Number.isFinite(declaredLength) && declaredLength > MAX_WEBHOOK_BYTES) {
     return apiError("PAYLOAD_TOO_LARGE", "Webhook payload is too large", 413);
   }
-  const rawBody = Buffer.from(await request.arrayBuffer());
-  if (rawBody.byteLength > MAX_WEBHOOK_BYTES) {
-    return apiError("PAYLOAD_TOO_LARGE", "Webhook payload is too large", 413);
+  let rawBody: Buffer;
+  try {
+    rawBody = await readBoundedRequestBody(request, {
+      deadlineAtMs: verificationDeadlineAtMs,
+      maximumBytes: MAX_WEBHOOK_BYTES,
+    });
+  } catch (error) {
+    if (error instanceof BoundedRequestBodyError) {
+      if (error.code === "deadline_exceeded") {
+        return apiError("WEBHOOK_TIMEOUT", "Webhook body did not complete in time", 408);
+      }
+      if (error.code === "too_large") {
+        return apiError("PAYLOAD_TOO_LARGE", "Webhook payload is too large", 413);
+      }
+      return apiError("PAYLOAD_INVALID", "Webhook payload is invalid", 400);
+    }
+    return apiError("PAYLOAD_INVALID", "Webhook payload is invalid", 400);
   }
 
   let event: Stripe.Event;
@@ -316,6 +409,8 @@ export async function receiveAccountWebhook(
     event = dependencies.constructEvent(rawBody, signature, dependencies.signingSecret);
   } catch {
     return apiError("WEBHOOK_INVALID", "Webhook could not be verified", 400);
+  } finally {
+    releaseVerificationLease();
   }
   if (event.livemode) {
     return apiError("MODE_MISMATCH", "Live events are disabled for the pilot", 400);
@@ -394,5 +489,43 @@ export async function receiveAccountWebhook(
     });
   } catch {
     return apiError("WEBHOOK_PERSISTENCE_UNAVAILABLE", "Webhook could not be persisted", 503);
+  }
+}
+
+export async function receiveAccountWebhook(
+  request: Request,
+  endpoint: AccountWebhookRouteEnvironment,
+  injectedDependencies?: AccountWebhookDependencies,
+  injectedEdgeAdmissionGate?: EdgeAdmissionGate,
+): Promise<Response> {
+  if (endpoint === "live") {
+    return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
+  }
+  const admission = acquireWebhookAdmission(
+    request,
+    injectedEdgeAdmissionGate ?? getEdgeAdmissionGate(),
+  );
+  if ("response" in admission) {
+    return admission.response;
+  }
+  let released = false;
+  const release = (): void => {
+    if (released) {
+      return;
+    }
+    released = true;
+    admission.lease.release();
+  };
+  const verificationDeadlineAtMs = Date.now() + REQUEST_BODY_DEADLINE_MS;
+  try {
+    return await receiveAdmittedAccountWebhook(
+      request,
+      endpoint,
+      injectedDependencies,
+      release,
+      verificationDeadlineAtMs,
+    );
+  } finally {
+    release();
   }
 }

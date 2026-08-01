@@ -51,9 +51,9 @@ function sendJson(
   response.end(body);
 }
 
-function requestPath(request: IncomingMessage): string | null {
+function requestTarget(request: IncomingMessage): URL | null {
   try {
-    return new URL(request.url ?? "/", "http://refunddesk-worker.invalid").pathname;
+    return new URL(request.url ?? "/", "http://refunddesk-worker.invalid");
   } catch {
     return null;
   }
@@ -98,11 +98,14 @@ async function readBoundedBody(request: IncomingMessage): Promise<string | null>
   return Buffer.concat(chunks, length).toString("utf8");
 }
 
-async function handleSignedRequestVerification(
+type SignedRequestAction = "attest" | "verify";
+
+async function handleSignedRequestAuthority(
   request: IncomingMessage,
   response: ServerResponse,
   authority: WorkerSignedRequestAuthority,
   authorizationToken: string,
+  action: SignedRequestAction,
 ): Promise<void> {
   if (request.method !== "POST") {
     sendJson(response, 405, RESPONSE_METHOD_NOT_ALLOWED, { Allow: "POST" });
@@ -124,17 +127,28 @@ async function handleSignedRequestVerification(
     return;
   }
   try {
-    const verified = await authority.verifyAndAttest(
-      rawText,
+    const stripeSignature =
       typeof request.headers["stripe-signature"] === "string"
         ? request.headers["stripe-signature"]
-        : null,
-    );
+        : null;
+    if (action === "attest") {
+      const attested = await authority.attestApproval(rawText, stripeSignature);
+      sendJson(
+        response,
+        200,
+        JSON.stringify({
+          approval_attestation_id: attested.approvalAttestationId,
+          canonical_request_hash: attested.canonicalRequestHash,
+          envelope: attested.envelope,
+        }),
+      );
+      return;
+    }
+    const verified = await authority.verify(rawText, stripeSignature);
     sendJson(
       response,
       200,
       JSON.stringify({
-        approval_attestation_id: verified.approvalAttestationId,
         canonical_request_hash: verified.canonicalRequestHash,
         envelope: verified.envelope,
       }),
@@ -165,17 +179,27 @@ export async function handleWorkerHealthRequest(
     readonly authorizationToken: string;
   },
 ): Promise<void> {
-  const path = requestPath(request);
-  if (path === "/internal/v1/signed-requests/verify") {
+  const target = requestTarget(request);
+  const path = target?.pathname ?? null;
+  const signedRequestAction: SignedRequestAction | null =
+    target === null || target.search.length > 0 || target.hash.length > 0
+      ? null
+      : path === "/internal/v1/signed-requests/verify"
+        ? "verify"
+        : path === "/internal/v1/signed-requests/attest"
+          ? "attest"
+          : null;
+  if (signedRequestAction !== null) {
     if (signedRequest === undefined) {
       sendJson(response, 404, RESPONSE_NOT_FOUND);
       return;
     }
-    await handleSignedRequestVerification(
+    await handleSignedRequestAuthority(
       request,
       response,
       signedRequest.authority,
       signedRequest.authorizationToken,
+      signedRequestAction,
     );
     return;
   }

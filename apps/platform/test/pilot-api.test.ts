@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import Stripe from "stripe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +25,7 @@ import {
 } from "../src/server/pilot-audit-download.js";
 import { createPilotAuditToken, verifyPilotAuditToken } from "../src/server/pilot-audit-token.js";
 import { TestAndSandboxAccessPolicy } from "../src/server/pilot-access-policy.js";
+import { EdgeAdmissionDeniedReason } from "../src/server/edge-admission.js";
 import { PilotApiError } from "../src/server/pilot-errors.js";
 import { handlePilotRoute, type PilotHttpDependencies } from "../src/server/pilot-http.js";
 import type {
@@ -48,7 +51,11 @@ import type {
 } from "../src/server/pilot-ports.js";
 import { PILOT_ROUTE_SPECS, type PilotRouteSpec } from "../src/server/pilot-routes.js";
 import { PilotService } from "../src/server/pilot-service.js";
-import { SignedRequestError, type SignedRequestVerifier } from "../src/server/signed-request.js";
+import {
+  SignedRequestAttestationConflictError,
+  SignedRequestError,
+  type SignedRequestVerifier,
+} from "../src/server/signed-request.js";
 
 const SIGNING_SECRET = "absec_pilot_test";
 const APPROVAL_ATTESTATION_ID = "f874c90b-25b8-4628-90f7-9643cc206799";
@@ -391,6 +398,20 @@ describe("signed pilot API boundary", () => {
   });
 
   const signedRequestVerifier: SignedRequestVerifier = {
+    attestApproval(verified, signature) {
+      const rawText = verified.rawBody.toString("utf8");
+      const repeated = verifySignedExtensionRequest(rawText, signature, SIGNING_SECRET);
+      const command = JSON.parse(repeated.envelope.command_json) as {
+        readonly decision?: unknown;
+      };
+      if (
+        repeated.envelope.operation !== "refund_request.decide" ||
+        command.decision !== "approve"
+      ) {
+        throw new SignedRequestError("ENVELOPE_INVALID", "Approval attestation is not allowed");
+      }
+      return Promise.resolve(APPROVAL_ATTESTATION_ID);
+    },
     verify(rawText, signature) {
       let verified;
       try {
@@ -401,18 +422,19 @@ describe("signed pilot API boundary", () => {
         }
         throw error;
       }
-      const command = JSON.parse(verified.envelope.command_json) as {
-        readonly decision?: unknown;
-      };
       return Promise.resolve({
         ...verified,
-        approvalAttestationId:
-          verified.envelope.operation === "refund_request.decide" && command.decision === "approve"
-            ? APPROVAL_ATTESTATION_ID
-            : null,
+        canonicalRequestHash: createHash("sha256").update(verified.rawBody).digest(),
       });
     },
   };
+
+  function verifierWith(verify: SignedRequestVerifier["verify"]): SignedRequestVerifier {
+    return {
+      attestApproval: signedRequestVerifier.attestApproval.bind(signedRequestVerifier),
+      verify,
+    };
+  }
 
   async function invoke(
     spec: PilotRouteSpec,
@@ -433,6 +455,106 @@ describe("signed pilot API boundary", () => {
     expect(response.headers.get("access-control-allow-headers")).toContain("Stripe-Signature");
   });
 
+  it("rejects pre-auth capacity before signature lookup, body reads, verifier or database work", async () => {
+    const getReader = vi.fn(() => {
+      throw new Error("body must not be consumed");
+    });
+    const acquire = vi.fn(() => ({
+      allowed: false as const,
+      reason: EdgeAdmissionDeniedReason.GlobalRateLimited,
+      retryAfterSeconds: 2,
+      status: 429 as const,
+    }));
+    const verify = vi.fn();
+    const consume = vi.fn();
+    const request = {
+      body: { getReader },
+      headers: new Headers(),
+      url: `https://api.refunddesk.example${PILOT_ROUTE_SPECS.settingsGet.path}`,
+    } as unknown as Request;
+
+    const response = await handlePilotRoute(request, PILOT_ROUTE_SPECS.settingsGet, {
+      edgeAdmissionGate: { acquire },
+      emitOperationalSignal,
+      signedRequestRateLimiter: { consume },
+      service,
+      signedRequestVerifier: verifierWith(verify),
+    });
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("2");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(await errorBody(response)).toMatchObject({ code: "EDGE_RATE_LIMITED" });
+    expect(getReader).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("releases pre-auth concurrency when signature verification fails", async () => {
+    const release = vi.fn();
+    const verify = vi.fn(() =>
+      Promise.reject(new SignedRequestError("SIGNATURE_INVALID", "synthetic invalid signature")),
+    );
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.settingsGet),
+      PILOT_ROUTE_SPECS.settingsGet,
+      {
+        edgeAdmissionGate: {
+          acquire: () => ({ allowed: true, lease: { release } }),
+        },
+        emitOperationalSignal,
+        signedRequestRateLimiter,
+        service,
+        signedRequestVerifier: verifierWith(verify),
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a signed body that misses the absolute deadline and releases its lease", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-01T12:00:00.000Z") });
+    try {
+      const cancel = vi.fn();
+      const release = vi.fn();
+      const verify = vi.fn();
+      const consume = vi.fn();
+      const request = new Request(
+        `https://api.refunddesk.example${PILOT_ROUTE_SPECS.settingsGet.path}`,
+        {
+          body: new ReadableStream<Uint8Array>({ cancel }),
+          headers: { "Stripe-Signature": "t=1,v1=unused" },
+          method: "POST",
+          duplex: "half",
+        } as RequestInit & { readonly duplex: "half" },
+      );
+
+      const responsePromise = handlePilotRoute(request, PILOT_ROUTE_SPECS.settingsGet, {
+        edgeAdmissionGate: {
+          acquire: () => ({ allowed: true, lease: { release } }),
+        },
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: verifierWith(verify),
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const response = await responsePromise;
+
+      expect(response.status).toBe(408);
+      expect(await errorBody(response)).toMatchObject({ code: "REQUEST_TIMEOUT" });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(verify).not.toHaveBeenCalled();
+      expect(consume).not.toHaveBeenCalled();
+      expect(repository.resolutionOptions).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rate-limits a mutation only after signature verification with its authenticated scope", async () => {
     const calls: string[] = [];
     const verify = vi.fn(async (rawText: string, signature: string | null) => {
@@ -451,7 +573,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal,
         signedRequestRateLimiter: { consume },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -468,6 +590,150 @@ describe("signed pilot API boundary", () => {
       requestClass: "mutation",
     });
     expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("never persists an approval attestation before durable capacity admission", async () => {
+    const calls: string[] = [];
+    const verify = vi.fn(async (rawText: string, signature: string | null) => {
+      calls.push("verify");
+      return signedRequestVerifier.verify(rawText, signature);
+    });
+    const attestApproval = vi.fn(() => {
+      calls.push("attest");
+      return Promise.resolve(APPROVAL_ATTESTATION_ID);
+    });
+    const consume = vi.fn(() => {
+      calls.push("limit");
+      return Promise.resolve({ allowed: false as const, retryAfterSeconds: 7 });
+    });
+
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.refundRequestDecide, {
+        command: {
+          approval_snapshot: {
+            amount_minor: "500",
+            currency: "eur",
+            reason: "requested_by_customer",
+            requester_user_id: "usr_requester",
+          },
+          decision: "approve",
+          expected_request_version: 0,
+          request_id: REQUEST_ID,
+        },
+      }),
+      PILOT_ROUTE_SPECS.refundRequestDecide,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { attestApproval, verify },
+      },
+    );
+
+    expect(response.status).toBe(429);
+    expect(calls).toEqual(["verify", "limit"]);
+    expect(attestApproval).not.toHaveBeenCalled();
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("attests an approval only after capacity and route validation, before dispatch", async () => {
+    const calls: string[] = [];
+    let completeAttestation: (() => void) | undefined;
+    const pendingAttestation = new Promise<string>((resolve) => {
+      completeAttestation = () => resolve(APPROVAL_ATTESTATION_ID);
+    });
+    const verify = vi.fn(async (rawText: string, signature: string | null) => {
+      calls.push("verify");
+      return signedRequestVerifier.verify(rawText, signature);
+    });
+    const consume = vi.fn(() => {
+      calls.push("limit");
+      return Promise.resolve({ allowed: true as const });
+    });
+    const attestApproval = vi.fn(() => {
+      calls.push("attest");
+      return pendingAttestation;
+    });
+    const release = vi.fn(() => calls.push("release"));
+    const originalDispatch = service.dispatch.bind(service);
+    const dispatch = vi.spyOn(service, "dispatch").mockImplementation((input) => {
+      calls.push("dispatch");
+      return originalDispatch(input);
+    });
+
+    const responsePromise = handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.refundRequestDecide, {
+        command: {
+          approval_snapshot: {
+            amount_minor: "500",
+            currency: "eur",
+            reason: "requested_by_customer",
+            requester_user_id: "usr_requester",
+          },
+          decision: "approve",
+          expected_request_version: 0,
+          request_id: REQUEST_ID,
+        },
+      }),
+      PILOT_ROUTE_SPECS.refundRequestDecide,
+      {
+        edgeAdmissionGate: {
+          acquire: () => ({ allowed: true, lease: { release } }),
+        },
+        emitOperationalSignal,
+        signedRequestRateLimiter: { consume },
+        service,
+        signedRequestVerifier: { attestApproval, verify },
+      },
+    );
+
+    await vi.waitFor(() => expect(attestApproval).toHaveBeenCalledOnce());
+    expect(release).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+
+    completeAttestation?.();
+    const response = await responsePromise;
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(["verify", "limit", "attest", "release", "dispatch"]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(attestApproval).toHaveBeenCalledOnce();
+  });
+
+  it("maps an approval-attestation nonce conflict to the public idempotency conflict", async () => {
+    const attestApproval = vi.fn(() => Promise.reject(new SignedRequestAttestationConflictError()));
+    const dispatch = vi.spyOn(service, "dispatch");
+
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.refundRequestDecide, {
+        command: {
+          approval_snapshot: {
+            amount_minor: "500",
+            currency: "eur",
+            reason: "requested_by_customer",
+            requester_user_id: "usr_requester",
+          },
+          decision: "approve",
+          expected_request_version: 0,
+          request_id: REQUEST_ID,
+        },
+      }),
+      PILOT_ROUTE_SPECS.refundRequestDecide,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter,
+        service,
+        signedRequestVerifier: {
+          attestApproval,
+          verify: signedRequestVerifier.verify.bind(signedRequestVerifier),
+        },
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(await errorBody(response)).toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    expect(attestApproval).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("awaits the limiter decision before dispatching or accessing the repository", async () => {
@@ -595,7 +861,7 @@ describe("signed pilot API boundary", () => {
           },
         },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -664,7 +930,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal,
         signedRequestRateLimiter: { consume },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -690,7 +956,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal,
         signedRequestRateLimiter: { consume },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -720,7 +986,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal,
         signedRequestRateLimiter: { consume },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -742,7 +1008,7 @@ describe("signed pilot API boundary", () => {
         emitOperationalSignal,
         signedRequestRateLimiter: { consume },
         service,
-        signedRequestVerifier: { verify },
+        signedRequestVerifier: verifierWith(verify),
       },
     );
 
@@ -761,7 +1027,7 @@ describe("signed pilot API boundary", () => {
       emitOperationalSignal,
       signedRequestRateLimiter: { consume },
       service,
-      signedRequestVerifier: { verify },
+      signedRequestVerifier: verifierWith(verify),
     });
 
     expect(missingSignatureResponse.status).toBe(401);

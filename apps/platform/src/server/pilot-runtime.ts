@@ -3,6 +3,7 @@ import { createPrismaClient, type PrismaClient } from "@refunddesk/db";
 import { createLogger } from "@refunddesk/observability";
 import { DirectAccountStripeClient, StripeCredentialResolver } from "@refunddesk/stripe-adapter";
 
+import { getEdgeAdmissionGate, type EdgeAdmissionGate } from "./edge-admission";
 import { createFieldEncryptionKeyring } from "./field-keyring";
 import { PostgresSignedRequestRateLimiter } from "./mutation-rate-limit";
 import type { PilotOperationalSignal } from "./pilot-http";
@@ -10,11 +11,13 @@ import { TestAndSandboxAccessPolicy } from "./pilot-access-policy";
 import { DirectStripePaymentReader } from "./pilot-payment-reader";
 import { PilotPrismaRepository } from "./pilot-prisma-repository";
 import { PilotService } from "./pilot-service";
+import { SampledSignalEmitter } from "./sampled-signal-emitter";
 import { RemoteSignedRequestVerifier, type SignedRequestVerifier } from "./signed-request";
 
 export interface PilotRuntime {
   readonly auditSigningKey: Uint8Array;
   readonly client: PrismaClient;
+  readonly edgeAdmissionGate: EdgeAdmissionGate;
   readonly emitOperationalSignal: (signal: PilotOperationalSignal) => void;
   readonly signedRequestRateLimiter: PostgresSignedRequestRateLimiter;
   readonly service: PilotService;
@@ -23,6 +26,18 @@ export interface PilotRuntime {
 
 let runtimeInstance: PilotRuntime | undefined;
 const logger = createLogger("platform");
+const operationalSignalEmitter = new SampledSignalEmitter<PilotOperationalSignal>({
+  emit({ observedCount, signal, suppressedCount }) {
+    logger.warn(
+      {
+        event: signal,
+        observed_count: observedCount,
+        suppressed_count: suppressedCount,
+      },
+      "Platform operational signal",
+    );
+  },
+});
 
 export function getPilotRuntime(): PilotRuntime {
   if (runtimeInstance !== undefined) {
@@ -54,8 +69,9 @@ export function getPilotRuntime(): PilotRuntime {
   runtimeInstance = {
     auditSigningKey: config.keys.exportV1,
     client,
+    edgeAdmissionGate: getEdgeAdmissionGate(),
     emitOperationalSignal(signal) {
-      logger.warn({ event: signal }, "Platform operational signal");
+      operationalSignalEmitter.emit(signal);
     },
     service: new PilotService(
       repository,

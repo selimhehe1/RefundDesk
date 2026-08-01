@@ -2,22 +2,32 @@
 	admin 127.0.0.1:2019
 	auto_https off
 	grace_period 30s
+	persist_config off
+	servers {
+		timeouts {
+			read_header 5s
+			read_body 30s
+			write 30s
+			idle 60s
+		}
+		max_header_size 64KiB
+	}
 }
 
 https://verifier.refunddesk.internal:8443 {
 	tls /run/refunddesk/tls/server.crt /run/refunddesk/tls/server.key
 
 	route {
-		@verify {
+		@authority {
 			method POST
-			path /internal/v1/signed-requests/verify
+			path /internal/v1/signed-requests/verify /internal/v1/signed-requests/attest
 		}
 
-		request_body @verify {
+		request_body @authority {
 			max_size 32768
 		}
 
-		reverse_proxy @verify worker.refunddesk.internal:3101 {
+		reverse_proxy @authority worker.refunddesk.internal:3101 {
 			transport http {
 				dial_timeout 3s
 				response_header_timeout 30s

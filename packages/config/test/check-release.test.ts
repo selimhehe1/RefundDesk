@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { join } from "node:path";
 import { checkReleaseConfiguration } from "../src/check-release.js";
 
 const temporaryDirectories: string[] = [];
+const syntheticEdgeOriginToken = randomBytes(32).toString("base64url");
 
 function serializeEnvironment(environment: NodeJS.ProcessEnv): string {
   return `${Object.entries(environment)
@@ -79,6 +81,8 @@ function migrationEnvironment(): NodeJS.ProcessEnv {
 
 interface ReleaseFileOverrides {
   readonly appBaseUrl?: string;
+  readonly caddyEnvironment?: NodeJS.ProcessEnv;
+  readonly caddyFile?: string;
   readonly maintenanceEnvironment?: NodeJS.ProcessEnv;
   readonly maintenanceFile?: string;
   readonly migrationEnvironment?: NodeJS.ProcessEnv;
@@ -142,10 +146,13 @@ async function createReleaseFiles(overrides: ReleaseFileOverrides = {}): Promise
     ),
     writeFile(
       join(directory, caddyPath),
-      serializeEnvironment({
-        REFUNDDESK_PUBLIC_HOST: publicHost,
-        REFUNDDESK_ACME_EMAIL: "operator@example.invalid",
-      }),
+      overrides.caddyFile ??
+        serializeEnvironment({
+          REFUNDDESK_PUBLIC_HOST: publicHost,
+          REFUNDDESK_ACME_EMAIL: "operator@example.invalid",
+          REFUNDDESK_EDGE_ORIGIN_TOKEN: syntheticEdgeOriginToken,
+          ...overrides.caddyEnvironment,
+        }),
     ),
     writeFile(join(directory, publicOriginPath), publicOriginFile),
   ]);
@@ -202,6 +209,87 @@ describe("release configuration file check", () => {
         proof: "legacy",
       },
     });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["too short", "A".repeat(42)],
+    ["padded", `${syntheticEdgeOriginToken}=`],
+    ["outside base64url", `${syntheticEdgeOriginToken.slice(0, -1)}+`],
+    ["non-canonical trailing bits", `${syntheticEdgeOriginToken.slice(0, -1)}z`],
+  ])("rejects a %s edge-origin token without exposing it", async (_name, token) => {
+    const caddyEnvironment: NodeJS.ProcessEnv = {
+      REFUNDDESK_PUBLIC_HOST: "origin.refunddesk.example",
+      REFUNDDESK_ACME_EMAIL: "operator@example.invalid",
+      ...(token === undefined ? {} : { REFUNDDESK_EDGE_ORIGIN_TOKEN: token }),
+    };
+    const files = await createReleaseFiles({
+      caddyFile: serializeEnvironment(caddyEnvironment),
+    });
+
+    let error: unknown;
+    try {
+      await checkReleaseConfiguration(files.hostedPaths, files.directory);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("HOSTED_CADDY_CONFIGURATION_INVALID");
+    if (token !== undefined) {
+      expect((error as Error).message).not.toContain(token);
+    }
+  });
+
+  it("rejects an unexpected Caddy binding", async () => {
+    const files = await createReleaseFiles({
+      caddyEnvironment: { REFUNDDESK_UNREVIEWED_EDGE_BYPASS: "enabled" },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "HOSTED_CADDY_CONFIGURATION_INVALID",
+    );
+  });
+
+  it("rejects the public non-secret CI edge-origin token", async () => {
+    const files = await createReleaseFiles({
+      caddyEnvironment: {
+        REFUNDDESK_EDGE_ORIGIN_TOKEN: "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+      },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "HOSTED_CADDY_CONFIGURATION_INVALID",
+    );
+  });
+
+  it.each([
+    ["comment", "# copied operator note\n"],
+    ["blank line", "\n"],
+    ["duplicate", `REFUNDDESK_EDGE_ORIGIN_TOKEN=${syntheticEdgeOriginToken}\n`],
+  ])("rejects a Caddy environment containing a %s", async (_name, extraLine) => {
+    const valid = serializeEnvironment({
+      REFUNDDESK_PUBLIC_HOST: "origin.refunddesk.example",
+      REFUNDDESK_ACME_EMAIL: "operator@example.invalid",
+      REFUNDDESK_EDGE_ORIGIN_TOKEN: syntheticEdgeOriginToken,
+    });
+    const files = await createReleaseFiles({ caddyFile: `${valid}${extraLine}` });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "HOSTED_CADDY_CONFIGURATION_INVALID",
+    );
+  });
+
+  it("rejects CRLF in the Caddy environment before release mutation", async () => {
+    const caddyFile = serializeEnvironment({
+      REFUNDDESK_PUBLIC_HOST: "origin.refunddesk.example",
+      REFUNDDESK_ACME_EMAIL: "operator@example.invalid",
+      REFUNDDESK_EDGE_ORIGIN_TOKEN: syntheticEdgeOriginToken,
+    }).replaceAll("\n", "\r\n");
+    const files = await createReleaseFiles({ caddyFile });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "HOSTED_CADDY_CONFIGURATION_INVALID",
+    );
   });
 
   it("returns only non-secret active V2 lifecycle metadata for the release guard", async () => {

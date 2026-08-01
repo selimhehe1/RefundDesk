@@ -166,83 +166,130 @@ describe("worker health server", () => {
   });
 
   it("keeps signed verification private, POST-only and body-bounded", async () => {
-    let calls = 0;
+    let verifyCalls = 0;
+    let attestCalls = 0;
+    const envelope = {
+      account_id: "acct_test",
+      command_json: "{}",
+      is_sandbox: false,
+      mode: "test" as const,
+      operation: "context.sync" as const,
+      request_nonce: "1d48dd30-0eb4-4ce0-a731-57423e57567d",
+      resource_type: "account" as const,
+      roles_asserted: false as const,
+      user_id: "usr_test",
+    };
     const authority: WorkerSignedRequestAuthority = {
-      verifyAndAttest: (_rawText, signature) => {
-        calls += 1;
-        if (signature === "invalid") {
+      attestApproval: (_rawText, signature) => {
+        attestCalls += 1;
+        if (signature !== "synthetic") {
           return Promise.reject(new WorkerSignedRequestAuthorityError(401, "signature_invalid"));
         }
         return Promise.resolve({
-          approvalAttestationId: null,
+          approvalAttestationId: "0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b",
           canonicalRequestHash: "0".repeat(64),
-          envelope: {
-            account_id: "acct_test",
-            command_json: "{}",
-            is_sandbox: false,
-            mode: "test",
-            operation: "context.sync",
-            request_nonce: "1d48dd30-0eb4-4ce0-a731-57423e57567d",
-            resource_type: "account",
-            roles_asserted: false,
-            user_id: "usr_test",
-          },
+          envelope,
+        });
+      },
+      verify: (_rawText, signature) => {
+        verifyCalls += 1;
+        if (signature !== "synthetic") {
+          return Promise.reject(new WorkerSignedRequestAuthorityError(401, "signature_invalid"));
+        }
+        return Promise.resolve({
+          canonicalRequestHash: "0".repeat(64),
+          envelope,
         });
       },
     };
     const token = Buffer.alloc(32, 7).toString("base64");
     const server = await start(readyProbe(), { authority, token });
+    const paths = [
+      "/internal/v1/signed-requests/verify",
+      "/internal/v1/signed-requests/attest",
+    ] as const;
 
     try {
-      const unauthorized = await request(server, "/internal/v1/signed-requests/verify", {
-        body: "{}",
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      });
-      expect(unauthorized.response.status).toBe(403);
-      expect(unauthorized.body).toBe('{"status":"unauthorized"}');
+      for (const path of paths) {
+        const unauthorized = await request(server, path, {
+          body: "{}",
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        });
+        expect(unauthorized.response.status).toBe(403);
+        expect(unauthorized.body).toBe('{"status":"unauthorized"}');
 
-      const invalidBearer = await request(server, "/internal/v1/signed-requests/verify", {
-        body: "{}",
-        headers: {
-          Authorization: "Bearer invalid-service-token",
-          "Content-Type": "application/json",
-          "Stripe-Signature": "synthetic",
-        },
-        method: "POST",
-      });
-      expect(invalidBearer.response.status).toBe(403);
-      expect(invalidBearer.body).toBe('{"status":"unauthorized"}');
-      expect(calls).toBe(0);
+        const invalidBearer = await request(server, path, {
+          body: "{}",
+          headers: {
+            Authorization: "Bearer invalid-service-token",
+            "Content-Type": "application/json",
+            "Stripe-Signature": "synthetic",
+          },
+          method: "POST",
+        });
+        expect(invalidBearer.response.status).toBe(403);
+        expect(invalidBearer.body).toBe('{"status":"unauthorized"}');
 
-      const wrongMethod = await request(server, "/internal/v1/signed-requests/verify", {
-        headers: { Authorization: `Bearer ${token}` },
-        method: "GET",
-      });
-      expect(wrongMethod.response.status).toBe(405);
-      expect(wrongMethod.response.headers.get("allow")).toBe("POST");
+        const wrongMethod = await request(server, path, {
+          headers: { Authorization: `Bearer ${token}` },
+          method: "GET",
+        });
+        expect(wrongMethod.response.status).toBe(405);
+        expect(wrongMethod.response.headers.get("allow")).toBe("POST");
 
-      const oversized = await request(server, "/internal/v1/signed-requests/verify", {
-        body: "x".repeat(32 * 1_024 + 1),
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        method: "POST",
-      });
-      expect(oversized.response.status).toBe(413);
+        const wrongContentType = await request(server, path, {
+          body: "{}",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "text/plain",
+            "Stripe-Signature": "synthetic",
+          },
+          method: "POST",
+        });
+        expect(wrongContentType.response.status).toBe(400);
+        expect(wrongContentType.body).toBe('{"status":"invalid"}');
 
-      const invalidStripeSignature = await request(server, "/internal/v1/signed-requests/verify", {
-        body: "{}",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "Stripe-Signature": "invalid",
-        },
-        method: "POST",
-      });
-      expect(invalidStripeSignature.response.status).toBe(401);
-      expect(invalidStripeSignature.body).toBe('{"status":"unauthorized"}');
+        const oversized = await request(server, path, {
+          body: "x".repeat(32 * 1_024 + 1),
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "Stripe-Signature": "synthetic",
+          },
+          method: "POST",
+        });
+        expect(oversized.response.status).toBe(413);
+
+        const invalidStripeSignature = await request(server, path, {
+          body: "{}",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "Stripe-Signature": "invalid",
+          },
+          method: "POST",
+        });
+        expect(invalidStripeSignature.response.status).toBe(401);
+        expect(invalidStripeSignature.body).toBe('{"status":"unauthorized"}');
+      }
+      expect(verifyCalls).toBe(1);
+      expect(attestCalls).toBe(1);
+
+      for (const path of paths) {
+        for (const suffix of ["?unexpected=true", "/"] as const) {
+          const inexact = await request(server, `${path}${suffix}`, {
+            body: "{}",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+              "Stripe-Signature": "synthetic",
+            },
+            method: "POST",
+          });
+          expect(inexact.response.status).toBe(404);
+        }
+      }
 
       const verified = await request(server, "/internal/v1/signed-requests/verify", {
         body: "{}",
@@ -254,11 +301,35 @@ describe("worker health server", () => {
         method: "POST",
       });
       expect(verified.response.status).toBe(200);
-      expect(JSON.parse(verified.body)).toMatchObject({
-        approval_attestation_id: null,
+      const verifiedBody = JSON.parse(verified.body) as Record<string, unknown>;
+      expect(verifiedBody).toMatchObject({
         canonical_request_hash: "0".repeat(64),
       });
-      expect(calls).toBe(2);
+      expect(verifiedBody).not.toHaveProperty("approval_attestation_id");
+      expect(Object.keys(verifiedBody).sort()).toEqual(["canonical_request_hash", "envelope"]);
+
+      const attested = await request(server, "/internal/v1/signed-requests/attest", {
+        body: "{}",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Stripe-Signature": "synthetic",
+        },
+        method: "POST",
+      });
+      expect(attested.response.status).toBe(200);
+      const attestedBody = JSON.parse(attested.body) as Record<string, unknown>;
+      expect(attestedBody).toMatchObject({
+        approval_attestation_id: "0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b",
+        canonical_request_hash: "0".repeat(64),
+      });
+      expect(Object.keys(attestedBody).sort()).toEqual([
+        "approval_attestation_id",
+        "canonical_request_hash",
+        "envelope",
+      ]);
+      expect(verifyCalls).toBe(2);
+      expect(attestCalls).toBe(2);
     } finally {
       await server.close();
     }

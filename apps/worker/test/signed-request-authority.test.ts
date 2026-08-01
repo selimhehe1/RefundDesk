@@ -50,26 +50,42 @@ function signed(envelope: SignedEnvelope): { readonly raw: string; readonly sign
 }
 
 describe("worker signed-request authority", () => {
-  it("creates an approval attestation only from the exact Stripe-signed snapshot", async () => {
+  it("verifies an approval request without touching the attestation store", async () => {
     const store = new FakeStore();
     const authority = new StripeSignedRequestAuthority(SIGNING_SECRET, store);
     const request = signed(approvalEnvelope());
 
-    const result = await authority.verifyAndAttest(request.raw, request.signature);
+    const result = await authority.verify(request.raw, request.signature);
 
-    expect(result.approvalAttestationId).toBe("0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b");
     expect(result.canonicalRequestHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(result.envelope).toEqual(approvalEnvelope());
+    expect(result).not.toHaveProperty("approvalAttestationId");
+    expect(store.trace).toEqual([]);
+  });
+
+  it("re-verifies the exact approval bytes before persisting an attestation", async () => {
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority(SIGNING_SECRET, store);
+    const request = signed(approvalEnvelope());
+
+    const verified = await authority.verify(request.raw, request.signature);
+    const attested = await authority.attestApproval(request.raw, request.signature);
+
+    expect(attested.approvalAttestationId).toBe("0dddf88a-4d04-4ae0-a0ce-4a3056d8bf4b");
+    expect(attested.canonicalRequestHash).toBe(verified.canonicalRequestHash);
+    expect(attested.envelope).toEqual(verified.envelope);
     expect(store.trace).toEqual(["store.attestation"]);
   });
 
-  it("rejects a body changed after Stripe signed it", async () => {
+  it("does not carry verification authority across a changed attestation request", async () => {
     const store = new FakeStore();
     const authority = new StripeSignedRequestAuthority(SIGNING_SECRET, store);
     const request = signed(approvalEnvelope());
+    await authority.verify(request.raw, request.signature);
     const changed = request.raw.replace("500", "501");
     expect(changed).not.toBe(request.raw);
 
-    await expect(authority.verifyAndAttest(changed, request.signature)).rejects.toMatchObject({
+    await expect(authority.attestApproval(changed, request.signature)).rejects.toMatchObject({
       code: "signature_invalid",
       status: 401,
     });
@@ -81,26 +97,38 @@ describe("worker signed-request authority", () => {
     const authority = new StripeSignedRequestAuthority(SIGNING_SECRET, store);
     const request = signed(approvalEnvelope({ mode: "live" }));
 
-    await expect(authority.verifyAndAttest(request.raw, request.signature)).rejects.toMatchObject({
+    await expect(authority.verify(request.raw, request.signature)).rejects.toMatchObject({
       code: "live_forbidden",
       status: 403,
     });
     expect(store.trace).toEqual([]);
   });
 
-  it("verifies non-approval requests without granting an attestation", async () => {
+  it("refuses to attest non-decision and rejection commands", async () => {
     const store = new FakeStore();
     const authority = new StripeSignedRequestAuthority(SIGNING_SECRET, store);
-    const request = signed(
+    const nonDecision = signed(
       approvalEnvelope({
         command_json: canonicalJson({}),
         operation: "payment.eligibility",
       }),
     );
+    const rejection = signed(
+      approvalEnvelope({
+        command_json: canonicalJson({
+          decision: "reject",
+          justification: "The refund request was reviewed and rejected.",
+          request_id: REQUEST_ID,
+        }),
+      }),
+    );
 
-    await expect(authority.verifyAndAttest(request.raw, request.signature)).resolves.toMatchObject({
-      approvalAttestationId: null,
-    });
+    await expect(
+      authority.attestApproval(nonDecision.raw, nonDecision.signature),
+    ).rejects.toMatchObject({ code: "envelope_invalid", status: 400 });
+    await expect(
+      authority.attestApproval(rejection.raw, rejection.signature),
+    ).rejects.toMatchObject({ code: "envelope_invalid", status: 400 });
     expect(store.trace).toEqual([]);
   });
 });

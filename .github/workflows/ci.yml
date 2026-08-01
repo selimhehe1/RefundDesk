@@ -215,6 +215,7 @@ jobs:
               caddy_arguments+=(
                 --env REFUNDDESK_PUBLIC_HOST=sandbox.example.invalid
                 --env REFUNDDESK_ACME_EMAIL=operator@example.invalid
+                --env REFUNDDESK_EDGE_ORIGIN_TOKEN=CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws
               )
             else
               caddy_arguments+=(
@@ -691,17 +692,21 @@ jobs:
           "
           curl --fail --silent http://127.0.0.1:3200/ >/dev/null
           test "$(
-            curl --silent --output /dev/null --write-out '%{http_code}' \
-              --request POST \
-              --header 'Content-Type: application/json' \
-              --data '{}' \
-              http://127.0.0.1:3200/api/v1/context/sync
+              curl --silent --output /dev/null --write-out '%{http_code}' \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --header 'X-RefundDesk-Edge-Verified: cloudfront-v1' \
+                --header 'X-RefundDesk-Viewer-Chain: 198.51.100.10' \
+                --data '{}' \
+                http://127.0.0.1:3200/api/v1/context/sync
           )" = "401"
           for environment in test sandbox; do
             test "$(
               curl --silent --output /dev/null --write-out '%{http_code}' \
                 --request POST \
                 --header 'Content-Type: application/json' \
+                --header 'X-RefundDesk-Edge-Verified: cloudfront-v1' \
+                --header 'X-RefundDesk-Viewer-Chain: 3.18.12.63' \
                 --data '{}' \
                 "http://127.0.0.1:3200/api/webhooks/stripe-account/${environment}"
             )" = "400"
@@ -720,13 +725,15 @@ jobs:
               --data '{}' \
               http://127.0.0.1:3200/api/webhooks/stripe-account/live
           )" = "503"
-          test "$(
-            curl --silent --output /dev/null --write-out '%{http_code}' \
-              --request POST \
-              --header 'Content-Type: application/json' \
-              --data '{}' \
-              http://127.0.0.1:3201/internal/v1/signed-requests/verify
-          )" = "403"
+          for authority_action in verify attest; do
+            test "$(
+              curl --silent --output /dev/null --write-out '%{http_code}' \
+                --request POST \
+                --header 'Content-Type: application/json' \
+                --data '{}' \
+                "http://127.0.0.1:3201/internal/v1/signed-requests/${authority_action}"
+            )" = "403"
+          done
 
           for container in refunddesk-web-ci refunddesk-worker-ci; do
             for attempt in $(seq 1 40); do

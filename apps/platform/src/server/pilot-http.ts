@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
@@ -8,6 +8,16 @@ import {
   type CanonicalJsonValue,
 } from "@refunddesk/contracts";
 
+import {
+  getEdgeAdmissionGate,
+  type EdgeAdmissionGate,
+  type EdgeAdmissionLease,
+} from "./edge-admission";
+import {
+  BoundedRequestBodyError,
+  readBoundedRequestBody,
+  REQUEST_BODY_DEADLINE_MS,
+} from "./bounded-request-body";
 import { apiError, jsonResponse } from "./http";
 import {
   type SignedRequestRateLimiter,
@@ -18,6 +28,7 @@ import type { PilotPaymentResource } from "./pilot-ports";
 import type { PilotRouteSpec } from "./pilot-routes";
 import type { PilotDispatchRequest, PilotService } from "./pilot-service";
 import {
+  SignedRequestAttestationConflictError,
   SignedRequestError,
   SignedRequestVerifierUnavailableError,
   type SignedRequestVerifier,
@@ -26,13 +37,77 @@ import {
 const MAX_SIGNED_BODY_BYTES = 32 * 1_024;
 const RATE_LIMIT_FAILURE_RETRY_AFTER_SECONDS = 60;
 
-export type PilotOperationalSignal = "signed_request_rate_limiter_unavailable";
+export type PilotOperationalSignal =
+  "edge_admission_unavailable" | "edge_rate_limited" | "signed_request_rate_limiter_unavailable";
 
 export interface PilotHttpDependencies {
+  readonly edgeAdmissionGate?: EdgeAdmissionGate;
   readonly emitOperationalSignal: (signal: PilotOperationalSignal) => void;
   readonly signedRequestRateLimiter: SignedRequestRateLimiter;
   readonly service: PilotService;
   readonly signedRequestVerifier: SignedRequestVerifier;
+}
+
+function emitSignalSafely(
+  emitOperationalSignal: PilotHttpDependencies["emitOperationalSignal"],
+  signal: PilotOperationalSignal,
+): void {
+  try {
+    emitOperationalSignal(signal);
+  } catch {
+    // Observability must never alter an admission decision.
+  }
+}
+
+function edgeAdmissionDeniedResponse(
+  status: 429 | 503,
+  requestId: ReturnType<typeof randomUUID>,
+  retryAfterSeconds: number,
+): Response {
+  const response = apiError(
+    status === 429 ? "EDGE_RATE_LIMITED" : "EDGE_ADMISSION_UNAVAILABLE",
+    status === 429
+      ? "Request admission capacity is temporarily exhausted."
+      : "Request admission is temporarily unavailable.",
+    status,
+    requestId,
+    true,
+  );
+  response.headers.set("Access-Control-Expose-Headers", "Retry-After");
+  response.headers.set("Retry-After", String(retryAfterSeconds));
+  return response;
+}
+
+function acquireEdgeAdmission(
+  dependencies: PilotHttpDependencies,
+  request: Request,
+  requestId: ReturnType<typeof randomUUID>,
+): { readonly lease: EdgeAdmissionLease } | { readonly response: Response } {
+  let decision;
+  try {
+    decision = (dependencies.edgeAdmissionGate ?? getEdgeAdmissionGate()).acquire(
+      request.headers,
+      "signed_api",
+    );
+  } catch {
+    emitSignalSafely(dependencies.emitOperationalSignal, "edge_admission_unavailable");
+    return { response: edgeAdmissionDeniedResponse(503, requestId, 60) };
+  }
+  if (decision.allowed) {
+    return { lease: decision.lease };
+  }
+  if (
+    decision.status === 429 &&
+    Number.isSafeInteger(decision.retryAfterSeconds) &&
+    (decision.retryAfterSeconds ?? 0) > 0
+  ) {
+    emitSignalSafely(dependencies.emitOperationalSignal, "edge_rate_limited");
+    return {
+      response: edgeAdmissionDeniedResponse(429, requestId, decision.retryAfterSeconds ?? 1),
+    };
+  }
+  emitSignalSafely(dependencies.emitOperationalSignal, "edge_admission_unavailable");
+  return { response: edgeAdmissionDeniedResponse(503, requestId, 60) };
 }
 
 function retryableCapacityResponse(
@@ -116,37 +191,28 @@ function assertSignedBodyHeaders(request: Request): void {
   }
 }
 
-async function readBoundedSignedBody(request: Request): Promise<string> {
-  if (request.body === null) {
-    return "";
-  }
-
-  const reader = request.body.getReader();
-  const boundedBytes = Buffer.allocUnsafe(MAX_SIGNED_BODY_BYTES);
-  let totalBytes = 0;
+async function readBoundedSignedBody(request: Request, deadlineAtMs: number): Promise<string> {
+  let boundedBytes: Buffer;
   try {
-    while (true) {
-      const result = await reader.read();
-      if (result.done) {
-        break;
+    boundedBytes = await readBoundedRequestBody(request, {
+      deadlineAtMs,
+      maximumBytes: MAX_SIGNED_BODY_BYTES,
+    });
+  } catch (error) {
+    if (error instanceof BoundedRequestBodyError) {
+      if (error.code === "deadline_exceeded") {
+        throw error;
       }
-      if (!(result.value instanceof Uint8Array)) {
-        await reader.cancel().catch(() => undefined);
-        reject("COMMAND_INVALID", 400, "The signed request body is invalid.");
-      }
-      totalBytes += result.value.byteLength;
-      if (totalBytes > MAX_SIGNED_BODY_BYTES) {
-        await reader.cancel().catch(() => undefined);
+      if (error.code === "too_large") {
         reject("REQUEST_TOO_LARGE", 413, "The signed request body is too large.");
       }
-      boundedBytes.set(result.value, totalBytes - result.value.byteLength);
+      reject("COMMAND_INVALID", 400, "The signed request body is invalid.");
     }
-  } finally {
-    reader.releaseLock();
+    throw error;
   }
 
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(boundedBytes.subarray(0, totalBytes));
+    return new TextDecoder("utf-8", { fatal: true }).decode(boundedBytes);
   } catch {
     reject("COMMAND_INVALID", 400, "The signed request body is invalid.");
   }
@@ -197,15 +263,22 @@ export async function handlePilotRoute(
   dependencies: PilotHttpDependencies,
 ): Promise<Response> {
   const requestId = randomUUID();
+  let edgeLease: EdgeAdmissionLease | null = null;
   try {
     assertRoute(request, spec);
+    const edgeAdmission = acquireEdgeAdmission(dependencies, request, requestId);
+    if ("response" in edgeAdmission) {
+      return edgeAdmission.response;
+    }
+    edgeLease = edgeAdmission.lease;
+    const verificationDeadlineAtMs = Date.now() + REQUEST_BODY_DEADLINE_MS;
     const stripeSignature = request.headers.get("stripe-signature");
     if (stripeSignature === null || stripeSignature.length === 0) {
       throw new SignedRequestError("SIGNATURE_MISSING", "Stripe-Signature is required");
     }
 
     assertSignedBodyHeaders(request);
-    const rawText = await readBoundedSignedBody(request);
+    const rawText = await readBoundedSignedBody(request, verificationDeadlineAtMs);
 
     const verified = await dependencies.signedRequestVerifier.verify(rawText, stripeSignature);
     const { envelope } = verified;
@@ -268,9 +341,18 @@ export async function handlePilotRoute(
       reject("ENVELOPE_NON_CANONICAL", 400, "The signed command is not canonical.");
     }
 
+    const approvalAttestationId =
+      envelope.operation === "refund_request.decide" &&
+      parseOperationCommand("refund_request.decide", envelope.command_json).decision === "approve"
+        ? await dependencies.signedRequestVerifier.attestApproval(verified, stripeSignature)
+        : null;
+
+    edgeLease.release();
+    edgeLease = null;
+
     const dispatchRequest = {
-      approvalAttestationId: verified.approvalAttestationId,
-      canonicalRequestHash: createHash("sha256").update(verified.rawBody).digest(),
+      approvalAttestationId,
+      canonicalRequestHash: verified.canonicalRequestHash,
       command,
       identity: {
         accountId: envelope.account_id,
@@ -288,6 +370,24 @@ export async function handlePilotRoute(
     const result = await dependencies.service.dispatch(dispatchRequest);
     return jsonResponse(result.body, result.status, true);
   } catch (error) {
+    if (error instanceof BoundedRequestBodyError && error.code === "deadline_exceeded") {
+      return apiError(
+        "REQUEST_TIMEOUT",
+        "The signed request body did not complete in time.",
+        408,
+        requestId,
+        true,
+      );
+    }
+    if (error instanceof SignedRequestAttestationConflictError) {
+      return apiError(
+        "IDEMPOTENCY_CONFLICT",
+        "The request nonce was already used for a different mutation.",
+        409,
+        requestId,
+        true,
+      );
+    }
     if (error instanceof SignedRequestError) {
       return safeSignedRequestError(error, requestId);
     }
@@ -305,5 +405,7 @@ export async function handlePilotRoute(
     }
     const safeError = asSafePilotError(error);
     return apiError(safeError.code, safeError.message, safeError.status, requestId, true);
+  } finally {
+    edgeLease?.release();
   }
 }

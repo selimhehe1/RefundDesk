@@ -711,6 +711,12 @@ test("TLS names and ingress deny rules are explicit", async () => {
     platform,
     /https:\/\/verifier\.refunddesk\.internal:8443\/internal\/v1\/signed-requests\/verify/u,
   );
+  const boundedServerOptions =
+    /servers \{\s+timeouts \{\s+read_header 5s\s+read_body 30s\s+write 30s\s+idle 60s\s+\}\s+max_header_size 64KiB\s+\}/u;
+  assert.match(publicCaddy, boundedServerOptions);
+  assert.match(verifierCaddy, boundedServerOptions);
+  assert.match(publicCaddy, /persist_config off/u);
+  assert.match(verifierCaddy, /persist_config off/u);
   assert.match(
     publicCaddy,
     /@blocked path \/internal \/internal\/\* \/api\/ready \/api\/webhooks\/stripe-connected \/api\/webhooks\/stripe-connected\/\* \/api\/webhooks\/stripe-account\/live/u,
@@ -723,13 +729,38 @@ test("TLS names and ingress deny rules are explicit", async () => {
     publicCaddy,
     /@account_webhooks path \/api\/webhooks\/stripe-account\/test \/api\/webhooks\/stripe-account\/sandbox\s+request_body @account_webhooks \{\s+max_size 1048576\s+\}/u,
   );
+  assert.match(
+    publicCaddy,
+    /@unverified_edge not header X-RefundDesk-Origin-Token \{\$REFUNDDESK_EDGE_ORIGIN_TOKEN\}\s+respond @unverified_edge 404/u,
+  );
+  assert.match(
+    publicCaddy,
+    /vars refunddesk_cloudfront_viewer_chain "\{http\.request\.header\.X-Forwarded-For\}"/u,
+  );
+  assert.match(
+    publicCaddy,
+    /header_up X-RefundDesk-Viewer-Chain "\{vars\.refunddesk_cloudfront_viewer_chain\}"/u,
+  );
+  assert.match(publicCaddy, /header_up X-RefundDesk-Edge-Verified cloudfront-v1/u);
+  assert.match(publicCaddy, /header_up -X-RefundDesk-Origin-Token/u);
+  const originTokenDeny = publicCaddy.indexOf("respond @unverified_edge 404");
+  const publicProxy = publicCaddy.indexOf("reverse_proxy web.refunddesk.internal:3000");
+  assert.ok(
+    originTokenDeny >= 0 && publicProxy > originTokenDeny,
+    "origin-token denial must execute before the public reverse proxy",
+  );
   assert.match(verifierCaddy, /https:\/\/verifier\.refunddesk\.internal:8443/u);
-  assert.match(verifierCaddy, /method POST\s+path \/internal\/v1\/signed-requests\/verify/u);
-  assert.match(verifierCaddy, /request_body @verify \{\s+max_size 32768\s+\}/u);
+  assert.match(
+    verifierCaddy,
+    /method POST\s+path \/internal\/v1\/signed-requests\/verify \/internal\/v1\/signed-requests\/attest/u,
+  );
+  assert.match(verifierCaddy, /request_body @authority \{\s+max_size 32768\s+\}/u);
   assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/test/u);
   assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/sandbox/u);
   assert.match(verifyDeployment, /\/api\/webhooks\/stripe-account\/live/u);
   assert.match(verifyDeployment, /\/api\/webhooks\/stripe-connected\/test/u);
+  assert.match(verifyDeployment, /require_command base64/u);
+  assert.match(verifyDeployment, /Caddy autosave residue is present/u);
   assert.equal(
     (verifierCaddy.match(/reverse_proxy/gu) ?? []).length,
     1,
@@ -751,6 +782,18 @@ test("deployment verification normalizes HTTP CRLF before exact header checks", 
     /\\r\?\$/u,
     "GNU grep ERE does not interpret \\r as a carriage return",
   );
+});
+
+test("the public CI edge token is coupled to every production deny-list", async () => {
+  const [workflow, releaseCheck, verifyDeployment] = await Promise.all([
+    read("../../.github/workflows/ci.yml"),
+    read("../../packages/config/src/check-release.ts"),
+    read("scripts/verify-deployment.sh"),
+  ]);
+  const workflowToken = workflow.match(/REFUNDDESK_EDGE_ORIGIN_TOKEN=([A-Za-z0-9_-]{43})/u)?.[1];
+  assert.ok(workflowToken, "CI must use one shape-valid public Caddy token");
+  assert.match(releaseCheck, new RegExp(`"${workflowToken}"`, "u"));
+  assert.match(verifyDeployment, new RegExp(`"${workflowToken}"`, "u"));
 });
 
 test("deployment verification fails closed when host listener inventory is unavailable", async () => {
@@ -790,7 +833,7 @@ test("deployment verification compiles every await-based Node eval as an ES modu
     /\bawait\b/u.test(groups.source),
   );
 
-  assert.equal(awaitProbes.length, 5, "all five await-based deployment probes must be covered");
+  assert.equal(awaitProbes.length, 6, "all six await-based deployment probes must be covered");
   for (const { groups } of awaitProbes) {
     const options = groups.options.trim().split(/\s+/u).filter(Boolean);
     assert.ok(
@@ -1031,13 +1074,11 @@ test("private readiness probes expose only safe transient and permanent exit cla
 
 test("CI smoke keeps inter-service bearer rejection distinct from Stripe signature rejection", async () => {
   const workflow = await read("../../.github/workflows/ci.yml");
-  const verifierEndpoint = "http://127.0.0.1:3201/internal/v1/signed-requests/verify";
-  const endpointOffset = workflow.indexOf(verifierEndpoint);
+  const authoritySmoke =
+    /for authority_action in verify attest; do[\s\S]*?http:\/\/127\.0\.0\.1:3201\/internal\/v1\/signed-requests\/\$\{authority_action\}[\s\S]*?\)" = "403"[\s\S]*?done/u;
 
-  assert.notEqual(endpointOffset, -1, "missing private verifier smoke request");
-  const statusAssertion = workflow.slice(endpointOffset, endpointOffset + 96);
-  assert.match(statusAssertion, /\)" = "403"/u);
-  assert.doesNotMatch(statusAssertion, /\)" = "401"/u);
+  assert.match(workflow, authoritySmoke, "missing private authority smoke requests");
+  assert.doesNotMatch(workflow.match(authoritySmoke)?.[0] ?? "", /\)" = "401"/u);
 });
 
 test("environment examples preserve authority separation and disable live", async () => {
@@ -1265,6 +1306,7 @@ test("same-revision releases recreate every fenced stateless runtime", async () 
   const armFence = release.indexOf("arm_release_fence", journalPrepare);
   const candidateCreation = release.indexOf(candidateCommand, journalPrepare);
   const candidateProof = release.indexOf("prove_candidate_created_contract", candidateCreation);
+  const autosaveCleanup = release.indexOf("remove_caddy_autosave_residue", candidateProof);
   const lastFenceCheck = release.lastIndexOf("assert_release_fence_armed", candidateCreation);
   const runtimeAdmission = release.indexOf("enable_candidate_runtime", candidateProof);
   const candidateStart = release.indexOf(
@@ -1279,11 +1321,18 @@ test("same-revision releases recreate every fenced stateless runtime", async () 
   assert.ok(lastFenceCheck > armFence);
   assert.ok(candidateCreation > lastFenceCheck);
   assert.ok(candidateProof > candidateCreation);
+  assert.ok(autosaveCleanup > candidateProof);
+  assert.ok(runtimeAdmission > autosaveCleanup);
   assert.ok(runtimeAdmission > candidateProof);
   assert.ok(candidateStart > runtimeAdmission);
   assert.equal((release.match(/--force-recreate/gu) ?? []).length, 1);
   assert.equal(candidateBlock, `${candidateCommand}\n`);
   assert.doesNotMatch(candidateBlock, /postgres|--volumes/u);
+  const autosaveContract = shellFunction(release, "remove_caddy_autosave_residue");
+  assert.match(autosaveContract, /CADDY_AUTOSAVE_PATH/u);
+  assert.match(autosaveContract, /! -L "\$\{CADDY_AUTOSAVE_PATH\}"/u);
+  assert.match(autosaveContract, /rm -f -- "\$\{CADDY_AUTOSAVE_PATH\}"/u);
+  assert.match(release, /CADDY_AUTOSAVE_PATH="\$\{CADDY_AUTOSAVE_DIRECTORY\}\/autosave\.json"/u);
 });
 
 test("stable launchers reject pre-contract targets and bind retention to the active source", async () => {

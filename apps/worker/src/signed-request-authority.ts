@@ -10,16 +10,20 @@ import { z } from "zod";
 import { ApprovalAttestationStoreError, type WorkerStore } from "./ports.js";
 
 export interface WorkerSignedRequestVerification {
-  readonly approvalAttestationId: string | null;
   readonly canonicalRequestHash: string;
   readonly envelope: SignedEnvelope;
 }
 
+export interface WorkerSignedApprovalAttestation extends WorkerSignedRequestVerification {
+  readonly approvalAttestationId: string;
+}
+
 export interface WorkerSignedRequestAuthority {
-  verifyAndAttest(
+  verify(rawText: string, stripeSignature: string | null): Promise<WorkerSignedRequestVerification>;
+  attestApproval(
     rawText: string,
     stripeSignature: string | null,
-  ): Promise<WorkerSignedRequestVerification>;
+  ): Promise<WorkerSignedApprovalAttestation>;
 }
 
 export class WorkerSignedRequestAuthorityError extends Error {
@@ -45,10 +49,10 @@ export class StripeSignedRequestAuthority implements WorkerSignedRequestAuthorit
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async verifyAndAttest(
+  private verifyExact(
     rawText: string,
     stripeSignature: string | null,
-  ): Promise<WorkerSignedRequestVerification> {
+  ): { readonly canonicalRequestHash: Buffer; readonly envelope: SignedEnvelope } {
     let verified: ReturnType<typeof verifySignedExtensionRequest>;
     try {
       verified = verifySignedExtensionRequest(rawText, stripeSignature, this.signingSecret);
@@ -70,61 +74,82 @@ export class StripeSignedRequestAuthority implements WorkerSignedRequestAuthorit
     if (envelope.mode !== "test") {
       throw new WorkerSignedRequestAuthorityError(403, "live_forbidden");
     }
-    const canonicalRequestHash = createHash("sha256").update(rawBody).digest();
-    let approvalAttestationId: string | null = null;
-    if (envelope.operation === "refund_request.decide") {
-      try {
-        const command = parseOperationCommand("refund_request.decide", envelope.command_json);
-        if (command.decision === "approve") {
-          if (envelope.resource_type === "account") {
-            throw new WorkerSignedRequestAuthorityError(400, "envelope_invalid");
-          }
-          const persisted = await this.store.persistApprovalAttestation({
-            amountMinor: BigInt(command.approval_snapshot.amount_minor),
-            approverStripeUserId: envelope.user_id,
-            currency: command.approval_snapshot.currency,
-            environment: envelope.is_sandbox ? "sandbox" : "test",
-            expectedRequestVersion: command.expected_request_version,
-            reason: command.approval_snapshot.reason,
-            requestId: command.request_id,
-            requestNonce: envelope.request_nonce,
-            requesterStripeUserId: command.approval_snapshot.requester_user_id,
-            resourceId: envelope.resource_id,
-            resourceType: envelope.resource_type,
-            signedEnvelopeHash: canonicalRequestHash,
-            stripeAccountId: envelope.account_id,
-            verifiedAt: this.now(),
-          });
-          if (!Buffer.from(persisted.signedEnvelopeHash).equals(canonicalRequestHash)) {
-            throw new WorkerSignedRequestAuthorityError(409, "approval_conflict");
-          }
-          approvalAttestationId = persisted.id;
-        }
-      } catch (error) {
-        if (error instanceof WorkerSignedRequestAuthorityError) {
-          throw error;
-        }
-        if (error instanceof ApprovalAttestationStoreError) {
-          throw new WorkerSignedRequestAuthorityError(
-            error.code === "conflict" ? 409 : error.code === "invalid" ? 400 : 503,
-            error.code === "conflict"
-              ? "approval_conflict"
-              : error.code === "invalid"
-                ? "envelope_invalid"
-                : "approval_unavailable",
-          );
-        }
-        if (error instanceof z.ZodError || error instanceof SyntaxError) {
-          throw new WorkerSignedRequestAuthorityError(400, "envelope_invalid");
-        }
-        throw error;
-      }
-    }
-
     return {
-      approvalAttestationId,
-      canonicalRequestHash: canonicalRequestHash.toString("hex"),
+      canonicalRequestHash: createHash("sha256").update(rawBody).digest(),
       envelope,
     };
+  }
+
+  verify(
+    rawText: string,
+    stripeSignature: string | null,
+  ): Promise<WorkerSignedRequestVerification> {
+    return Promise.resolve().then(() => {
+      const verified = this.verifyExact(rawText, stripeSignature);
+      return {
+        canonicalRequestHash: verified.canonicalRequestHash.toString("hex"),
+        envelope: verified.envelope,
+      };
+    });
+  }
+
+  async attestApproval(
+    rawText: string,
+    stripeSignature: string | null,
+  ): Promise<WorkerSignedApprovalAttestation> {
+    // This second boundary deliberately re-verifies the exact raw bytes and
+    // Stripe signature instead of trusting a prior verification response.
+    const { canonicalRequestHash, envelope } = this.verifyExact(rawText, stripeSignature);
+    try {
+      if (envelope.operation !== "refund_request.decide") {
+        throw new WorkerSignedRequestAuthorityError(400, "envelope_invalid");
+      }
+      const command = parseOperationCommand("refund_request.decide", envelope.command_json);
+      if (command.decision !== "approve" || envelope.resource_type === "account") {
+        throw new WorkerSignedRequestAuthorityError(400, "envelope_invalid");
+      }
+      const persisted = await this.store.persistApprovalAttestation({
+        amountMinor: BigInt(command.approval_snapshot.amount_minor),
+        approverStripeUserId: envelope.user_id,
+        currency: command.approval_snapshot.currency,
+        environment: envelope.is_sandbox ? "sandbox" : "test",
+        expectedRequestVersion: command.expected_request_version,
+        reason: command.approval_snapshot.reason,
+        requestId: command.request_id,
+        requestNonce: envelope.request_nonce,
+        requesterStripeUserId: command.approval_snapshot.requester_user_id,
+        resourceId: envelope.resource_id,
+        resourceType: envelope.resource_type,
+        signedEnvelopeHash: canonicalRequestHash,
+        stripeAccountId: envelope.account_id,
+        verifiedAt: this.now(),
+      });
+      if (!Buffer.from(persisted.signedEnvelopeHash).equals(canonicalRequestHash)) {
+        throw new WorkerSignedRequestAuthorityError(409, "approval_conflict");
+      }
+      return {
+        approvalAttestationId: persisted.id,
+        canonicalRequestHash: canonicalRequestHash.toString("hex"),
+        envelope,
+      };
+    } catch (error) {
+      if (error instanceof WorkerSignedRequestAuthorityError) {
+        throw error;
+      }
+      if (error instanceof ApprovalAttestationStoreError) {
+        throw new WorkerSignedRequestAuthorityError(
+          error.code === "conflict" ? 409 : error.code === "invalid" ? 400 : 503,
+          error.code === "conflict"
+            ? "approval_conflict"
+            : error.code === "invalid"
+              ? "envelope_invalid"
+              : "approval_unavailable",
+        );
+      }
+      if (error instanceof z.ZodError || error instanceof SyntaxError) {
+        throw new WorkerSignedRequestAuthorityError(400, "envelope_invalid");
+      }
+      throw error;
+    }
   }
 }

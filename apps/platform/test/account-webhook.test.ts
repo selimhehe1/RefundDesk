@@ -14,6 +14,7 @@ import {
   type AccountWebhookRouteEnvironment,
   type ResolvedWebhookInstallation,
 } from "../src/server/account-webhook.js";
+import { EdgeAdmissionDeniedReason } from "../src/server/edge-admission.js";
 
 const TEST_SECRET = "whsec_account_test";
 const SANDBOX_SECRET = "whsec_account_sandbox";
@@ -188,6 +189,111 @@ async function receive(
 }
 
 describe("durable direct-account Stripe webhook ingress", () => {
+  it("rejects edge capacity before dependency setup, body allocation, HMAC or persistence", async () => {
+    const persistence = new FakePersistence();
+    const getReader = vi.fn(() => {
+      throw new Error("body must not be read");
+    });
+    const constructEvent = vi.fn();
+    const request = {
+      body: { getReader },
+      headers: new Headers(),
+    } as unknown as Request;
+
+    const response = await receiveAccountWebhook(
+      request,
+      "test",
+      { ...dependencies(persistence), constructEvent },
+      {
+        acquire: () => ({
+          allowed: false,
+          reason: EdgeAdmissionDeniedReason.GlobalRateLimited,
+          retryAfterSeconds: 3,
+          status: 429,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("3");
+    expect(await response.json()).toMatchObject({ code: "EDGE_RATE_LIMITED" });
+    expect(getReader).not.toHaveBeenCalled();
+    expect(constructEvent).not.toHaveBeenCalled();
+    expect(persistence.findExistingCalls).toBe(0);
+  });
+
+  it("maps a rejected webhook source to a generic 403 without reading the body", async () => {
+    const persistence = new FakePersistence();
+    const getReader = vi.fn();
+    const response = await receiveAccountWebhook(
+      { body: { getReader }, headers: new Headers() } as unknown as Request,
+      "sandbox",
+      dependencies(persistence, SANDBOX_SECRET, SANDBOX_ACCOUNT_ID),
+      {
+        acquire: () => ({
+          allowed: false,
+          reason: EdgeAdmissionDeniedReason.WebhookSourceForbidden,
+          status: 403,
+        }),
+      },
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: "WEBHOOK_SOURCE_FORBIDDEN" });
+    expect(getReader).not.toHaveBeenCalled();
+    expect(persistence.findExistingCalls).toBe(0);
+  });
+
+  it("releases webhook verification concurrency after an invalid signature", async () => {
+    const release = vi.fn();
+    const persistence = new FakePersistence();
+    const response = await receiveAccountWebhook(
+      signedRequest(refundEvent(), "whsec_wrong"),
+      "test",
+      dependencies(persistence),
+      { acquire: () => ({ allowed: true, lease: { release } }) },
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "WEBHOOK_INVALID" });
+    expect(release).toHaveBeenCalledOnce();
+    expect(persistence.findExistingCalls).toBe(0);
+  });
+
+  it("cancels a webhook body that misses the absolute deadline and releases its lease", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-01T12:00:00.000Z") });
+    try {
+      const cancel = vi.fn();
+      const release = vi.fn();
+      const constructEvent = vi.fn();
+      const persistence = new FakePersistence();
+      const request = new Request("http://localhost/api/webhooks/stripe-account/test", {
+        body: new ReadableStream<Uint8Array>({ cancel }),
+        headers: { "Stripe-Signature": "t=1,v1=unused" },
+        method: "POST",
+        duplex: "half",
+      } as RequestInit & { readonly duplex: "half" });
+
+      const responsePromise = receiveAccountWebhook(
+        request,
+        "test",
+        { ...dependencies(persistence), constructEvent },
+        { acquire: () => ({ allowed: true, lease: { release } }) },
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      const response = await responsePromise;
+
+      expect(response.status).toBe(408);
+      expect(await response.json()).toMatchObject({ code: "WEBHOOK_TIMEOUT" });
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(constructEvent).not.toHaveBeenCalled();
+      expect(persistence.findExistingCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("persists only a strict normalized refund receipt for outbox recovery", async () => {
     const persistence = new FakePersistence();
 

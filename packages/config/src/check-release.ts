@@ -21,6 +21,14 @@ interface MaintenanceReleaseConfiguration {
 }
 
 const HOSTED_PUBLIC_VIEWER_HOST = "d2xv7szimbgban.cloudfront.net";
+const HOSTED_CADDY_ENVIRONMENT_NAMES = new Set([
+  "REFUNDDESK_ACME_EMAIL",
+  "REFUNDDESK_EDGE_ORIGIN_TOKEN",
+  "REFUNDDESK_PUBLIC_HOST",
+]);
+const KNOWN_NON_SECRET_EDGE_ORIGIN_TOKENS = new Set([
+  "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+]);
 
 function resolveInputPath(path: string, invocationDirectory: string): string {
   return isAbsolute(path) ? path : resolve(invocationDirectory, path);
@@ -34,14 +42,15 @@ async function loadEnvironment(
   return parseEnv(await readFile(resolvedPath, "utf8"));
 }
 
-async function loadMaintenanceEnvironment(
+async function loadStrictEnvironment(
   path: string,
   invocationDirectory: string,
+  invalidCode: "HOSTED_CADDY_CONFIGURATION_INVALID" | "MAINTENANCE_CONFIGURATION_INVALID",
 ): Promise<NodeJS.ProcessEnv> {
   const resolvedPath = isAbsolute(path) ? path : resolve(invocationDirectory, path);
   const contents = await readFile(resolvedPath, "utf8");
   if (contents.includes("\r")) {
-    throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+    throw new Error(invalidCode);
   }
   const lines = contents.split("\n");
   if (lines.at(-1) === "") {
@@ -53,11 +62,18 @@ async function loadMaintenanceEnvironment(
     const name = match?.[1];
     const value = match?.[2];
     if (name === undefined || value === undefined || environment[name] !== undefined) {
-      throw new Error("MAINTENANCE_CONFIGURATION_INVALID");
+      throw new Error(invalidCode);
     }
     environment[name] = value;
   }
   return environment;
+}
+
+async function loadMaintenanceEnvironment(
+  path: string,
+  invocationDirectory: string,
+): Promise<NodeJS.ProcessEnv> {
+  return loadStrictEnvironment(path, invocationDirectory, "MAINTENANCE_CONFIGURATION_INVALID");
 }
 
 function loadMaintenanceReleaseConfiguration(
@@ -218,6 +234,27 @@ function assertHostedPublicOrigin(
   }
 }
 
+function assertHostedCaddyConfiguration(caddyEnvironment: NodeJS.ProcessEnv): void {
+  const actualNames = Object.keys(caddyEnvironment);
+  const edgeOriginToken = caddyEnvironment["REFUNDDESK_EDGE_ORIGIN_TOKEN"] ?? "";
+  let decodedToken: Buffer;
+  try {
+    decodedToken = Buffer.from(edgeOriginToken, "base64url");
+  } catch {
+    throw new Error("HOSTED_CADDY_CONFIGURATION_INVALID");
+  }
+  if (
+    actualNames.length !== HOSTED_CADDY_ENVIRONMENT_NAMES.size ||
+    actualNames.some((name) => !HOSTED_CADDY_ENVIRONMENT_NAMES.has(name)) ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(edgeOriginToken) ||
+    decodedToken.length !== 32 ||
+    decodedToken.toString("base64url") !== edgeOriginToken ||
+    KNOWN_NON_SECRET_EDGE_ORIGIN_TOKENS.has(edgeOriginToken)
+  ) {
+    throw new Error("HOSTED_CADDY_CONFIGURATION_INVALID");
+  }
+}
+
 export async function checkReleaseConfiguration(
   paths: readonly string[],
   invocationDirectory = process.env["INIT_CWD"] ?? process.cwd(),
@@ -269,7 +306,7 @@ export async function checkReleaseConfiguration(
     }
     const [maintenanceEnvironment, caddyEnvironment, publicOriginContents] = await Promise.all([
       loadMaintenanceEnvironment(maintenancePath, invocationDirectory),
-      loadEnvironment(caddyPath, invocationDirectory),
+      loadStrictEnvironment(caddyPath, invocationDirectory, "HOSTED_CADDY_CONFIGURATION_INVALID"),
       readFile(resolveInputPath(publicOriginPath, invocationDirectory), "utf8"),
     ]);
     assertMaintenanceReleaseSeparation(
@@ -278,6 +315,7 @@ export async function checkReleaseConfiguration(
       worker,
       migration,
     );
+    assertHostedCaddyConfiguration(caddyEnvironment);
     assertHostedPublicOrigin(platform.appBaseUrl, caddyEnvironment, publicOriginContents);
   }
   return {

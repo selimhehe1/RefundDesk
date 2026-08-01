@@ -75,6 +75,9 @@ RELEASE_PROCESS_STARTTIME=""
 BACKUP_CONFIGURATION_VALID=false
 readonly RELEASE_CONTRACT_VERSION="2"
 readonly STABLE_RELEASE_FENCE="/usr/local/sbin/refunddesk-release-fence"
+readonly CADDY_CONFIG_DIRECTORY="/var/lib/refunddesk/caddy-public/config"
+readonly CADDY_AUTOSAVE_DIRECTORY="${CADDY_CONFIG_DIRECTORY}/caddy"
+readonly CADDY_AUTOSAVE_PATH="${CADDY_AUTOSAVE_DIRECTORY}/autosave.json"
 
 usage() {
   cat <<'EOF'
@@ -84,6 +87,36 @@ If --revision is omitted, DIR must contain exactly one schema-v1 manifest.
 If --origin is omitted, /etc/refunddesk/public-origin must contain one HTTPS origin.
 SHA256 must come from the authenticated operator workstation, not the adjacent checksum file.
 EOF
+}
+
+remove_caddy_autosave_residue() {
+  local resolved_directory=""
+
+  [[ -d "${CADDY_CONFIG_DIRECTORY}" && ! -L "${CADDY_CONFIG_DIRECTORY}" ]] ||
+    die "Caddy config directory is not a real directory"
+  resolved_directory="$(
+    readlink --canonicalize-existing -- "${CADDY_CONFIG_DIRECTORY}"
+  )" || die "Caddy config directory cannot be resolved"
+  [[ "${resolved_directory}" == "${CADDY_CONFIG_DIRECTORY}" ]] ||
+    die "Caddy config directory escaped its fixed path"
+
+  if [[ -e "${CADDY_AUTOSAVE_DIRECTORY}" || -L "${CADDY_AUTOSAVE_DIRECTORY}" ]]; then
+    [[ -d "${CADDY_AUTOSAVE_DIRECTORY}" && ! -L "${CADDY_AUTOSAVE_DIRECTORY}" ]] ||
+      die "Caddy autosave directory is not a real directory"
+    resolved_directory="$(
+      readlink --canonicalize-existing -- "${CADDY_AUTOSAVE_DIRECTORY}"
+    )" || die "Caddy autosave directory cannot be resolved"
+    [[ "${resolved_directory}" == "${CADDY_AUTOSAVE_DIRECTORY}" ]] ||
+      die "Caddy autosave directory escaped its fixed path"
+  fi
+
+  if [[ -e "${CADDY_AUTOSAVE_PATH}" || -L "${CADDY_AUTOSAVE_PATH}" ]]; then
+    [[ -f "${CADDY_AUTOSAVE_PATH}" && ! -L "${CADDY_AUTOSAVE_PATH}" ]] ||
+      die "Caddy autosave residue is not a regular file"
+    rm -f -- "${CADDY_AUTOSAVE_PATH}" || die "Caddy autosave residue could not be removed"
+  fi
+  [[ ! -e "${CADDY_AUTOSAVE_PATH}" && ! -L "${CADDY_AUTOSAVE_PATH}" ]] ||
+    die "Caddy autosave residue remains after cleanup"
 }
 
 while (( $# > 0 )); do
@@ -1665,6 +1698,7 @@ refunddesk_compose up \
   --force-recreate \
   verifier worker web caddy
 prove_candidate_created_contract
+remove_caddy_autosave_residue
 
 log "proving the PostgreSQL 18 root-mount storage contract"
 REFUNDDESK_POSTGRES_ROOT_MIGRATION_CONTRACT=release-v2 \

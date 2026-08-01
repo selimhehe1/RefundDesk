@@ -5,6 +5,16 @@
 	grace_period 30s
 	http_port 8080
 	https_port 8443
+	persist_config off
+	servers {
+		timeouts {
+			read_header 5s
+			read_body 30s
+			write 30s
+			idle 60s
+		}
+		max_header_size 64KiB
+	}
 }
 
 http://{$REFUNDDESK_PUBLIC_HOST}:8080 {
@@ -25,6 +35,9 @@ https://{$REFUNDDESK_PUBLIC_HOST}:8443 {
 	}
 
 	route {
+		@unverified_edge not header X-RefundDesk-Origin-Token {$REFUNDDESK_EDGE_ORIGIN_TOKEN}
+		respond @unverified_edge 404
+
 		@blocked path /internal /internal/* /api/ready /api/webhooks/stripe-connected /api/webhooks/stripe-connected/* /api/webhooks/stripe-account/live
 		respond @blocked 404
 
@@ -38,7 +51,13 @@ https://{$REFUNDDESK_PUBLIC_HOST}:8443 {
 			max_size 1048576
 		}
 
+		# Freeze CloudFront's incoming chain before reverse_proxy rewrites XFF.
+		vars refunddesk_cloudfront_viewer_chain "{http.request.header.X-Forwarded-For}"
+
 		reverse_proxy web.refunddesk.internal:3000 {
+			header_up X-RefundDesk-Viewer-Chain "{vars.refunddesk_cloudfront_viewer_chain}"
+			header_up X-RefundDesk-Edge-Verified cloudfront-v1
+			header_up -X-RefundDesk-Origin-Token
 			transport http {
 				dial_timeout 5s
 				response_header_timeout 30s
