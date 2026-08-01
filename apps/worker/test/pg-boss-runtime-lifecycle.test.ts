@@ -10,6 +10,12 @@ import {
   type PgBossLifecycle,
 } from "../src/pg-boss-runtime.js";
 
+const operationalMonitor = vi.hoisted(() => ({
+  sampleNow: vi.fn<() => Promise<void>>(),
+  start: vi.fn<(options: unknown) => { sampleNow(): Promise<void>; stop(): Promise<void> }>(),
+  stop: vi.fn<() => Promise<void>>(),
+}));
+
 const pgBoss = vi.hoisted(() => ({
   createQueue: vi.fn<(name: string, options: unknown) => Promise<void>>(),
   getSchedules: vi.fn<() => Promise<never[]>>(),
@@ -34,6 +40,10 @@ vi.mock("pg-boss", () => ({
     stop = pgBoss.stop;
     work = pgBoss.work;
   },
+}));
+
+vi.mock("../src/operational-monitor.js", () => ({
+  startWorkerOperationalMonitor: operationalMonitor.start,
 }));
 
 const workerConfig = {
@@ -86,6 +96,12 @@ describe("pg-boss startup lifecycle", () => {
     pgBoss.start.mockResolvedValue();
     pgBoss.stop.mockResolvedValue();
     pgBoss.work.mockResolvedValue("worker-id");
+    operationalMonitor.sampleNow.mockResolvedValue();
+    operationalMonitor.stop.mockResolvedValue();
+    operationalMonitor.start.mockReturnValue({
+      sampleNow: operationalMonitor.sampleNow,
+      stop: operationalMonitor.stop,
+    });
   });
 
   it("force-stops a partially started runtime when schedule or work registration fails", async () => {
@@ -139,7 +155,7 @@ describe("pg-boss startup lifecycle", () => {
     expect(info).not.toHaveBeenCalled();
 
     catchUp.resolve([]);
-    await startup;
+    const worker = await startup;
 
     expect(pgBoss.schedule).toHaveBeenCalledWith(
       QUEUES.scanRefunds,
@@ -162,6 +178,7 @@ describe("pg-boss startup lifecycle", () => {
       { queue: QUEUES.scanRefunds },
       "Startup reconciliation catch-up completed",
     );
+    await worker.stop();
   });
 
   it("fails closed and force-stops pg-boss when the startup reconciliation catch-up fails", async () => {
@@ -177,5 +194,39 @@ describe("pg-boss startup lifecycle", () => {
     });
     expect(pgBoss.work).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalled();
+  });
+
+  it("stops the local operational monitor before gracefully stopping pg-boss", async () => {
+    const { dependencies } = workerDependencies();
+    const worker = await startPgBossWorker(workerConfig, dependencies);
+
+    expect(operationalMonitor.start).toHaveBeenCalledWith({
+      logger: dependencies.logger,
+      readiness: worker.readiness,
+    });
+    await worker.stop();
+
+    expect(operationalMonitor.stop).toHaveBeenCalledOnce();
+    expect(pgBoss.stop).toHaveBeenCalledWith({
+      graceful: true,
+      timeout: 30_000,
+    });
+    expect(operationalMonitor.stop.mock.invocationCallOrder[0]).toBeLessThan(
+      pgBoss.stop.mock.invocationCallOrder[0] ?? Number.NEGATIVE_INFINITY,
+    );
+  });
+
+  it("force-stops pg-boss when the local operational monitor cannot start", async () => {
+    const startupError = new Error("synthetic operational monitor failure");
+    operationalMonitor.start.mockImplementationOnce(() => {
+      throw startupError;
+    });
+    const { dependencies } = workerDependencies();
+
+    await expect(startPgBossWorker(workerConfig, dependencies)).rejects.toBe(startupError);
+    expect(pgBoss.stop).toHaveBeenCalledWith({
+      graceful: false,
+      timeout: 5_000,
+    });
   });
 });

@@ -18,6 +18,10 @@ import {
   type ExecuteRefundJob,
   type ProcessWebhookJob,
 } from "./jobs.js";
+import {
+  startWorkerOperationalMonitor,
+  type RunningWorkerOperationalMonitor,
+} from "./operational-monitor.js";
 import { handleReconciliationScanJob } from "./reconciliation-scanner.js";
 import {
   createPgBossRuntimeReadinessSource,
@@ -287,11 +291,6 @@ export async function startPgBossWorker(
     );
   });
 
-  dependencies.logger.info(
-    { queueCount: Object.keys(QUEUES).length },
-    "RefundDesk pilot worker started",
-  );
-
   let stopping = false;
   const readiness = createWorkerReadinessProbe({
     runtime: createPgBossRuntimeReadinessSource({
@@ -302,13 +301,33 @@ export async function startPgBossWorker(
     store: dependencies.store,
     clock: dependencies.clock,
   });
+  let operationalMonitor: RunningWorkerOperationalMonitor;
+  try {
+    operationalMonitor = startWorkerOperationalMonitor({
+      logger: dependencies.logger,
+      readiness,
+    });
+  } catch (error) {
+    stopping = true;
+    await boss.stop({ graceful: false, timeout: 5_000 }).catch(() => undefined);
+    throw error;
+  }
+
+  dependencies.logger.info(
+    { queueCount: Object.keys(QUEUES).length },
+    "RefundDesk pilot worker started",
+  );
 
   return {
     publisher,
     readiness,
     async stop(): Promise<void> {
       stopping = true;
-      await boss.stop({ graceful: true, timeout: 30_000 });
+      try {
+        await operationalMonitor.stop();
+      } finally {
+        await boss.stop({ graceful: true, timeout: 30_000 });
+      }
     },
   };
 }
