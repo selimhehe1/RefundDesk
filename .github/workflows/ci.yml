@@ -726,7 +726,7 @@ jobs:
               --header 'Content-Type: application/json' \
               --data '{}' \
               http://127.0.0.1:3201/internal/v1/signed-requests/verify
-          )" = "401"
+          )" = "403"
 
           for container in refunddesk-web-ci refunddesk-worker-ci; do
             for attempt in $(seq 1 40); do

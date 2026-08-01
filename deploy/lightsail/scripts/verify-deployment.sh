@@ -536,7 +536,7 @@ retry_bounded_service_probe \
       body: "{}",
       signal: AbortSignal.timeout(20000),
     });
-    if (response.status !== 401) {
+    if (response.status !== 403) {
       console.error(`deployment_probe=verifier-auth result=http_${response.status}`);
       process.exit(response.status === 503 ? 75 : 1);
     }

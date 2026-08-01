@@ -1023,10 +1023,21 @@ test("private readiness probes expose only safe transient and permanent exit cla
     /endpoint=ready result=http_503/u,
   );
 
-  assert.equal(runProbe("verifier-auth", [{ status: 401 }]).status, 0);
+  assert.equal(runProbe("verifier-auth", [{ status: 403 }]).status, 0);
   expectProbe("verifier-auth", [{ status: 503 }], 75, /result=http_503/u);
   expectProbe("verifier-auth", [{ status: 200 }], 1, /result=http_200/u);
   expectProbe("graceful-web-ready", [{ status: 503 }], 75, /result=http_503/u);
+});
+
+test("CI smoke keeps inter-service bearer rejection distinct from Stripe signature rejection", async () => {
+  const workflow = await read("../../.github/workflows/ci.yml");
+  const verifierEndpoint = "http://127.0.0.1:3201/internal/v1/signed-requests/verify";
+  const endpointOffset = workflow.indexOf(verifierEndpoint);
+
+  assert.notEqual(endpointOffset, -1, "missing private verifier smoke request");
+  const statusAssertion = workflow.slice(endpointOffset, endpointOffset + 96);
+  assert.match(statusAssertion, /\)" = "403"/u);
+  assert.doesNotMatch(statusAssertion, /\)" = "401"/u);
 });
 
 test("environment examples preserve authority separation and disable live", async () => {
