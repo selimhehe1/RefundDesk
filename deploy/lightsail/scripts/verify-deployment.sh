@@ -603,7 +603,12 @@ refunddesk_compose exec \
       || response.headers.get("x-refunddesk-revision")
         !== process.env.REFUNDDESK_EXPECTED_REVISION
       || response.headers.get("cache-control") !== "no-store"
-      || response.headers.get("x-cache") !== "Miss from cloudfront"
+      // CloudFront reports "Error from cloudfront" for every 4xx an origin
+      // returns, and "Miss from cloudfront" only for a 2xx it did not serve
+      // from cache. Requiring "Miss" on a response this check expects to be
+      // 403 can never hold. Origin traversal is already proved by the
+      // revision header above, which only Caddy sets.
+      || response.headers.get("x-cache") !== "Error from cloudfront"
       || response.headers.get("x-amz-cf-id") === null
     ) {
       process.exit(1);
