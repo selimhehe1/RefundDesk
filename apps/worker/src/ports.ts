@@ -74,11 +74,30 @@ export interface PersistedApprovalAttestation {
 }
 
 export class ApprovalAttestationStoreError extends Error {
-  constructor(readonly code: "conflict" | "invalid" | "unavailable") {
+  /**
+   * `reason` names the precondition that failed, for the operator only. The public
+   * response carries no reason: an "invalid" attestation surfaces as a signed-request
+   * rejection, which is indistinguishable from a malformed envelope to the caller and
+   * was indistinguishable to the operator too, because nothing recorded which of the
+   * twenty-odd preconditions actually failed. It is logged, never returned.
+   */
+  constructor(
+    readonly code: "conflict" | "invalid" | "unavailable",
+    readonly reason?: ApprovalAttestationRejection,
+  ) {
     super("Approval attestation persistence failed");
     this.name = "ApprovalAttestationStoreError";
   }
 }
+
+export type ApprovalAttestationRejection =
+  | "installation_not_active"
+  | "request_not_found"
+  | "approver_not_eligible"
+  | "request_not_approvable"
+  | "resource_mismatch"
+  | "request_not_pending_approval"
+  | "attestation_window_empty";
 
 export type EffectBoundaryDecision =
   | {

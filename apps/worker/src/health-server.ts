@@ -25,6 +25,8 @@ export interface WorkerHealthServerOptions {
   readonly readiness: WorkerReadinessProbe;
   readonly signedRequestAuthority?: WorkerSignedRequestAuthority;
   readonly signedRequestVerifierToken?: string;
+  /** Composition root supplies the logging; this module stays dependency-free. */
+  readonly signedRequestRejectionObserver?: SignedRequestRejectionObserver | undefined;
 }
 
 export interface RunningWorkerHealthServer {
@@ -100,12 +102,20 @@ async function readBoundedBody(request: IncomingMessage): Promise<string | null>
 
 type SignedRequestAction = "attest" | "verify";
 
+export type SignedRequestRejectionObserver = (event: {
+  readonly action: SignedRequestAction;
+  readonly code: string;
+  readonly reason?: string | undefined;
+  readonly status: number;
+}) => void;
+
 async function handleSignedRequestAuthority(
   request: IncomingMessage,
   response: ServerResponse,
   authority: WorkerSignedRequestAuthority,
   authorizationToken: string,
   action: SignedRequestAction,
+  onRejection?: SignedRequestRejectionObserver,
 ): Promise<void> {
   if (request.method !== "POST") {
     sendJson(response, 405, RESPONSE_METHOD_NOT_ALLOWED, { Allow: "POST" });
@@ -163,6 +173,10 @@ async function handleSignedRequestAuthority(
             : error.status === 503
               ? RESPONSE_UNAVAILABLE
               : RESPONSE_INVALID;
+      // The response is unchanged and still says nothing. The observer is how an
+      // operator learns which precondition failed, which the response deliberately
+      // will not carry.
+      onRejection?.({ action, code: error.code, reason: error.reason, status: error.status });
       sendJson(response, error.status, body);
       return;
     }
@@ -177,6 +191,7 @@ export async function handleWorkerHealthRequest(
   signedRequest?: {
     readonly authority: WorkerSignedRequestAuthority;
     readonly authorizationToken: string;
+    readonly onRejection?: SignedRequestRejectionObserver | undefined;
   },
 ): Promise<void> {
   const target = requestTarget(request);
@@ -200,6 +215,7 @@ export async function handleWorkerHealthRequest(
       signedRequest.authority,
       signedRequest.authorizationToken,
       signedRequestAction,
+      signedRequest.onRejection,
     );
     return;
   }
@@ -232,6 +248,7 @@ function createHealthServer(
     | {
         readonly authority: WorkerSignedRequestAuthority;
         readonly authorizationToken: string;
+        readonly onRejection?: SignedRequestRejectionObserver | undefined;
       }
     | undefined,
 ): Server {
@@ -309,6 +326,7 @@ export async function startWorkerHealthServer(
       : {
           authority: options.signedRequestAuthority,
           authorizationToken: options.signedRequestVerifierToken,
+          onRejection: options.signedRequestRejectionObserver,
         },
   );
   const address = await listen(server, options.host, options.port);

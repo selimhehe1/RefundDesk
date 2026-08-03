@@ -467,14 +467,14 @@ export class PrismaWorkerStore implements WorkerStore {
       input.environment,
     );
     if (installation === null || installation.status !== "active") {
-      throw new ApprovalAttestationStoreError("invalid");
+      throw new ApprovalAttestationStoreError("invalid", "installation_not_active");
     }
 
     const operation = async (): Promise<PersistedApprovalAttestation> =>
       withTenantTransaction(this.client, installation.tenantId, async ({ repositories, tx }) => {
         const request = await repositories.getRefundRequest(input.requestId);
         if (request === null) {
-          throw new ApprovalAttestationStoreError("invalid");
+          throw new ApprovalAttestationStoreError("invalid", "request_not_found");
         }
         const tenant = await tx.tenant.findFirst({
           where: { id: installation.tenantId },
@@ -535,12 +535,21 @@ export class PrismaWorkerStore implements WorkerStore {
           request.requiredApprovals !== 1 ||
           policy.requiredApprovals !== request.requiredApprovals
         ) {
-          throw new ApprovalAttestationStoreError("invalid");
+          // The condition above is a single guard on purpose: any one of these makes
+          // the attestation invalid and the caller learns nothing either way. The
+          // operator does, because an approver who was never enabled and a request in
+          // the wrong state are entirely different problems to fix.
+          throw new ApprovalAttestationStoreError(
+            "invalid",
+            approver === null || requester === null || !approver.approverEnabled
+              ? "approver_not_eligible"
+              : "request_not_approvable",
+          );
         }
         const resourceType = request.paymentIntentId === null ? "charge" : "payment_intent";
         const resourceId = request.paymentIntentId ?? request.chargeId;
         if (resourceType !== input.resourceType || resourceId !== input.resourceId) {
-          throw new ApprovalAttestationStoreError("invalid");
+          throw new ApprovalAttestationStoreError("invalid", "resource_mismatch");
         }
 
         if (
@@ -548,7 +557,7 @@ export class PrismaWorkerStore implements WorkerStore {
           input.verifiedAt.getTime() < request.createdAt.getTime() ||
           input.verifiedAt.getTime() >= request.expiresAt.getTime()
         ) {
-          throw new ApprovalAttestationStoreError("invalid");
+          throw new ApprovalAttestationStoreError("invalid", "request_not_pending_approval");
         }
         const consumeBefore = new Date(
           Math.min(
@@ -557,7 +566,7 @@ export class PrismaWorkerStore implements WorkerStore {
           ),
         );
         if (consumeBefore.getTime() <= input.verifiedAt.getTime()) {
-          throw new ApprovalAttestationStoreError("invalid");
+          throw new ApprovalAttestationStoreError("invalid", "attestation_window_empty");
         }
         const payload: ApprovalAttestationPayload = {
           amountMinor: request.amountMinor,

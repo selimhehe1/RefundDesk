@@ -36,6 +36,14 @@ export class WorkerSignedRequestAuthorityError extends Error {
       | "live_forbidden"
       | "signature_invalid"
       | "signature_missing",
+    /**
+     * Operator-only. `envelope_invalid` covers both a genuinely malformed envelope and
+     * an attestation the store refused on a domain precondition, and the caller is told
+     * the same thing either way — correctly, since neither should learn which. Nothing
+     * recorded the difference for the operator either, so a valid, correctly signed
+     * request refused for an ineligible approver read as a signing defect.
+     */
+    readonly reason?: string,
   ) {
     super("The signed request could not be authorized");
     this.name = "WorkerSignedRequestAuthorityError";
@@ -167,6 +175,7 @@ export class StripeSignedRequestAuthority implements WorkerSignedRequestAuthorit
             : error.code === "invalid"
               ? "envelope_invalid"
               : "approval_unavailable",
+          error.reason,
         );
       }
       if (error instanceof z.ZodError || error instanceof SyntaxError) {

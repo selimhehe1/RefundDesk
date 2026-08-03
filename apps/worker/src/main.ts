@@ -34,6 +34,15 @@ async function main(): Promise<void> {
       readiness: worker.readiness,
       signedRequestAuthority,
       signedRequestVerifierToken: config.signedRequestVerifierToken,
+      signedRequestRejectionObserver: ({ action, code, reason, status }) => {
+        // The refusal itself is expected traffic, not a fault, so this is a warning
+        // rather than an error. It carries no envelope, no signature and no identifier
+        // from the request: only which check said no.
+        dependencies.logger.warn(
+          { action, code, event: "signed_request_rejected", reason: reason ?? null, status },
+          "Signed request refused by the worker authority",
+        );
+      },
     });
   } catch (error) {
     await worker.stop().catch(() => undefined);

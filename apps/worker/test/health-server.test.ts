@@ -23,6 +23,12 @@ async function start(
   signedRequest?: {
     readonly authority: WorkerSignedRequestAuthority;
     readonly token: string;
+    readonly onRejection?: (event: {
+      readonly action: "attest" | "verify";
+      readonly code: string;
+      readonly reason?: string | undefined;
+      readonly status: number;
+    }) => void;
   },
 ): Promise<RunningWorkerHealthServer> {
   return startWorkerHealthServer({
@@ -34,6 +40,9 @@ async function start(
       : {
           signedRequestAuthority: signedRequest.authority,
           signedRequestVerifierToken: signedRequest.token,
+          ...(signedRequest.onRejection === undefined
+            ? {}
+            : { signedRequestRejectionObserver: signedRequest.onRejection }),
         }),
   });
 }
@@ -350,5 +359,77 @@ describe("worker health server", () => {
         readiness: readyProbe(),
       }),
     ).rejects.toThrow("INVALID_WORKER_HEALTH_SERVER_BINDING");
+  });
+});
+
+describe("signed request rejection observability", () => {
+  // An attestation the store refuses on a domain precondition and a genuinely
+  // malformed envelope both surface as the same opaque rejection, which is right for
+  // the caller and was wrong for the operator: nothing recorded which check said no,
+  // so a correctly signed request refused for an ineligible approver read as a
+  // signing defect. The response is unchanged; only the observer learns the reason.
+  const authority = (error: WorkerSignedRequestAuthorityError): WorkerSignedRequestAuthority => ({
+    attestApproval: () => Promise.reject(error),
+    verify: () => Promise.reject(error),
+  });
+
+  it("reports the refused precondition without putting it in the response", async () => {
+    const seen: unknown[] = [];
+    const server = await start(readyProbe(), {
+      authority: authority(
+        new WorkerSignedRequestAuthorityError(400, "envelope_invalid", "approver_not_eligible"),
+      ),
+      token: "verifier-token",
+      onRejection: (event) => seen.push(event),
+    });
+
+    try {
+      const attested = await request(server, "/internal/v1/signed-requests/attest", {
+        body: "{}",
+        headers: {
+          authorization: "Bearer verifier-token",
+          "content-type": "application/json",
+          "stripe-signature": "t=1,v1=deadbeef",
+        },
+        method: "POST",
+      });
+
+      expect(attested.response.status).toBe(400);
+      expect(seen).toEqual([
+        {
+          action: "attest",
+          code: "envelope_invalid",
+          reason: "approver_not_eligible",
+          status: 400,
+        },
+      ]);
+      expect(attested.body).not.toContain("approver_not_eligible");
+      expect(JSON.parse(attested.body)).toEqual({ status: "invalid" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("still answers when no observer is supplied", async () => {
+    const server = await start(readyProbe(), {
+      authority: authority(new WorkerSignedRequestAuthorityError(400, "envelope_invalid")),
+      token: "verifier-token",
+    });
+
+    try {
+      const attested = await request(server, "/internal/v1/signed-requests/attest", {
+        body: "{}",
+        headers: {
+          authorization: "Bearer verifier-token",
+          "content-type": "application/json",
+          "stripe-signature": "t=1,v1=deadbeef",
+        },
+        method: "POST",
+      });
+
+      expect(attested.response.status).toBe(400);
+    } finally {
+      await server.close();
+    }
   });
 });
