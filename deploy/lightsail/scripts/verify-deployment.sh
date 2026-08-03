@@ -130,13 +130,19 @@ assert_root_secret_file "${ORIGIN_FILE}"
 assert_root_secret_file "${CADDY_ENV}"
 [[ -d "${CADDY_CONFIG_DIRECTORY}" && ! -L "${CADDY_CONFIG_DIRECTORY}" ]] ||
   die "Caddy config directory is not a real directory"
-[[ "$(readlink --canonicalize-existing -- "${CADDY_CONFIG_DIRECTORY}")" ==
-  "${CADDY_CONFIG_DIRECTORY}" ]] || die "Caddy config directory escaped its fixed path"
+RESOLVED_CADDY_CONFIG_DIRECTORY="$(
+  readlink --canonicalize-existing -- "${CADDY_CONFIG_DIRECTORY}"
+)"
+[[ "${RESOLVED_CADDY_CONFIG_DIRECTORY}" == "${CADDY_CONFIG_DIRECTORY}" ]] ||
+  die "Caddy config directory escaped its fixed path"
 if [[ -e "${CADDY_AUTOSAVE_DIRECTORY}" || -L "${CADDY_AUTOSAVE_DIRECTORY}" ]]; then
   [[ -d "${CADDY_AUTOSAVE_DIRECTORY}" && ! -L "${CADDY_AUTOSAVE_DIRECTORY}" ]] ||
     die "Caddy autosave directory is not a real directory"
-  [[ "$(readlink --canonicalize-existing -- "${CADDY_AUTOSAVE_DIRECTORY}")" ==
-    "${CADDY_AUTOSAVE_DIRECTORY}" ]] || die "Caddy autosave directory escaped its fixed path"
+  RESOLVED_CADDY_AUTOSAVE_DIRECTORY="$(
+    readlink --canonicalize-existing -- "${CADDY_AUTOSAVE_DIRECTORY}"
+  )"
+  [[ "${RESOLVED_CADDY_AUTOSAVE_DIRECTORY}" == "${CADDY_AUTOSAVE_DIRECTORY}" ]] ||
+    die "Caddy autosave directory escaped its fixed path"
 fi
 [[ ! -e "${CADDY_AUTOSAVE_PATH}" && ! -L "${CADDY_AUTOSAVE_PATH}" ]] ||
   die "Caddy autosave residue is present"

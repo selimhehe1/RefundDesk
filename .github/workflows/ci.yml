@@ -61,6 +61,15 @@ jobs:
           set -euo pipefail
           shellcheck --severity=warning --source-path=SCRIPTDIR deploy/lightsail/scripts/*.sh
 
+          # shellcheck parses with its own grammar and accepts constructs bash
+          # rejects: a newline after a binary operator inside [[ ]] ends the
+          # conditional expression in bash but not in shellcheck. Such a script
+          # lints clean and is still unparseable, so it fails at the first line
+          # of the run rather than at review. Parse with bash itself as well.
+          for operator_script in deploy/lightsail/scripts/*.sh; do
+            bash -n "$operator_script"
+          done
+
           sudo install -d -o root -g root -m 0700 /etc/refunddesk
           for name in postgres platform worker migration maintenance caddy backup; do
             sudo install -o root -g root -m 0600 \
