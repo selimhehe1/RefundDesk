@@ -317,12 +317,12 @@ export class TenantRepositories {
       },
       update: {
         ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
-        ...(input.stripeRoles === undefined
-          ? {}
-          : {
-              stripeRoles: input.stripeRoles,
-              lastVerifiedAt: input.verifiedAt,
-            }),
+        ...(input.stripeRoles === undefined ? {} : { stripeRoles: input.stripeRoles }),
+        // Every observation refreshes the timestamp. Roles are signed only for
+        // Administrators, so tying the refresh to them left every other person frozen at
+        // their first visit and made "last seen" wrong for exactly the people an
+        // Administrator picks approvers from.
+        lastVerifiedAt: input.verifiedAt,
       },
     });
   }

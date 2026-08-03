@@ -43,31 +43,54 @@ export class WorkerSignedRequestAuthorityError extends Error {
 }
 
 export class StripeSignedRequestAuthority implements WorkerSignedRequestAuthority {
+  private readonly signingSecrets: readonly string[];
+
+  /**
+   * `signingSecret` accepts one value or several, active first. Several only while the App
+   * signing secret is being rolled: Stripe keeps the retired secret valid for an overlap
+   * window and may sign an extension request with either, so a runtime holding just one
+   * refuses whichever half it does not have. That is a visible Dashboard failure for the
+   * merchant until the two sides are synchronised, and it is avoidable (ADR 0028).
+   */
   constructor(
-    private readonly signingSecret: string,
+    signingSecret: string | readonly string[],
     private readonly store: Pick<WorkerStore, "persistApprovalAttestation">,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.signingSecrets = typeof signingSecret === "string" ? [signingSecret] : signingSecret;
+    if (this.signingSecrets.length === 0) {
+      throw new Error("SIGNING_SECRET_REQUIRED");
+    }
+  }
 
   private verifyExact(
     rawText: string,
     stripeSignature: string | null,
   ): { readonly canonicalRequestHash: Buffer; readonly envelope: SignedEnvelope } {
-    let verified: ReturnType<typeof verifySignedExtensionRequest>;
-    try {
-      verified = verifySignedExtensionRequest(rawText, stripeSignature, this.signingSecret);
-    } catch (error) {
-      if (error instanceof SignedExtensionRequestError) {
-        throw new WorkerSignedRequestAuthorityError(
-          error.code === "SIGNATURE_MISSING" || error.code === "SIGNATURE_INVALID" ? 401 : 400,
-          error.code === "SIGNATURE_MISSING"
-            ? "signature_missing"
-            : error.code === "SIGNATURE_INVALID"
-              ? "signature_invalid"
-              : "envelope_invalid",
-        );
+    let verified: ReturnType<typeof verifySignedExtensionRequest> | null = null;
+    for (const secret of this.signingSecrets) {
+      try {
+        verified = verifySignedExtensionRequest(rawText, stripeSignature, secret);
+        break;
+      } catch (error) {
+        // Only an invalid signature depends on which secret was used. A missing signature or a
+        // malformed envelope fails the same way against every secret, so retrying would waste
+        // work and, worse, report the failure of the last secret rather than the real cause.
+        if (error instanceof SignedExtensionRequestError && error.code === "SIGNATURE_INVALID") {
+          continue;
+        }
+        if (error instanceof SignedExtensionRequestError) {
+          throw new WorkerSignedRequestAuthorityError(
+            error.code === "SIGNATURE_MISSING" ? 401 : 400,
+            error.code === "SIGNATURE_MISSING" ? "signature_missing" : "envelope_invalid",
+          );
+        }
+        throw error;
       }
-      throw error;
+    }
+    if (verified === null) {
+      // Identical whichever secret failed: a caller never learns which one is live.
+      throw new WorkerSignedRequestAuthorityError(401, "signature_invalid");
     }
 
     const { envelope, rawBody } = verified;

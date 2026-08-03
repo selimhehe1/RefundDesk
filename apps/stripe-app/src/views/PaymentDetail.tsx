@@ -30,10 +30,32 @@ import {
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { formatMinorAsDecimal, parseAmountToMinor } from "../money";
+import { refundReasonLabel, workflowStatusLabel } from "../presentation";
 import { validateRefundForm, type RefundFormErrors } from "../validation";
 import { viewContextKey } from "../view-context";
 
 const CREATE_REQUEST_INTENT = "refund-request:create";
+
+/**
+ * The banner title is derived from this discriminant rather than by matching a
+ * substring of the message shown to the user, which would break on any rewording.
+ */
+type RequestOutcome = {
+  readonly kind: "submitted" | "canceled";
+  readonly requestId: string;
+};
+
+const OUTCOME_TITLES: Readonly<Record<RequestOutcome["kind"], string>> = {
+  submitted: "Request submitted",
+  canceled: "Request canceled",
+};
+
+function outcomeDescription(outcome: RequestOutcome): string {
+  return outcome.kind === "submitted"
+    ? `Request ${outcome.requestId} is awaiting another approver.`
+    : `Request ${outcome.requestId} was canceled before execution.`;
+}
 
 function hasErrors(errors: RefundFormErrors): boolean {
   return errors.amount !== undefined || errors.justification !== undefined;
@@ -47,12 +69,14 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
   const [eligibility, setEligibility] = useState<EligibilityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [amountMinor, setAmountMinor] = useState("");
+  // What the person types, in the payment's currency. Stripe minor units are derived from
+  // it at submit time so nobody has to convert 25,00 EUR into 2500 by hand.
+  const [amountInput, setAmountInput] = useState("");
   const [reason, setReason] = useState<RefundReason>("requested_by_customer");
   const [justification, setJustification] = useState("");
   const [formErrors, setFormErrors] = useState<RefundFormErrors>({});
   const [submitting, setSubmitting] = useState(false);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<RequestOutcome | null>(null);
   const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
 
   const loadEligibility = useCallback(async () => {
@@ -69,7 +93,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
         resourceId,
       });
       setEligibility(response);
-      setAmountMinor(response.remaining_amount_minor);
+      setAmountInput(formatMinorAsDecimal(response.remaining_amount_minor, response.currency));
     } catch (error) {
       setLoadError(publicRequestError(error));
     } finally {
@@ -85,6 +109,12 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
     if (eligibility === null || resourceType === undefined || resourceId === undefined) {
       return;
     }
+    const parsedAmount = parseAmountToMinor(amountInput, eligibility.currency);
+    if ("error" in parsedAmount) {
+      setFormErrors({ amount: parsedAmount.error });
+      return;
+    }
+    const amountMinor = parsedAmount.minorAmount;
     const errors = validateRefundForm(
       { amountMinor, justification, reason },
       eligibility.remaining_amount_minor,
@@ -105,7 +135,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
 
     setSubmitting(true);
     setLoadError(null);
-    setSuccessMessage(null);
+    setOutcome(null);
     try {
       const response = await refundDeskApi.createRefundRequest(
         context,
@@ -119,7 +149,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
         requestNonce,
       );
       mutationIntents.complete(CREATE_REQUEST_INTENT);
-      setSuccessMessage(`Request ${response.request_id} is awaiting another approver.`);
+      setOutcome({ kind: "submitted", requestId: response.request_id });
       setJustification("");
       await loadEligibility();
     } catch (error) {
@@ -167,7 +197,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
     const { requestNonce } = intentStart;
     setSubmitting(true);
     setLoadError(null);
-    setSuccessMessage(null);
+    setOutcome(null);
     try {
       await refundDeskApi.cancelRefundRequest(
         context,
@@ -176,7 +206,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
         requestNonce,
       );
       mutationIntents.complete(intentKey);
-      setSuccessMessage(`Request ${activeRequest.id} was canceled before execution.`);
+      setOutcome({ kind: "canceled", requestId: activeRequest.id });
       await loadEligibility();
     } catch (error) {
       if (isDefinitiveMutationRejection(error)) {
@@ -210,13 +240,8 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
         ) : null}
         {loading ? <LoadingState label="Checking refund eligibility…" /> : null}
         {loadError === null ? null : <ErrorState message={loadError} />}
-        {successMessage === null ? null : (
-          <Banner
-            title={
-              successMessage.includes("was canceled") ? "Request canceled" : "Request submitted"
-            }
-            description={successMessage}
-          />
+        {outcome === null ? null : (
+          <Banner title={OUTCOME_TITLES[outcome.kind]} description={outcomeDescription(outcome)} />
         )}
         {eligibility === null ? null : (
           <>
@@ -234,7 +259,7 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
               <>
                 <Banner
                   title="A request is already active"
-                  description={`Request ${activeRequest.id} is ${activeRequest.status}. A new request remains blocked while it is non-terminal or its Refund is unresolved.`}
+                  description={`Request ${activeRequest.id} is ${workflowStatusLabel(activeRequest.status).toLowerCase()}. A new request remains blocked while it is non-terminal or its Refund is unresolved.`}
                 />
                 {activeRequest.can_cancel ? (
                   <Button
@@ -252,16 +277,17 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
             )}
 
             <TextField
-              name="amount_minor"
-              label="Refund amount (minor units)"
-              description={`Refundable balance: ${eligibility.remaining_amount_minor} ${eligibility.currency.toUpperCase()} in minor units.`}
+              name="amount"
+              label={`Refund amount (${eligibility.currency.toUpperCase()})`}
+              description={`Refundable balance: ${formatMinorAsDecimal(eligibility.remaining_amount_minor, eligibility.currency)} ${eligibility.currency.toUpperCase()}. Prefilled with the full amount; edit it for a partial refund.`}
               type="text"
-              value={amountMinor}
+              value={amountInput}
               onChange={(event) => {
                 mutationIntents.reset(CREATE_REQUEST_INTENT);
-                setAmountMinor(event.target.value);
+                setAmountInput(event.target.value);
                 setFormErrors({});
               }}
+              invalid={formErrors.amount !== undefined}
               error={formErrors.amount}
               required
               disabled={requestDisabled}
@@ -276,9 +302,11 @@ function PaymentDetailView({ context }: { readonly context: ExtensionContextValu
               required
               disabled={requestDisabled}
             >
-              <option value="requested_by_customer">Requested by customer</option>
-              <option value="duplicate">Duplicate</option>
-              <option value="fraudulent">Fraudulent</option>
+              <option value="requested_by_customer">
+                {refundReasonLabel("requested_by_customer")}
+              </option>
+              <option value="duplicate">{refundReasonLabel("duplicate")}</option>
+              <option value="fraudulent">{refundReasonLabel("fraudulent")}</option>
             </Select>
             {reason === "fraudulent" ? (
               <Banner

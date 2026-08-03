@@ -13,7 +13,9 @@ async function main(): Promise<void> {
   const store = await loadWorkerStore(config);
   const dependencies = createWorkerDependencies(config, store);
   const signedRequestAuthority = new StripeSignedRequestAuthority(
-    config.stripe.appSigningSecret,
+    [config.stripe.appSigningSecret, config.stripe.appSigningSecretPrevious].filter(
+      (secret): secret is string => secret !== undefined,
+    ),
     store,
   );
   let worker: RunningWorker;

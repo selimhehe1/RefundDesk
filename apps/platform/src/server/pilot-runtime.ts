@@ -8,6 +8,7 @@ import { createFieldEncryptionKeyring } from "./field-keyring";
 import { PostgresSignedRequestRateLimiter } from "./mutation-rate-limit";
 import type { PilotOperationalSignal } from "./pilot-http";
 import { TestAndSandboxAccessPolicy } from "./pilot-access-policy";
+import { ConfiguredAccountAdmission } from "./pilot-account-admission";
 import { DirectStripePaymentReader } from "./pilot-payment-reader";
 import { PilotPrismaRepository } from "./pilot-prisma-repository";
 import { PilotService } from "./pilot-service";
@@ -77,6 +78,10 @@ export function getPilotRuntime(): PilotRuntime {
       repository,
       new DirectStripePaymentReader(stripeClient),
       new TestAndSandboxAccessPolicy(),
+      new ConfiguredAccountAdmission([
+        { accountId: config.stripe.platformTestAccountId, environment: "test" },
+        { accountId: config.stripe.managedSandboxAccountId, environment: "sandbox" },
+      ]),
     ),
     signedRequestRateLimiter: new PostgresSignedRequestRateLimiter(client),
     signedRequestVerifier: new RemoteSignedRequestVerifier(

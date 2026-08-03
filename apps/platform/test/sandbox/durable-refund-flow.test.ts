@@ -32,6 +32,7 @@ import {
 } from "../../../worker/src/index.js";
 import { readOrderedMigrationSql } from "../../../../packages/db/test/postgres-test-support.js";
 import { TestAndSandboxAccessPolicy } from "../../src/server/pilot-access-policy.js";
+import { ConfiguredAccountAdmission } from "../../src/server/pilot-account-admission.js";
 import { DirectStripePaymentReader } from "../../src/server/pilot-payment-reader.js";
 import { PilotPrismaRepository } from "../../src/server/pilot-prisma-repository.js";
 import type {
@@ -1072,6 +1073,10 @@ describe.sequential("durable real Stripe refund flow", () => {
       repository,
       new DirectStripePaymentReader(stripeGateway),
       new TestAndSandboxAccessPolicy(),
+      new ConfiguredAccountAdmission([
+        { accountId: environment.platformTestAccountId, environment: "test" },
+        { accountId: environment.managedSandboxAccountId, environment: "sandbox" },
+      ]),
     );
 
     const fixtureStripe = new Stripe(environment.fixtureKey, {

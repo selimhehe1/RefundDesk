@@ -10,6 +10,7 @@ import {
 import { PilotApiError } from "./pilot-errors";
 import type {
   PilotAccessPolicy,
+  PilotAccountAdmission,
   PilotMutationMetadata,
   PilotPayment,
   PilotPaymentReader,
@@ -135,6 +136,7 @@ function publicRequestSummary(request: PilotRequestRecord): PilotRequestSummary 
     can_decide: request.can_decide,
     created_at: request.created_at,
     currency: request.currency,
+    expires_at: request.expires_at,
     id: request.id,
     is_requester: request.is_requester,
     justification: request.justification,
@@ -154,6 +156,7 @@ function requestSummaryJson(request: PilotRequestSummary) {
     can_decide: request.can_decide,
     created_at: request.created_at,
     currency: request.currency,
+    expires_at: request.expires_at,
     id: request.id,
     is_requester: request.is_requester,
     justification: request.justification,
@@ -188,6 +191,18 @@ function assertReceiptMatches(
       "The request nonce was already used for a different mutation.",
     );
   }
+}
+
+/**
+ * The command was already validated against `contextSyncCommandSchema`, so the name is
+ * bounded and trimmed. This narrows it without trusting the caller's shape.
+ */
+function contextSyncDisplayName(command: unknown): string | undefined {
+  if (typeof command !== "object" || command === null) {
+    return undefined;
+  }
+  const value = (command as { readonly display_name?: unknown }).display_name;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function assertContextBinding(context: PilotTenantContext, identity: PilotSignedIdentity): void {
@@ -229,11 +244,29 @@ export class PilotService {
     private readonly repository: PilotRepository,
     private readonly paymentReader: PilotPaymentReader,
     private readonly accessPolicy: PilotAccessPolicy,
+    private readonly accountAdmission: PilotAccountAdmission,
   ) {}
 
   async dispatch(input: PilotDispatchRequest): Promise<PilotStoredResponse> {
+    // Admission precedes resolution and provisioning: a signed envelope proves which
+    // account the caller belongs to, never that RefundDesk serves that account (ADR 0020).
+    if (
+      !this.accountAdmission.isAdmitted({
+        accountId: input.identity.accountId,
+        environment: input.identity.environment,
+      })
+    ) {
+      throw new PilotApiError(
+        "ACCOUNT_ENVIRONMENT_MISMATCH",
+        403,
+        "RefundDesk does not serve this Stripe account and environment.",
+      );
+    }
+    const displayName =
+      input.operation === "context.sync" ? contextSyncDisplayName(input.command) : undefined;
     const context = await this.repository.resolveContext(input.identity, {
       allowProvision: input.operation === "context.sync" && isAdministrator(input.identity),
+      ...(displayName === undefined ? {} : { displayName }),
     });
     if (context === null) {
       throw new PilotApiError(

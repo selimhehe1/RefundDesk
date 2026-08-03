@@ -1,3 +1,25 @@
+export {
+  isBlockedAddress,
+  validateWebhookDestination,
+  type WebhookDestination,
+} from "./webhook-destination.js";
+export {
+  addressFamily,
+  createPinnedLookup,
+  type AddressFamily,
+  type PinnedAddress,
+  type PinnedLookup,
+} from "./pinned-lookup.js";
+export {
+  WebhookNotificationProvider,
+  type AddressResolver,
+  type DestinationLookup,
+  type PinnedFetcher,
+  type PinnedRequest,
+  type WebhookDeliveryOutcome,
+  type WebhookNotificationOptions,
+} from "./webhook-provider.js";
+
 export interface Notification {
   readonly kind:
     | "approval_requested"

@@ -223,6 +223,56 @@ describe("prepareSignedRequest", () => {
   });
 });
 
+describe("signedApiRequest error reporting", () => {
+  function failingRequest(body: string, status = 422) {
+    const context = createContext();
+    return signedApiRequest(context, requestInput, {
+      signatureFetcher: () => Promise.resolve("t=1,v1=test"),
+      fetcher: () =>
+        Promise.resolve(
+          new Response(body, { status, headers: { "Content-Type": "application/json" } }),
+        ),
+    });
+  }
+
+  it("turns a code into language the person can act on, never the raw code", async () => {
+    await expect(
+      failingRequest(
+        JSON.stringify({
+          code: "NO_DISTINCT_APPROVER",
+          message: "internal detail must not be exposed",
+        }),
+      ),
+    ).rejects.toThrow("a requester can never approve their own refund");
+  });
+
+  it("never lets the server's message reach the user", async () => {
+    let observed: unknown;
+    try {
+      await failingRequest(
+        JSON.stringify({ code: "SELF_APPROVAL", message: "internal detail must not be exposed" }),
+      );
+    } catch (error) {
+      observed = error;
+    }
+    expect(String(observed)).not.toContain("internal detail must not be exposed");
+    expect(String(observed)).not.toContain("SELF_APPROVAL");
+    expect(String(observed)).toContain("You cannot approve or reject your own request.");
+  });
+
+  it("keeps an unrecognised code visible for support but refuses a malformed one", async () => {
+    await expect(failingRequest(JSON.stringify({ code: "SOME_FUTURE_CODE" }))).rejects.toThrow(
+      "RefundDesk could not complete the request (SOME_FUTURE_CODE).",
+    );
+    await expect(
+      failingRequest(JSON.stringify({ code: "<script>alert(1)</script>" })),
+    ).rejects.toThrow("RefundDesk could not complete the request. Try again.");
+    await expect(failingRequest(JSON.stringify({ unexpected: true }))).rejects.toThrow(
+      "RefundDesk could not complete the request. Try again.",
+    );
+  });
+});
+
 describe("signedApiRequest", () => {
   it("uses the original Stripe role objects for signing and a canonical ordered body", async () => {
     const context = createContext();

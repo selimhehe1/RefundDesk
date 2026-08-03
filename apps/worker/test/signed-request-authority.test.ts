@@ -37,13 +37,16 @@ function approvalEnvelope(overrides: Partial<SignedEnvelope> = {}): SignedEnvelo
   };
 }
 
-function signed(envelope: SignedEnvelope): { readonly raw: string; readonly signature: string } {
+function signed(
+  envelope: SignedEnvelope,
+  secret = SIGNING_SECRET,
+): { readonly raw: string; readonly signature: string } {
   const raw = serializeSignedEnvelope(envelope);
   return {
     raw,
     signature: Stripe.webhooks.generateTestHeaderString({
       payload: raw,
-      secret: SIGNING_SECRET,
+      secret,
       timestamp: Math.floor(Date.now() / 1_000),
     }),
   };
@@ -130,5 +133,74 @@ describe("worker signed-request authority", () => {
       authority.attestApproval(rejection.raw, rejection.signature),
     ).rejects.toMatchObject({ code: "envelope_invalid", status: 400 });
     expect(store.trace).toEqual([]);
+  });
+});
+
+describe("App signing secret rotation overlap", () => {
+  // Stripe keeps a retired App signing secret valid for an overlap window and may sign an
+  // extension request with either. A runtime holding one refuses whichever half it does not
+  // have, which the merchant sees as a Dashboard action that simply fails.
+  const ROLLED_SECRET = ["absec", "worker", "authority", "R".repeat(24)].join("_");
+  const FOREIGN_SECRET = ["absec", "someone", "else", "X".repeat(24)].join("_");
+
+  it("accepts a request still signed with the previous secret during a roll", async () => {
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority([ROLLED_SECRET, SIGNING_SECRET], store);
+    const request = signed(approvalEnvelope(), SIGNING_SECRET);
+
+    const result = await authority.verify(request.raw, request.signature);
+
+    expect(result.envelope).toEqual(approvalEnvelope());
+  });
+
+  it("accepts a request signed with the new secret in the same roll", async () => {
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority([ROLLED_SECRET, SIGNING_SECRET], store);
+    const request = signed(approvalEnvelope(), ROLLED_SECRET);
+
+    const result = await authority.verify(request.raw, request.signature);
+
+    expect(result.envelope).toEqual(approvalEnvelope());
+  });
+
+  it("still refuses a secret that is neither the new nor the previous one", async () => {
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority([ROLLED_SECRET, SIGNING_SECRET], store);
+    const request = signed(approvalEnvelope(), FOREIGN_SECRET);
+
+    await expect(authority.verify(request.raw, request.signature)).rejects.toMatchObject({
+      code: "signature_invalid",
+      status: 401,
+    });
+    expect(store.trace).toEqual([]);
+  });
+
+  it("refuses the previous secret once the roll is finished", async () => {
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority([ROLLED_SECRET], store);
+    const request = signed(approvalEnvelope(), SIGNING_SECRET);
+
+    await expect(authority.verify(request.raw, request.signature)).rejects.toMatchObject({
+      code: "signature_invalid",
+      status: 401,
+    });
+  });
+
+  it("reports a missing signature as missing, not as invalid against the last secret", async () => {
+    // Only an invalid signature depends on which secret was used. Retrying the other failures
+    // across secrets would report the last attempt instead of the real cause.
+    const store = new FakeStore();
+    const authority = new StripeSignedRequestAuthority([ROLLED_SECRET, SIGNING_SECRET], store);
+    const request = signed(approvalEnvelope());
+
+    await expect(authority.verify(request.raw, null)).rejects.toMatchObject({
+      code: "signature_missing",
+      status: 401,
+    });
+  });
+
+  it("refuses to exist with no secret at all", () => {
+    const store = new FakeStore();
+    expect(() => new StripeSignedRequestAuthority([], store)).toThrow("SIGNING_SECRET_REQUIRED");
   });
 });

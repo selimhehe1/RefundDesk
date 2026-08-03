@@ -163,7 +163,13 @@ export interface AccountWebhookDependencies {
   readonly expectedApplicationId: string;
   readonly expectedAccountId: string;
   readonly expectedApiVersion: "2026-06-24.dahlia";
-  readonly signingSecret: string;
+  /**
+   * Ordered, active first. More than one entry only while a secret is being rolled: Stripe
+   * signs with the secret current at send time and retries that same signature for days, so
+   * the previous one has to stay acceptable until those retries drain. Verification stops at
+   * the first secret that validates; every failure is reported identically.
+   */
+  readonly signingSecrets: readonly string[];
   readonly constructEvent: (
     rawBody: Buffer,
     signature: string,
@@ -280,10 +286,13 @@ function defaultDependencies(
   endpoint: Exclude<AccountWebhookRouteEnvironment, "live">,
 ): AccountWebhookDependencies {
   const config = loadPlatformConfig();
-  const signingSecret =
+  const signingSecrets =
     endpoint === "test"
-      ? config.stripe.accountTestWebhookSecret
-      : config.stripe.accountSandboxWebhookSecret;
+      ? [config.stripe.accountTestWebhookSecret, config.stripe.accountTestWebhookSecretPrevious]
+      : [
+          config.stripe.accountSandboxWebhookSecret,
+          config.stripe.accountSandboxWebhookSecretPrevious,
+        ];
   const expectedAccountId =
     endpoint === "test"
       ? config.stripe.platformTestAccountId
@@ -292,7 +301,7 @@ function defaultDependencies(
     expectedApplicationId: config.stripe.appId,
     expectedAccountId,
     expectedApiVersion: config.stripe.apiVersion,
-    signingSecret,
+    signingSecrets: signingSecrets.filter((secret): secret is string => secret !== undefined),
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300),
     persistence: new PrismaAccountWebhookPersistence(getPilotRuntime().client),
@@ -371,7 +380,12 @@ async function receiveAdmittedAccountWebhook(
   verificationDeadlineAtMs = Date.now() + REQUEST_BODY_DEADLINE_MS,
 ): Promise<Response> {
   const dependencies = injectedDependencies ?? defaultDependencies(endpoint);
-  if (dependencies.signingSecret === "disabled") {
+  // An endpoint with nothing to verify against, or explicitly disabled, must refuse rather
+  // than fall through to a verification loop that would reject everything anyway.
+  if (
+    dependencies.signingSecrets.length === 0 ||
+    dependencies.signingSecrets.includes("disabled")
+  ) {
     return apiError("ENDPOINT_DISABLED", "Webhook endpoint is disabled", 503);
   }
   if (!STRIPE_ACCOUNT_PATTERN.test(dependencies.expectedAccountId)) {
@@ -404,13 +418,22 @@ async function receiveAdmittedAccountWebhook(
     return apiError("PAYLOAD_INVALID", "Webhook payload is invalid", 400);
   }
 
-  let event: Stripe.Event;
+  let event: Stripe.Event | null = null;
   try {
-    event = dependencies.constructEvent(rawBody, signature, dependencies.signingSecret);
-  } catch {
-    return apiError("WEBHOOK_INVALID", "Webhook could not be verified", 400);
+    for (const secret of dependencies.signingSecrets) {
+      try {
+        event = dependencies.constructEvent(rawBody, signature, secret);
+        break;
+      } catch {
+        // Try the next secret. The refusal below is identical whichever one failed, so a
+        // caller learns only that the signature did not verify, never which secret is live.
+      }
+    }
   } finally {
     releaseVerificationLease();
+  }
+  if (event === null) {
+    return apiError("WEBHOOK_INVALID", "Webhook could not be verified", 400);
   }
   if (event.livemode) {
     return apiError("MODE_MISMATCH", "Live events are disabled for the pilot", 400);

@@ -25,6 +25,7 @@ import {
 } from "../src/server/pilot-audit-download.js";
 import { createPilotAuditToken, verifyPilotAuditToken } from "../src/server/pilot-audit-token.js";
 import { TestAndSandboxAccessPolicy } from "../src/server/pilot-access-policy.js";
+import { ConfiguredAccountAdmission } from "../src/server/pilot-account-admission.js";
 import { EdgeAdmissionDeniedReason } from "../src/server/edge-admission.js";
 import { PilotApiError } from "../src/server/pilot-errors.js";
 import { handlePilotRoute, type PilotHttpDependencies } from "../src/server/pilot-http.js";
@@ -88,6 +89,7 @@ function defaultRequest(): PilotRequestRecord {
     charge_id: "ch_pilot",
     created_at: "2026-07-25T10:00:00.000Z",
     currency: "eur",
+    expires_at: "2026-08-01T10:00:00.000Z",
     id: REQUEST_ID,
     is_requester: false,
     justification: "Customer requested a partial refund.",
@@ -275,6 +277,20 @@ class FakePilotRepository implements PilotRepository {
       approver_user_ids: [USER_ID],
       expiration_days: 7,
       onboarding_completed: true,
+      observed_users: [
+        {
+          stripe_user_id: USER_ID,
+          display_name: "Ada Lovelace",
+          approver_enabled: true,
+          last_seen_at: "2026-07-26T17:00:00.000Z",
+        },
+        {
+          stripe_user_id: "usr_Colleague",
+          display_name: null,
+          approver_enabled: false,
+          last_seen_at: "2026-07-25T09:30:00.000Z",
+        },
+      ],
     });
   }
 }
@@ -390,7 +406,15 @@ describe("signed pilot API boundary", () => {
   beforeEach(() => {
     repository = new FakePilotRepository();
     paymentReader = new FakePaymentReader();
-    service = new PilotService(repository, paymentReader, new TestAndSandboxAccessPolicy());
+    service = new PilotService(
+      repository,
+      paymentReader,
+      new TestAndSandboxAccessPolicy(),
+      new ConfiguredAccountAdmission([
+        { accountId: ACCOUNT_ID, environment: "test" },
+        { accountId: ACCOUNT_ID, environment: "sandbox" },
+      ]),
+    );
     emitOperationalSignal = vi.fn();
     signedRequestRateLimiter = {
       consume: () => Promise.resolve({ allowed: true }),
@@ -553,6 +577,41 @@ describe("signed pilot API boundary", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("refuses an unadmitted Stripe account before resolving or provisioning anything", async () => {
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.contextSync, { accountId: "acct_stranger" }),
+      PILOT_ROUTE_SPECS.contextSync,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter,
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    expect(response.status).toBe(403);
+    expect(await errorBody(response)).toMatchObject({ code: "ACCOUNT_ENVIRONMENT_MISMATCH" });
+    // Installing the Stripe App must not create a tenant: the repository is never reached,
+    // so no provisioning can occur (ADR 0020).
+    expect(repository.resolutionOptions).toHaveLength(0);
+  });
+
+  it("still admits a configured account through the provisioning path", async () => {
+    const response = await handlePilotRoute(
+      signedRequest(PILOT_ROUTE_SPECS.contextSync),
+      PILOT_ROUTE_SPECS.contextSync,
+      {
+        emitOperationalSignal,
+        signedRequestRateLimiter,
+        service,
+        signedRequestVerifier,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(repository.resolutionOptions).toEqual([{ allowProvision: true }]);
   });
 
   it("rate-limits a mutation only after signature verification with its authenticated scope", async () => {

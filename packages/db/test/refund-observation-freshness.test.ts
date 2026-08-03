@@ -236,3 +236,66 @@ describe("Stripe refund observation freshness", () => {
     expect(tx.refundRequest.updateMany).not.toHaveBeenCalled();
   });
 });
+
+describe("Non-terminal Stripe refund statuses", () => {
+  // Stripe reports an asynchronous card refund as `pending` before it settles, and can park
+  // it in `requires_action`. Neither means the money moved, so neither may end the workflow
+  // or release the payment guard — the protection has to outlive the uncertainty.
+  //
+  // The branch that handles them sits immediately above the one that treats `failed` as
+  // proof of absence. Reordering the two would release the guard on a refund that may still
+  // succeed, which is why these cases assert what the update must *not* carry rather than
+  // only what it does.
+  const nonTerminal: readonly StripeRefundStatus[] = ["pending", "requires_action"];
+
+  for (const status of nonTerminal) {
+    it(`keeps the workflow open and the payment guard held on ${status}`, async () => {
+      const tx = transaction(
+        lockedObservation({ workflowStatus: "executing", effectState: "possible" }),
+      );
+      const repositories = new TenantRepositories(
+        tx as unknown as Prisma.TransactionClient,
+        tenantId,
+      );
+
+      await expect(
+        repositories.markRefundIdentified({
+          ...observation(status),
+          reconciliationResolution: "preserve",
+        }),
+      ).resolves.toBe(true);
+
+      expect(tx.refundRequest.updateMany).toHaveBeenCalledTimes(1);
+      const [call] = tx.refundRequest.updateMany.mock.calls;
+      const data = (call?.[0] as { readonly data: Record<string, unknown> }).data;
+
+      // A Refund object exists, so the effect is identified rather than absent.
+      expect(data.effectState).toBe("identified");
+      expect(data.version).toEqual({ increment: 1 });
+
+      // The three fields that would end the workflow or free the payment.
+      expect(data).not.toHaveProperty("workflowStatus");
+      expect(data).not.toHaveProperty("terminalAt");
+      expect(data).not.toHaveProperty("paymentGuardReleasedAt");
+    });
+
+    it(`refuses to treat ${status} as proof that no refund happened`, async () => {
+      const tx = transaction(
+        lockedObservation({ workflowStatus: "executing", effectState: "possible" }),
+      );
+      const repositories = new TenantRepositories(
+        tx as unknown as Prisma.TransactionClient,
+        tenantId,
+      );
+
+      await repositories.markRefundIdentified({
+        ...observation(status),
+        reconciliationResolution: "preserve",
+      });
+
+      const [call] = tx.refundRequest.updateMany.mock.calls;
+      const data = (call?.[0] as { readonly data: Record<string, unknown> }).data;
+      expect(data.effectState).not.toBe("absence_proven");
+    });
+  }
+});

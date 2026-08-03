@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
 import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
-import { Banner, Box, SettingsView, TextArea, TextField } from "@stripe/ui-extension-sdk/ui";
+import { Banner, Box, Checkbox, SettingsView, TextField } from "@stripe/ui-extension-sdk/ui";
 
-import { refundDeskApi, type SettingsResponse } from "../api/client";
+import { refundDeskApi, type ObservedUser, type SettingsResponse } from "../api/client";
 import { MutationIntentRegistry } from "../api/mutation-intent";
 import {
   createRequestNonce,
@@ -17,8 +17,25 @@ import {
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
-import { parseApproverUserIdsStrict } from "../validation";
+import { SectionHeading } from "../components/SectionHeading";
+import { formatTimestamp } from "../presentation";
 import { viewContextKey } from "../view-context";
+
+/**
+ * The status message carries the reason: it is the only text the settings shell
+ * re-announces after a save, and the toolkit exposes no way to move focus to the field.
+ */
+const NOT_SAVED_INVALID_APPROVERS = "Not saved — choose at least one approver";
+
+/**
+ * Stripe supplies a display name only for people who have opened RefundDesk since this
+ * version shipped, so the identifier stays as the fallback label rather than showing an
+ * anonymous row.
+ */
+function observedUserLabel(user: ObservedUser, currentUserId: string | undefined): string {
+  const name = user.display_name === null ? user.stripe_user_id : user.display_name;
+  return user.stripe_user_id === currentUserId ? `${name} (you)` : name;
+}
 
 function SettingsViewContent({ context }: { readonly context: ExtensionContextValue }) {
   const liveMode = context.environment.mode === "live";
@@ -27,6 +44,9 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
   const [loading, setLoading] = useState(!liveMode);
   const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [approverFieldError, setApproverFieldError] = useState<string | undefined>(undefined);
+  const [selectedApprovers, setSelectedApprovers] = useState<ReadonlySet<string>>(new Set());
+  const currentUserId = context.userContext.id;
   const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
 
   useEffect(() => {
@@ -40,6 +60,7 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
         const response = await refundDeskApi.getSettings(context);
         if (active) {
           setSettings(response);
+          setSelectedApprovers(new Set(response.approver_user_ids));
         }
       } catch (settingsError) {
         if (active) {
@@ -57,21 +78,15 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
     };
   }, [context, liveMode]);
 
-  const save = async (values: { readonly [key: string]: string }) => {
-    const rawApprovers = values["approver_user_ids"] ?? "";
-    const { approverUserIds, invalidValues } = parseApproverUserIdsStrict(rawApprovers);
-    if (invalidValues.length > 0) {
-      setError(
-        "Every approver must be a Stripe user ID beginning with usr_. Remove names or e-mail addresses.",
-      );
-      setStatusMessage("Not saved");
-      return;
-    }
+  const save = async () => {
+    const approverUserIds = [...selectedApprovers];
     if (approverUserIds.length === 0) {
-      setError("Keep at least one eligible Stripe user ID as an approver.");
-      setStatusMessage("Not saved");
+      setApproverFieldError("Keep at least one person as an approver.");
+      setError(null);
+      setStatusMessage(NOT_SAVED_INVALID_APPROVERS);
       return;
     }
+    setApproverFieldError(undefined);
 
     const onboardingCompleted = settings?.onboarding_completed ?? true;
     const intentKey = `settings:update:${onboardingCompleted ? "complete" : "incomplete"}:${approverUserIds.join(",")}`;
@@ -99,6 +114,7 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
       );
       mutationIntents.complete(intentKey);
       setSettings(response);
+      setSelectedApprovers(new Set(response.approver_user_ids));
       setStatusMessage("Saved");
     } catch (saveError) {
       if (isDefinitiveMutationRejection(saveError)) {
@@ -118,8 +134,8 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
       statusMessage={statusMessage}
       onSave={
         canSave
-          ? (values) => {
-              void save(values);
+          ? () => {
+              void save();
             }
           : undefined
       }
@@ -146,15 +162,47 @@ function SettingsViewContent({ context }: { readonly context: ExtensionContextVa
 
         {settings === null ? null : (
           <>
-            <TextArea
-              name="approver_user_ids"
-              label="Explicit approver Stripe user IDs"
-              description="One usr_… ID per line. Administrators are not approvers automatically; every approver is explicitly saved."
-              defaultValue={settings.approver_user_ids.join("\n")}
-              rows={6}
-              disabled={!canSave}
-              required
-            />
+            <Box css={{ stack: "y", gap: "small" }}>
+              <SectionHeading>Who can approve refunds</SectionHeading>
+              <Box>
+                Tick each person allowed to approve. Being a Stripe Administrator is not enough —
+                every approver is chosen here. A requester can never approve their own refund, so
+                keep at least two people.
+              </Box>
+              {settings.observed_users.length === 0 ? (
+                <Banner
+                  type="caution"
+                  title="Nobody to choose yet"
+                  description="Ask your colleagues to open RefundDesk once from the Stripe Dashboard. They appear here as soon as they do."
+                />
+              ) : (
+                settings.observed_users.map((user) => (
+                  <Checkbox
+                    key={user.stripe_user_id}
+                    label={observedUserLabel(user, currentUserId)}
+                    description={`Last opened RefundDesk ${formatTimestamp(user.last_seen_at)}`}
+                    checked={selectedApprovers.has(user.stripe_user_id)}
+                    disabled={!canSave}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setApproverFieldError(undefined);
+                      setSelectedApprovers((current) => {
+                        const next = new Set(current);
+                        if (checked) {
+                          next.add(user.stripe_user_id);
+                        } else {
+                          next.delete(user.stripe_user_id);
+                        }
+                        return next;
+                      });
+                    }}
+                  />
+                ))
+              )}
+              {approverFieldError === undefined ? null : (
+                <Banner type="critical" title="Not saved" description={approverFieldError} />
+              )}
+            </Box>
             <TextField
               name="approval_policy"
               label="Approval policy"

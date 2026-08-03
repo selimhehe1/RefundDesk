@@ -77,6 +77,7 @@ const refundRequestSummarySchema = z
     requester_user_id: z.string().min(1).max(255),
     justification: z.string().min(10).max(2_000).nullable(),
     created_at: z.iso.datetime(),
+    expires_at: z.iso.datetime(),
     version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
     can_decide: z.boolean(),
     can_cancel: z.boolean(),
@@ -99,12 +100,14 @@ const requestMutationResponseSchema = z
   })
   .strict();
 
+export const externalAlertClassificationSchema = z.enum(["external", "tampered", "proof_replay"]);
+
 const externalAlertSchema = z
   .object({
     id: z.uuid(),
     refund_id: z.string().regex(/^re_[A-Za-z0-9]+$/u),
     amount_minor: minorAmountSchema,
-    classification: z.enum(["external", "tampered", "proof_replay"]),
+    classification: externalAlertClassificationSchema,
     currency: currencySchema,
     detected_at: z.iso.datetime(),
     acknowledged: z.boolean(),
@@ -125,11 +128,24 @@ const alertMutationResponseSchema = z
   })
   .strict();
 
+const observedUserSchema = z
+  .object({
+    stripe_user_id: z
+      .string()
+      .regex(/^usr_[A-Za-z0-9]+$/u)
+      .max(255),
+    display_name: z.string().max(255).nullable(),
+    approver_enabled: z.boolean(),
+    last_seen_at: z.iso.datetime(),
+  })
+  .strict();
+
 const settingsResponseSchema = z
   .object({
     approver_user_ids: z.array(z.string().min(1).max(255)),
     expiration_days: z.literal(7),
     onboarding_completed: z.boolean(),
+    observed_users: z.array(observedUserSchema).max(500),
   })
   .strict();
 
@@ -155,6 +171,7 @@ export type RefundRequestListResponse = z.infer<typeof requestListResponseSchema
 export type ExternalAlert = z.infer<typeof externalAlertSchema>;
 export type ExternalAlertListResponse = z.infer<typeof externalAlertListResponseSchema>;
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>;
+export type ObservedUser = z.infer<typeof observedUserSchema>;
 
 type RequestScope = "all_activity" | "awaiting_my_approval" | "my_requests";
 type RefundDecisionCommand =
@@ -217,13 +234,21 @@ export function getPaymentResource(context: ExtensionContextValue): PaymentResou
 
 export const refundDeskApi = {
   syncContext(context: ExtensionContextValue) {
+    // The Stripe context supplies the signing user's display name without any extra
+    // permission. Sending it here is what lets Settings show people instead of raw
+    // usr_… identifiers; it is omitted when Stripe does not provide one.
+    const displayName = context.userContext.name;
+    const command =
+      typeof displayName === "string" && displayName.trim().length > 0
+        ? { display_name: displayName.trim().slice(0, 255) }
+        : {};
     return requestAndParse(
       context,
       {
         endpoint: "/v1/context/sync",
         operation: "context.sync",
         ...accountResource(context),
-        command: {},
+        command,
       },
       contextSyncResponseSchema,
     );

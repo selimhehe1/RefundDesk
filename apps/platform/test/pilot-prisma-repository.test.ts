@@ -422,9 +422,13 @@ describe("Stripe role persistence", () => {
     );
 
     expect(upserts).toHaveLength(2);
+    // The invariant: an unasserted request must never overwrite stored roles.
     expect(upserts[0]?.create).not.toHaveProperty("stripeRoles");
     expect(upserts[0]?.update).not.toHaveProperty("stripeRoles");
-    expect(upserts[0]?.update).not.toHaveProperty("lastVerifiedAt");
+    // The timestamp is refreshed on every observation, not only when roles are asserted.
+    // Roles are signed for Administrators alone, so tying it to them froze everyone else at
+    // their first visit — and Settings now shows this as "last opened RefundDesk".
+    expect(upserts[0]?.update).toEqual({ lastVerifiedAt: observedAt });
     expect(upserts[1]?.create).toMatchObject({
       lastVerifiedAt: observedAt,
       stripeRoles: roles,

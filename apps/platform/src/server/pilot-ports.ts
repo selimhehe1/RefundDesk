@@ -58,6 +58,8 @@ export interface PilotRequestSummary {
   readonly can_decide: boolean;
   readonly created_at: string;
   readonly currency: string;
+  /** When an undecided request lapses. Authoritative: the extension must not recompute it. */
+  readonly expires_at: string;
   readonly id: string;
   readonly is_requester: boolean;
   readonly justification: string | null;
@@ -90,10 +92,19 @@ export interface PilotExternalAlert {
   readonly refund_id: string;
 }
 
+export interface PilotObservedUser {
+  readonly stripe_user_id: string;
+  readonly display_name: string | null;
+  readonly approver_enabled: boolean;
+  readonly last_seen_at: string;
+}
+
 export interface PilotSettings {
   readonly approver_user_ids: readonly string[];
   readonly expiration_days: 7;
   readonly onboarding_completed: boolean;
+  /** Everyone who has opened RefundDesk on this installation; the pool an Administrator picks approvers from. */
+  readonly observed_users: readonly PilotObservedUser[];
 }
 
 export interface PilotPage<T> {
@@ -172,7 +183,14 @@ export type PilotMutation =
 export interface PilotRepository {
   resolveContext(
     identity: PilotSignedIdentity,
-    options: { readonly allowProvision: boolean },
+    options: {
+      readonly allowProvision: boolean;
+      /**
+       * Display name carried by a `context.sync` command. Recorded so Settings can list
+       * people instead of raw identifiers; absent for every other operation.
+       */
+      readonly displayName?: string;
+    },
   ): Promise<PilotTenantContext | null>;
 
   findMutationReceipt(
@@ -217,6 +235,20 @@ export interface PilotRepository {
   ): Promise<PilotPage<PilotExternalAlert>>;
 
   getSettings(context: PilotTenantContext): Promise<PilotSettings>;
+}
+
+/**
+ * Decides whether a Stripe account may be served at all, before any installation is
+ * resolved or provisioned. Installing the Stripe App is not consent to create a tenant:
+ * without this gate any Administrator of any account that installs the App can
+ * self-provision one, and the rejection only surfaces later as a credential mismatch.
+ * See ADR 0020.
+ */
+export interface PilotAccountAdmission {
+  isAdmitted(input: {
+    readonly accountId: string;
+    readonly environment: PilotEnvironment;
+  }): boolean;
 }
 
 export interface PilotAccessPolicy {

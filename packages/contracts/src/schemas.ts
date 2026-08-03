@@ -148,6 +148,20 @@ export const auditExportCommandSchema = z
 
 export const emptyCommandSchema = z.object({}).strict();
 
+/**
+ * `context.sync` may carry the Dashboard display name of the signing user, which the
+ * Stripe extension context provides without any additional permission. It lets Settings
+ * offer a list of people to tick instead of demanding raw `usr_…` identifiers.
+ *
+ * The field is optional so an already-installed extension version, which sends `{}`,
+ * stays valid.
+ */
+export const contextSyncCommandSchema = z
+  .object({
+    display_name: z.string().trim().min(1).max(255).optional(),
+  })
+  .strict();
+
 export const cursorPageSchema = z
   .object({
     cursor: z.string().max(512).optional(),

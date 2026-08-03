@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 
 import type { ExtensionContextValue } from "@stripe/ui-extension-sdk/context";
-import { Banner, Box, Button, Checkbox, OnboardingView } from "@stripe/ui-extension-sdk/ui";
+import {
+  Banner,
+  Box,
+  Button,
+  Checkbox,
+  List,
+  ListItem,
+  OnboardingView,
+} from "@stripe/ui-extension-sdk/ui";
 import type { OnboardingViewProps } from "@stripe/ui-extension-sdk/ui";
 
 import { refundDeskApi } from "../api/client";
@@ -17,6 +25,7 @@ import {
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { SectionHeading } from "../components/SectionHeading";
 import { viewContextKey } from "../view-context";
 
 const COMPLETE_ONBOARDING_INTENT = "settings:onboarding";
@@ -149,12 +158,22 @@ function OnboardingViewContent({ context }: { readonly context: ExtensionContext
         ) : null}
 
         <Box css={{ stack: "y", gap: "small" }}>
-          <Box>Initial pilot policy</Box>
-          <Box>• one approver, always different from the requester</Box>
-          <Box>• requests expire after seven days</Box>
-          <Box>• audit and justifications retained for 365 days</Box>
-          <Box>• no e-mail notifications, Billing, quota, or live execution</Box>
+          <SectionHeading>Initial pilot policy</SectionHeading>
+          <List>
+            <ListItem title="One approver, always different from the requester" />
+            <ListItem title="Requests expire after seven days" />
+            <ListItem title="Audit and justifications retained for 365 days" />
+            <ListItem title="No e-mail notifications, Billing, quota, or live execution" />
+          </List>
         </Box>
+
+        {completed ? (
+          <Banner
+            type="caution"
+            title="One more person is needed"
+            description="You are currently the only approver, and nobody may approve their own request. Ask a colleague to open RefundDesk once from the Stripe Dashboard, then tick them in Settings."
+          />
+        ) : null}
 
         <Banner
           title="Guided sandbox test"

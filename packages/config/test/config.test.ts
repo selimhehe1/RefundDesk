@@ -415,6 +415,39 @@ describe("runtime-scoped configuration", () => {
       }),
     ).toThrow();
 
+    // A previous webhook secret is only meaningful while it differs from every other secret
+    // in play: equal to its own current one the roll is a no-op that reads as if it happened,
+    // and shared across endpoints an event delivered for one environment verifies on the other.
+    expect(() =>
+      loadPlatformConfig({
+        ...platform,
+        STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS: platform.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET,
+      }),
+    ).toThrow();
+    expect(() =>
+      loadPlatformConfig({
+        ...platform,
+        STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS: platform.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET,
+      }),
+    ).toThrow();
+    expect(() =>
+      loadPlatformConfig({
+        ...platform,
+        STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS: "whsec_rolled_shared",
+        STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS: "whsec_rolled_shared",
+      }),
+    ).toThrow();
+
+    const rolling = loadPlatformConfig({
+      ...platform,
+      STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS: "whsec_synthetic_test_previous",
+    });
+    expect(rolling.stripe.accountTestWebhookSecretPrevious).toBe("whsec_synthetic_test_previous");
+    expect(rolling.stripe).not.toHaveProperty("accountSandboxWebhookSecretPrevious");
+    expect(loadPlatformConfig(platform).stripe).not.toHaveProperty(
+      "accountTestWebhookSecretPrevious",
+    );
+
     const worker = workerEnvironment();
     expect(() =>
       loadWorkerConfig({
@@ -428,6 +461,22 @@ describe("runtime-scoped configuration", () => {
         STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: worker.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
       }),
     ).toThrow();
+
+    // A previous App signing secret equal to its own current one makes a roll a no-op that
+    // reads as if it had happened.
+    expect(() =>
+      loadWorkerConfig({
+        ...worker,
+        STRIPE_APP_SIGNING_SECRET_PREVIOUS: worker.STRIPE_APP_SIGNING_SECRET,
+      }),
+    ).toThrow();
+
+    const rollingWorker = loadWorkerConfig({
+      ...worker,
+      STRIPE_APP_SIGNING_SECRET_PREVIOUS: "absec_synthetic_previous",
+    });
+    expect(rollingWorker.stripe.appSigningSecretPrevious).toBe("absec_synthetic_previous");
+    expect(loadWorkerConfig(worker).stripe).not.toHaveProperty("appSigningSecretPrevious");
   });
 
   it("requires independent worker and queue database principals", () => {

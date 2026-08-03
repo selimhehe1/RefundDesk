@@ -254,7 +254,7 @@ async function deliverWebhook(input: {
     expectedApplicationId: "ca_refunddesk",
     expectedAccountId: ACCOUNT_ID,
     expectedApiVersion: "2026-06-24.dahlia",
-    signingSecret: SIGNING_SECRET,
+    signingSecrets: [SIGNING_SECRET],
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300, undefined, EVENT_CREATED),
     persistence: input.persistence,

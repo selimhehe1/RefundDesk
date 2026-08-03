@@ -36,8 +36,18 @@ import {
   PilotModeBanner,
   PilotModeLabel,
 } from "../components/PilotModeBanner";
+import { SectionHeading } from "../components/SectionHeading";
 import { formatMinorAmount } from "../money";
+import {
+  alertClassificationLabel,
+  expiryNotice,
+  formatTimestamp,
+  refundReasonLabel,
+  workflowStatusLabel,
+} from "../presentation";
 import { viewContextKey } from "../view-context";
+
+const MINIMUM_REJECTION_NOTE_LENGTH = 10;
 
 type RequestScope = "all_activity" | "awaiting_my_approval" | "my_requests";
 
@@ -70,13 +80,6 @@ function itemResource(item: RefundRequestSummary): PaymentResource {
   };
 }
 
-function refundReasonLabel(reason: RefundRequestSummary["reason"]): string {
-  if (reason === "requested_by_customer") {
-    return "Requested by customer";
-  }
-  return reason === "fraudulent" ? "Fraudulent" : "Duplicate";
-}
-
 function RefundRequestCard({
   actionsDisabled,
   approvalUnderReview,
@@ -103,6 +106,10 @@ function RefundRequestCard({
   readonly onReviewApproval: () => void;
 }) {
   const selfApprovalBlocked = item.is_requester && item.status === "pending_approval";
+  const expiryLabel = expiryNotice(item.expires_at, new Date());
+  const trimmedRejectionNote = rejectionNote.trim();
+  const rejectionNoteTooShort =
+    trimmedRejectionNote.length > 0 && trimmedRejectionNote.length < MINIMUM_REJECTION_NOTE_LENGTH;
   return (
     <Box
       css={{
@@ -115,13 +122,16 @@ function RefundRequestCard({
     >
       <Box css={{ stack: "x", gap: "small", distribute: "space-between" }}>
         <Box>{formatMinorAmount(item.amount_minor, item.currency)}</Box>
-        <Badge type={statusBadgeType(item.status)}>{item.status}</Badge>
+        <Badge type={statusBadgeType(item.status)}>{workflowStatusLabel(item.status)}</Badge>
       </Box>
       <Box>Request {item.id}</Box>
       <Box>Payment {item.resource_id}</Box>
       <Box>Requested by {item.requester_user_id}</Box>
       <Box>Stripe reason: {refundReasonLabel(item.reason)}</Box>
-      <Box>Created {item.created_at}</Box>
+      <Box>Created {formatTimestamp(item.created_at)}</Box>
+      {item.status === "pending_approval" && expiryLabel !== null ? (
+        <Box>{expiryLabel} — an undecided request lapses and cannot be approved afterwards.</Box>
+      ) : null}
       {item.justification === null ? null : (
         <Box>Requester justification: {item.justification}</Box>
       )}
@@ -147,12 +157,18 @@ function RefundRequestCard({
               label="Rejection reason"
               description="Required only when rejecting; 10 to 2,000 characters."
               value={rejectionNote}
-              minLength={10}
+              minLength={MINIMUM_REJECTION_NOTE_LENGTH}
               maxLength={2_000}
               rows={3}
               onChange={(event) => {
                 onNoteChange(event.target.value);
               }}
+              invalid={rejectionNoteTooShort}
+              error={
+                rejectionNoteTooShort
+                  ? `Enter at least ${MINIMUM_REJECTION_NOTE_LENGTH} characters to enable Reject.`
+                  : undefined
+              }
               disabled={actionsDisabled}
             />
           )}
@@ -173,7 +189,11 @@ function RefundRequestCard({
             <Button
               type="destructive"
               pending={busy}
-              disabled={approvalUnderReview || actionsDisabled || rejectionNote.trim().length < 10}
+              disabled={
+                approvalUnderReview ||
+                actionsDisabled ||
+                trimmedRejectionNote.length < MINIMUM_REJECTION_NOTE_LENGTH
+              }
               onPress={onReject}
             >
               Reject
@@ -202,12 +222,7 @@ function ExternalAlertCard({
   readonly busy: boolean;
   readonly onAcknowledge: () => void;
 }) {
-  const classificationLabel =
-    alert.classification === "proof_replay"
-      ? "Copied RefundDesk proof"
-      : alert.classification === "tampered"
-        ? "Invalid RefundDesk metadata"
-        : "Outside RefundDesk";
+  const classificationLabel = alertClassificationLabel(alert.classification);
   return (
     <Box
       css={{
@@ -226,7 +241,7 @@ function ExternalAlertCard({
       </Box>
       <Box>Stripe Refund {alert.refund_id}</Box>
       <Box>Classification: {classificationLabel}</Box>
-      <Box>Detected {alert.detected_at}</Box>
+      <Box>Detected {formatTimestamp(alert.detected_at)}</Box>
       {alert.classification === "proof_replay" || alert.classification === "tampered" ? (
         <Banner
           type="critical"
@@ -271,6 +286,9 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
   const [downloadExpiresAt, setDownloadExpiresAt] = useState<string | null>(null);
   const [currentUserIsApprover, setCurrentUserIsApprover] = useState(false);
   const [contextLoaded, setContextLoaded] = useState(false);
+  // Distinct from contextLoaded, which also becomes true when the sync fails. Only a
+  // successful sync licenses a statement about the current user's approver status.
+  const [approverStatusKnown, setApproverStatusKnown] = useState(false);
   const requestSequence = useRef(0);
   const alertSequence = useRef(0);
   const [mutationIntents] = useState(() => new MutationIntentRegistry(createRequestNonce));
@@ -349,6 +367,7 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
           return;
         }
         setCurrentUserIsApprover(response.current_user_is_approver);
+        setApproverStatusKnown(true);
         if (response.current_user_is_approver) {
           await loadAlerts();
         }
@@ -518,6 +537,12 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
     }
   };
 
+  // Counted from what is loaded rather than fetched separately: the product sends no
+  // notification, so the drawer must at least say plainly that something needs a decision.
+  const awaitingMyDecision = requests.filter(
+    (item) => item.can_decide && !item.is_requester && item.status === "pending_approval",
+  ).length;
+
   const requestCards = (
     <Box css={{ stack: "y", gap: "medium" }}>
       {loading ? <LoadingState label="Loading refund requests…" /> : null}
@@ -596,47 +621,74 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
         {error === null ? null : <ErrorState message={error} />}
 
         {!liveMode ? (
-          <Tabs
-            selectedKey={scope}
-            onSelectionChange={(value) => {
-              if (isRequestScope(value)) {
-                if (busyId !== null) {
-                  setError("Wait for the current workflow action before changing views.");
-                  return;
+          <>
+            <SectionHeading>Refund requests</SectionHeading>
+            {awaitingMyDecision > 0 ? (
+              <Banner
+                type="caution"
+                title={
+                  awaitingMyDecision === 1
+                    ? "1 refund is waiting for your decision"
+                    : `${awaitingMyDecision} refunds are waiting for your decision`
                 }
-                if (value !== "my_requests" && !currentUserIsApprover) {
-                  setError("Only an explicit approver can open this activity view.");
-                  return;
+                description="RefundDesk does not notify anyone, so check this view regularly. Requests expire after seven days."
+              />
+            ) : null}
+            {approverStatusKnown && !currentUserIsApprover ? (
+              <Box>
+                Approval views stay disabled because you are not a configured RefundDesk approver.
+              </Box>
+            ) : null}
+            {contextLoaded && !approverStatusKnown ? (
+              <Box>Approval views stay disabled until your approver status can be confirmed.</Box>
+            ) : null}
+            {contextLoaded ? null : <Box>Checking your approver status…</Box>}
+            <Tabs
+              selectedKey={scope}
+              onSelectionChange={(value) => {
+                if (isRequestScope(value)) {
+                  if (busyId !== null) {
+                    setError("Wait for the current workflow action before changing views.");
+                    return;
+                  }
+                  if (value !== "my_requests" && !currentUserIsApprover) {
+                    setError("Only an explicit approver can open this activity view.");
+                    return;
+                  }
+                  if (value === scope) {
+                    return;
+                  }
+                  setApprovalReviewId(null);
+                  requestSequence.current += 1;
+                  setRequests([]);
+                  setRequestCursor(null);
+                  setLoading(true);
+                  setScope(value);
                 }
-                if (value === scope) {
-                  return;
-                }
-                setApprovalReviewId(null);
-                requestSequence.current += 1;
-                setRequests([]);
-                setRequestCursor(null);
-                setLoading(true);
-                setScope(value);
-              }
-            }}
-          >
-            <TabList>
-              <Tab id="my_requests">My requests</Tab>
-              <Tab id="awaiting_my_approval">Awaiting my approval</Tab>
-              <Tab id="all_activity">All activity</Tab>
-            </TabList>
-            <TabPanels>
-              <TabPanel id="my_requests">{requestCards}</TabPanel>
-              <TabPanel id="awaiting_my_approval">{requestCards}</TabPanel>
-              <TabPanel id="all_activity">{requestCards}</TabPanel>
-            </TabPanels>
-          </Tabs>
+              }}
+            >
+              <TabList>
+                <Tab id="my_requests">My requests</Tab>
+                <Tab id="awaiting_my_approval" disabled={!currentUserIsApprover}>
+                  Awaiting my approval
+                </Tab>
+                <Tab id="all_activity" disabled={!currentUserIsApprover}>
+                  All activity
+                </Tab>
+              </TabList>
+              <TabPanels>
+                <TabPanel id="my_requests">{requestCards}</TabPanel>
+                <TabPanel id="awaiting_my_approval">{requestCards}</TabPanel>
+                <TabPanel id="all_activity">{requestCards}</TabPanel>
+              </TabPanels>
+            </Tabs>
+          </>
         ) : null}
 
         <Divider />
         <Box css={{ stack: "y", gap: "medium" }}>
-          <Box>Refunds detected outside RefundDesk</Box>
-          {contextLoaded && !currentUserIsApprover ? (
+          <SectionHeading>Refunds detected outside RefundDesk</SectionHeading>
+          {approverStatusKnown && !currentUserIsApprover ? (
             <Banner
               type="caution"
               title="Explicit approvers only"
@@ -674,6 +726,7 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
 
         <Divider />
         <Box css={{ stack: "y", gap: "small" }}>
+          <SectionHeading>Audit export</SectionHeading>
           <Button
             type="secondary"
             pending={busyId === "audit-export"}
@@ -692,10 +745,17 @@ function RefundDrawerView({ context }: { readonly context: ExtensionContextValue
           {downloadUrl === null ? null : (
             <>
               <Box>
-                This redacted link expires at {downloadExpiresAt ?? "the server-provided time"}.
+                This redacted link expires at{" "}
+                {downloadExpiresAt === null
+                  ? "the server-provided time"
+                  : formatTimestamp(downloadExpiresAt)}{" "}
+                and stays replayable until then.
               </Box>
+              {/* The new-tab warning lives in the label: the toolkit has no
+                  aria-describedby, so adjacent text never reaches a control-by-control
+                  reader. */}
               <Button href={downloadUrl} target="_blank" type="primary">
-                Download audit CSV
+                Download audit CSV (opens in a new tab)
               </Button>
             </>
           )}

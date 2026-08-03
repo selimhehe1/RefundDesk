@@ -156,14 +156,14 @@ function signedRequest(
 
 function dependencies(
   persistence: AccountWebhookPersistence,
-  signingSecret = TEST_SECRET,
+  signingSecret: string | readonly string[] = TEST_SECRET,
   expectedAccountId = TEST_ACCOUNT_ID,
 ): AccountWebhookDependencies {
   return {
     expectedApplicationId: APP_ID,
     expectedAccountId,
     expectedApiVersion: "2026-06-24.dahlia",
-    signingSecret,
+    signingSecrets: Array.isArray(signingSecret) ? signingSecret : [signingSecret],
     constructEvent: (rawBody, signature, secret) =>
       Stripe.webhooks.constructEvent(rawBody, signature, secret, 300),
     persistence,
@@ -653,5 +653,79 @@ describe("durable direct-account Stripe webhook ingress", () => {
       event_type: "account.application.authorized",
       application_id: APP_ID,
     });
+  });
+});
+
+describe("webhook secret rotation overlap", () => {
+  // Stripe signs a delivery with the secret current at send time and then retries that exact
+  // signature for days. A bare cutover therefore drops everything already in flight, and a
+  // dropped `refund.failed` leaves a refund recorded as succeeded with its payment guard
+  // released. The previous secret has to stay acceptable until those retries drain.
+  const ROLLED_SECRET = "whsec_account_test_rolled";
+  const FOREIGN_SECRET = "whsec_account_someone_else";
+
+  it("accepts a delivery still signed with the previous secret during a roll", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receiveAccountWebhook(
+      signedRequest(lifecycleEvent("account.application.authorized"), TEST_SECRET),
+      "test",
+      dependencies(persistence, [ROLLED_SECRET, TEST_SECRET]),
+    );
+
+    expect(response.status).toBe(200);
+    expect(persistence.inserts).toHaveLength(1);
+  });
+
+  it("accepts a delivery signed with the new secret during the same roll", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receiveAccountWebhook(
+      signedRequest(lifecycleEvent("account.application.authorized"), ROLLED_SECRET),
+      "test",
+      dependencies(persistence, [ROLLED_SECRET, TEST_SECRET]),
+    );
+
+    expect(response.status).toBe(200);
+    expect(persistence.inserts).toHaveLength(1);
+  });
+
+  it("still refuses a secret that is neither the new nor the previous one", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receiveAccountWebhook(
+      signedRequest(lifecycleEvent("account.application.authorized"), FOREIGN_SECRET),
+      "test",
+      dependencies(persistence, [ROLLED_SECRET, TEST_SECRET]),
+    );
+
+    expect(response.status).toBe(400);
+    expect(persistence.inserts).toHaveLength(0);
+  });
+
+  it("refuses the previous secret once the roll is finished", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receiveAccountWebhook(
+      signedRequest(lifecycleEvent("account.application.authorized"), TEST_SECRET),
+      "test",
+      dependencies(persistence, [ROLLED_SECRET]),
+    );
+
+    expect(response.status).toBe(400);
+    expect(persistence.inserts).toHaveLength(0);
+  });
+
+  it("refuses every delivery when no secret is configured, without reading the body", async () => {
+    const persistence = new FakePersistence();
+
+    const response = await receiveAccountWebhook(
+      signedRequest(lifecycleEvent("account.application.authorized"), TEST_SECRET),
+      "test",
+      dependencies(persistence, []),
+    );
+
+    expect(response.status).toBe(503);
+    expect(persistence.inserts).toHaveLength(0);
   });
 });

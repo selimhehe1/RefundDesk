@@ -2,6 +2,7 @@ import type { ExtensionContextValue, RoleDefinition } from "@stripe/ui-extension
 import { fetchStripeSignature } from "@stripe/ui-extension-sdk/utils";
 
 import { canonicalJson, type JsonValue } from "./canonical-json";
+import { apiErrorMessage, GENERIC_API_ERROR_MESSAGE } from "./error-messages";
 
 export type PilotResourceType = "account" | "charge" | "payment_intent";
 
@@ -316,6 +317,15 @@ function readApiError(payload: unknown): string | undefined {
   return typeof payload["code"] === "string" ? payload["code"] : undefined;
 }
 
+/**
+ * Only the error CODE crosses this boundary. The `message` the API returns is never read:
+ * it can carry internal detail, and a regression test pins that it must not reach the user.
+ * The wording shown comes from the extension's own table in `./error-messages`.
+ */
+function requestFailureMessage(payload: unknown): string {
+  return apiErrorMessage(readApiError(payload));
+}
+
 async function parseResponse(response: Response): Promise<unknown> {
   const raw = await response.text();
   let payload: unknown;
@@ -330,12 +340,9 @@ async function parseResponse(response: Response): Promise<unknown> {
   }
 
   if (!response.ok) {
-    const apiCode = readApiError(payload);
     throw new SignedExtensionRequestError(
       "REQUEST_FAILED",
-      apiCode === undefined
-        ? "RefundDesk could not complete the request."
-        : `RefundDesk could not complete the request (${apiCode}).`,
+      requestFailureMessage(payload),
       response.status,
     );
   }
@@ -380,5 +387,5 @@ export function publicRequestError(error: unknown): string {
   if (error instanceof SignedExtensionRequestError) {
     return error.message;
   }
-  return "RefundDesk could not complete the request. Try again.";
+  return GENERIC_API_ERROR_MESSAGE;
 }

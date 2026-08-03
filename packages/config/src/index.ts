@@ -349,6 +349,12 @@ const platformEnvironmentSchema = z
     STRIPE_MANAGED_SANDBOX_ACCOUNT_ID: stripeAccountId,
     STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET: webhookSecret,
     STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET: webhookSecret,
+    // Optional, and set only while a webhook secret is being rolled. Stripe signs a delivery
+    // with the secret current at send time and then retries that same signature for days, so
+    // a bare cutover silently drops every event already in flight -- including a
+    // `refund.failed` that would otherwise correct a refund we believe succeeded.
+    STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS: webhookSecret.optional(),
+    STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS: webhookSecret.optional(),
     STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET: z.literal("disabled").default("disabled"),
     REFUNDDESK_GLOBAL_LIVE_ENABLED: globalLiveEnabled,
     REFUNDDESK_FIELD_ENCRYPTION_KEY_V1: base64Key.optional(),
@@ -397,6 +403,38 @@ const platformEnvironmentSchema = z
         message: "Test-mode and managed-sandbox webhook secrets must be distinct",
       });
     }
+    // Every webhook secret in play must be distinct, not just the two current ones. A value
+    // shared across endpoints would let an event delivered for one environment verify on the
+    // other, and a previous secret equal to its own current one would make a roll a no-op
+    // that reads as if it had happened.
+    for (const [path, secret] of [
+      [
+        "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS",
+        value.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS,
+      ],
+      [
+        "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS",
+        value.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS,
+      ],
+    ] as const) {
+      if (secret === undefined) {
+        continue;
+      }
+      const others = [
+        value.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET,
+        value.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET,
+        path === "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS"
+          ? value.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS
+          : value.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS,
+      ];
+      if (others.includes(secret)) {
+        context.addIssue({
+          code: "custom",
+          path: [path],
+          message: "Every webhook secret must be distinct from every other",
+        });
+      }
+    }
     validateApplicationKeyMaterialState(
       value.REFUNDDESK_ACTIVE_FIELD_KEY_VERSION,
       value.REFUNDDESK_FIELD_KEY_ROTATION_STATE,
@@ -423,6 +461,10 @@ const workerEnvironmentSchema = z
     PGBOSS_DATABASE_URL: postgresUrl,
     STRIPE_API_VERSION: stripeApiVersion,
     STRIPE_APP_SIGNING_SECRET: appSigningSecret,
+    // Optional, and set only while the App signing secret is being rolled. Stripe keeps the
+    // retired secret valid for an overlap window and may sign an extension request with
+    // either, so holding one refuses whichever half we do not have.
+    STRIPE_APP_SIGNING_SECRET_PREVIOUS: appSigningSecret.optional(),
     STRIPE_PLATFORM_TEST_EFFECT_KEY: optionalRestrictedTestApiKey,
     STRIPE_MANAGED_SANDBOX_EFFECT_KEY: optionalRestrictedTestApiKey,
     STRIPE_PLATFORM_TEST_KEY: optionalLegacyTestApiKey,
@@ -443,6 +485,15 @@ const workerEnvironmentSchema = z
     WORKER_HEALTH_PORT: workerHealthPort,
   })
   .superRefine((value, context) => {
+    // A previous App signing secret equal to its own current one makes a roll a no-op that
+    // reads as if it had happened.
+    if (value.STRIPE_APP_SIGNING_SECRET_PREVIOUS === value.STRIPE_APP_SIGNING_SECRET) {
+      context.addIssue({
+        code: "custom",
+        path: ["STRIPE_APP_SIGNING_SECRET_PREVIOUS"],
+        message: "The previous App signing secret must differ from the current one",
+      });
+    }
     validateDatabasePrincipal(value.WORKER_DATABASE_URL, "WORKER_DATABASE_URL", context);
     validateDatabasePrincipal(value.PGBOSS_DATABASE_URL, "PGBOSS_DATABASE_URL", context);
     validateDatabaseTransport(
@@ -575,6 +626,9 @@ export interface PlatformConfig extends RuntimeConfig {
     readonly managedSandboxReadKey: string;
     readonly accountTestWebhookSecret: string;
     readonly accountSandboxWebhookSecret: string;
+    /** Present only during a roll; accepted for verification, never used to sign. */
+    readonly accountTestWebhookSecretPrevious?: string;
+    readonly accountSandboxWebhookSecretPrevious?: string;
     readonly accountLiveWebhookSecret: "disabled";
   };
   readonly keys: {
@@ -593,6 +647,8 @@ export interface WorkerConfig extends RuntimeConfig {
   readonly stripe: {
     readonly apiVersion: "2026-06-24.dahlia";
     readonly appSigningSecret: string;
+    /** Present only during a roll; accepted for verification, never used to sign. */
+    readonly appSigningSecretPrevious?: string;
     readonly platformTestAccountId: string;
     readonly managedSandboxAccountId: string;
     readonly platformTestEffectKey: string;
@@ -654,6 +710,8 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
       "STRIPE_MANAGED_SANDBOX_READ_KEY",
       "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET",
       "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
+      "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS",
+      "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS",
       "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET",
     ],
     [
@@ -691,6 +749,14 @@ export function loadPlatformConfig(source: NodeJS.ProcessEnv = process.env): Pla
       ),
       accountTestWebhookSecret: env.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET,
       accountSandboxWebhookSecret: env.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET,
+      ...(env.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS === undefined
+        ? {}
+        : { accountTestWebhookSecretPrevious: env.STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS }),
+      ...(env.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS === undefined
+        ? {}
+        : {
+            accountSandboxWebhookSecretPrevious: env.STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS,
+          }),
       accountLiveWebhookSecret: env.STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET,
     },
     keys: {
@@ -719,6 +785,8 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     "STRIPE_MANAGED_SANDBOX_READ_KEY",
     "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET",
     "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET",
+    "STRIPE_ACCOUNT_TEST_WEBHOOK_SECRET_PREVIOUS",
+    "STRIPE_ACCOUNT_SANDBOX_WEBHOOK_SECRET_PREVIOUS",
     "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET",
     "REFUNDDESK_FIELD_ENCRYPTION_KEY_V1",
     "REFUNDDESK_FIELD_ENCRYPTION_KEY_V2",
@@ -729,6 +797,7 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     [
       "STRIPE_API_VERSION",
       "STRIPE_APP_SIGNING_SECRET",
+      "STRIPE_APP_SIGNING_SECRET_PREVIOUS",
       "STRIPE_PLATFORM_TEST_ACCOUNT_ID",
       "STRIPE_MANAGED_SANDBOX_ACCOUNT_ID",
       "STRIPE_PLATFORM_TEST_EFFECT_KEY",
@@ -758,6 +827,9 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,
       appSigningSecret: env.STRIPE_APP_SIGNING_SECRET,
+      ...(env.STRIPE_APP_SIGNING_SECRET_PREVIOUS === undefined
+        ? {}
+        : { appSigningSecretPrevious: env.STRIPE_APP_SIGNING_SECRET_PREVIOUS }),
       platformTestAccountId: env.STRIPE_PLATFORM_TEST_ACCOUNT_ID,
       managedSandboxAccountId: env.STRIPE_MANAGED_SANDBOX_ACCOUNT_ID,
       platformTestEffectKey: requireScopedKey(

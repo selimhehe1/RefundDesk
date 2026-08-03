@@ -247,6 +247,9 @@ function mapRequest(
     charge_id: detail.chargeId,
     created_at: detail.createdAt.toISOString(),
     currency: detail.currency.toLowerCase(),
+    // Server-authoritative: the expiry policy lives in the database, so the extension
+    // must never recompute it from a hardcoded number of days.
+    expires_at: detail.expiresAt.toISOString(),
     id: detail.id,
     is_requester: isRequester,
     justification,
@@ -313,7 +316,7 @@ export class PilotPrismaRepository implements PilotRepository {
 
   async resolveContext(
     identity: PilotSignedIdentity,
-    options: { readonly allowProvision: boolean },
+    options: { readonly allowProvision: boolean; readonly displayName?: string },
   ): Promise<PilotTenantContext | null> {
     let resolved = await resolveInstallation(
       this.options.client,
@@ -340,6 +343,7 @@ export class PilotPrismaRepository implements PilotRepository {
           stripeUserId: identity.userId,
           verifiedAt: this.now(),
           ...(identity.rolesAsserted ? { stripeRoles: pilotStripeRolesJson(identity.roles) } : {}),
+          ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
         });
         if (installation === null) {
           return null;
@@ -624,10 +628,20 @@ export class PilotPrismaRepository implements PilotRepository {
             "The Stripe installation was not found.",
           );
         }
+        // Everyone who has opened RefundDesk, so an Administrator can tick people instead
+        // of typing usr_… identifiers they have no way to discover. The activation rule is
+        // unchanged: the backend already refuses an approver who was never observed.
+        const observed = await repositories.listObservedTenantUsers();
         return {
           approver_user_ids: snapshot.approvers.map((approver) => approver.stripeUserId),
           expiration_days: 7,
           onboarding_completed: snapshot.installation.onboardingCompletedAt !== null,
+          observed_users: observed.map((user) => ({
+            stripe_user_id: user.stripeUserId,
+            display_name: user.displayName,
+            approver_enabled: user.approverEnabled,
+            last_seen_at: user.lastVerifiedAt.toISOString(),
+          })),
         };
       },
     );

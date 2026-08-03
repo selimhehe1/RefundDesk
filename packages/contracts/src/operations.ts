@@ -4,6 +4,7 @@ import {
   alertAcknowledgeCommandSchema,
   alertListCommandSchema,
   auditExportCommandSchema,
+  contextSyncCommandSchema,
   decisionCommandSchema,
   emptyCommandSchema,
   refundRequestCommandSchema,
@@ -13,7 +14,7 @@ import {
 } from "./schemas.js";
 
 export const operationSchemas = {
-  "context.sync": emptyCommandSchema,
+  "context.sync": contextSyncCommandSchema,
   "payment.eligibility": emptyCommandSchema,
   "refund_request.create": refundRequestCommandSchema,
   "refund_request.list": requestListCommandSchema,
