@@ -1407,6 +1407,7 @@ fail_closed() {
   local status=$?
   local ids_output
   local metadata_rollback_ok=true
+  local candidate_runtime_stopped=false
   local systemd_rollback_reload_required=false
   local -a failed_runtime_ids
   trap - EXIT
@@ -1624,10 +1625,41 @@ fail_closed() {
       mapfile -t failed_runtime_ids <<<"${ids_output}"
       docker update --restart=no "${failed_runtime_ids[@]}" >/dev/null 2>&1 || status=1
     fi
-    refunddesk_compose stop --timeout 45 caddy web verifier worker >/dev/null 2>&1 ||
+    if refunddesk_compose stop --timeout 45 caddy web verifier worker >/dev/null 2>&1; then
+      candidate_runtime_stopped=true
+    else
       status=1
+    fi
     if [[ "${TRANSITION_COMMITTED}" == "true" ]]; then
       log "post-commit finalization failed; committed metadata is preserved and runtime remains stopped"
+    fi
+  fi
+
+  # A rollback that restored every metadata target and stopped every candidate
+  # container has nothing left to fence, so the journal has done its work. Leaving
+  # it behind keeps the stable fence killing candidate containers for as long as it
+  # exists, which leaves the host unable to run its own runtime, and it blocks every
+  # later release: the resume path admits only the same revision, and a revision
+  # whose own verification is what failed can never succeed. A release killed
+  # outright never reaches this trap, so its journal is still preserved and the
+  # fence still protects that case, which is the case it was written for.
+  if [[ "${TRANSITION_COMMITTED}" != "true" &&
+    "${metadata_rollback_ok}" == "true" &&
+    "${candidate_runtime_stopped}" == "true" ]] &&
+    [[ -e "${TRANSITION_JOURNAL_FILE}" || -L "${TRANSITION_JOURNAL_FILE}" ]]; then
+    if python3 "${TRANSITION_HELPER}" durable-unlink       --target "${TRANSITION_JOURNAL_FILE}" >/dev/null; then
+      log "rollback complete; transition journal retired so the fence can exit"
+      # The candidates are stopped, not recreated: they still carry the candidate
+      # revision label while the metadata names the active one, and the next release
+      # refuses that gap when it fingerprints the active containers. They are left in
+      # place on purpose -- a stopped container still holds the logs that say why the
+      # release failed, and recreating here would destroy exactly the evidence the
+      # operator needs. Name the command instead of performing it.
+      log "candidate containers are stopped and still labelled ${REVISION}; their logs are intact"
+      log "after diagnosis, recreate the runtime at ${ACTIVE_REVISION_FOR_ROTATION}: docker compose --project-name ${REFUNDDESK_COMPOSE_PROJECT} --env-file ${REFUNDDESK_RELEASE_ENV} --file ${REFUNDDESK_ROOT}/releases/${ACTIVE_REVISION_FOR_ROTATION}/source/deploy/lightsail/compose.yml up --no-start --no-deps --no-build --pull never --force-recreate verifier worker web caddy"
+    else
+      status=1
+      log "rollback complete but the transition journal could not be retired"
     fi
   fi
 
