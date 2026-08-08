@@ -1,41 +1,50 @@
 # RefundDesk implementation plan
 
 > Last updated: 8 August 2026
-> Current gate: Phase 0 `PASS`; hosted sandbox `BLOCKED_RECONCILIATION`; complete pilot
+> Current gate: Phase 0 `PASS`; exact-8da containment repair `PASS_CONTAINED`; complete pilot
 > `BLOCKED_GATES`; commercial/live/Marketplace `NO_GO`
 > Phase-0 evidence: `34/34 passed_real`
 > Current delivery status: exact-e4 is the last admitted canonical hosted release. Its scheduled
 > cold backup and corrected disposable PostgreSQL 18 restore both passed; the earlier 31 July
 > attempt remains a distinct `FAIL_PRE_EFFECT_CLEANED`. ADR 0030 records later `8da280b7...`
-> release attempts. On 8 August, the exact ADR 0035 candidate `4429559...` passed complete CI and
-> its attested sandbox-bundle gate, then admitted a fresh read-only postflight of active revision
-> `8da280b78a9d1475c7bd79063e72c5af77121e8d`. Its reconciliation failed before effect with
-> `CORE_RUNTIME_INVALID`: the successor marker was absent, the `retention` journal remained present
-> and every mutation counter remained zero. A second read-only postflight at
-> `2026-08-08T16:42:38Z` proved the same `FAIL/COHERENT_RUNNING` posture, closed and unchanged AWS
-> 80/443 firewall, disabled live mode and stable/quiescent financial state. That capture expired and
-> is point-in-time evidence, not proof of later state. Local real-Docker reproduction found that the
-> candidate fixture had modeled the harmless stopped reservation's canonical `AttachStdout` and
-> `AttachStderr` values incorrectly. Revision 442 must not be rerun; a corrected successor still
-> requires a new exact commit, CI, bundle, fresh preflight and final proof. Stripe App financial
-> direct-browser delivery remains `BLOCKED_TOOLING`.
+> release attempts. On 8 August, exact ADR 0035 candidate `4429559...` passed complete CI and its
+> attested sandbox-bundle gate, then failed before effect with `CORE_RUNTIME_INVALID`: the successor
+> marker was absent, the `retention` journal remained present and every mutation counter remained
+> zero. Its immediate control postflight retained `FAIL/COHERENT_RUNNING`. Local real-Docker
+> reproduction found that 442 had modeled canonical `AttachStdout` and `AttachStderr` values
+> incorrectly. Preserve those three artifacts as historical `failed_pre_effect` evidence and never
+> rerun 442.
+>
+> Corrected exact successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` passed complete CI run
+> `31269541134` and sandbox-bundle run `31269550192`. Its fresh initial postflight observed
+> `FAIL/COHERENT_RUNNING`; the one reconciliation returned
+> `PASS/PASS_CONTAINED_JOURNAL_CLEARED`, completed the marker and cleared the `retention` journal;
+> the immediate final postflight returned `PASS/COHERENT_CONTAINED/PASS_CONTAINED` with zero
+> diagnostics, closed/unchanged AWS 80/443 firewall, disabled live mode, stopped worker, Caddy,
+> maintenance and listeners, closed journals/fence, and stable/quiescent financial state. The final
+> capture expired at `2026-08-08T18:22:24Z`; it is point-in-time containment evidence, not release,
+> availability or reopening admission. The exact-d096 one-shot and reviewed harness are consumed;
+> preserve both the remote `complete` successor marker and the harness's local durable `CreateNew`
+> attempt marker. Exact-e4 remains the last admitted
+> canonical hosted release. Stripe App financial direct-browser delivery remains `BLOCKED_TOOLING`.
 > Allowed environment: local + approved GitHub/AWS sandbox + Stripe test/managed sandbox
-> Configured GitHub `main` and `release/sandbox-edge-2026-08-03` are
-> `442955960d326bd0c1c6f7424e4b842566c75f92`; e4 is their ancestor, but no exact GitHub artifact
-> attestation is claimed for e4. Candidate 442 has the exact full-CI plus attested-bundle pair
-> recorded below. Its pre-effect reconciliation failure does not transfer those gates to the local
-> corrected successor. Evidence remains revision-bound and is never transferred from an ancestor or
-> another bundle.
+> At execution time, source and gate revision `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` had been
+> published to the configured `main` and `release/sandbox-edge-2026-08-03` refs. A later
+> documentation commit may advance those refs; the operational evidence remains bound to d096.
+> Exact-e4 is an ancestor, but no exact GitHub artifact attestation is claimed for e4. Candidates
+> 442 and d096 have their distinct exact full-CI plus attested-bundle pairs recorded below. Evidence
+> remains revision-bound and is never transferred from an ancestor or another bundle.
 > Safety containment: ADR 0024 records `PASS_CONTAINED` for the 3 August exact-e4 replacement of the
 > exposed managed-sandbox read/effect and App-signing bindings. The two 1 August incident JSONs remain
 > initial `IN_PROGRESS_CONTAINED` records, not the final proof. ADR 0034 records that two independent
 > reviews of the nine corrected artifacts ended `NO_GO_REOPENING`; the consumed chain cannot admit
 > the historical outcome or support another transition. The normative containment requirement and
 > last admitted incident record have public Caddy, the worker, Lightsail 80/443 and maintenance
-> timers stopped, with live disabled. The admitted postflight proves that the captured service
-> posture violated those requirements; its `FAIL` does not relax them or authorize remediation.
+> timers stopped, with live disabled. The final exact-d096 postflight observed that required posture
+> restored at capture time. Its bounded `PASS_CONTAINED` does not authorize release, reopening,
+> restart, Stripe work or a financial proof and cannot establish later host state.
 > ADR 0029's historical public window is unadmitted under ADR 0031 and cannot authorize another.
-> Repair, reopening, release and financial proof remain prohibited without the applicable tracked
+> Reopening, release, restart and financial proof remain prohibited without the applicable tracked
 > successor and a separate authorization decision.
 > PostgreSQL integration, workspace verification, `pnpm audit:prod`, Lightsail contracts, all three
 > OCI targets and smokes, plus standalone Stripe App lint/build/test/audit passed.
@@ -399,11 +408,34 @@ operational drills remain deferred.
       sentinel was never started, used no network and was removed with its volumes, leaving zero
       residue. The corrected runner now requires the real values, the real-Docker test asserts them
       without printing inspection output and two synthetic negatives fail before effect.
-- [ ] Commit and publish the corrected ADR 0035 successor, obtain complete CI and a sandbox bundle
-      for the same new SHA, capture a fresh ADR 0034 postflight with at least 720 seconds remaining,
-      run the single contained reconciliation, and capture the final independent
-      `PASS/COHERENT_CONTAINED/PASS_CONTAINED` postflight. Until every step passes, the hosted
-      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
+- [x] Commit and publish corrected ADR 0035 successor
+      `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` to both configured refs and close its exact gate
+      pair. CI run `31269541134` and sandbox-bundle run `31269550192` passed. Artifact `9025216948`
+      has ZIP SHA-256 `f17f7b074c11a3283d7f9fb06ab446825ef7492351463a1f21defb57fa5b2b2a`;
+      attestation `39599897` covers two subjects with Rekor entry `2386447207`.
+- [x] Execute the single exact-d096 contained reconciliation and its independent final observation.
+      Initial preflight `host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`, SHA-256
+      `a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`, observed
+      `FAIL/COHERENT_RUNNING` and was valid from `2026-08-08T18:06:16Z` through
+      `2026-08-08T18:21:16Z`. Reconciliation
+      `containment-reconciliation-20260808T180631Z-84a498eb6859.local.json`, SHA-256
+      `c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`, returned
+      `PASS/PASS_CONTAINED_JOURNAL_CLEARED` for `retention`, advanced the marker to `complete`,
+      cleared the journal and left every containment and financial assertion true. Exact counters
+      were restart fences `2`, stopped containers `2`, journal clears `1`, marker transitions `4`,
+      reservation reconciliations `0` and stopped units `5`. Final postflight
+      `host-postflight-20260808T180724Z-40c305db3399.local.json`, SHA-256
+      `532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`, returned
+      `PASS/COHERENT_CONTAINED/PASS_CONTAINED` with zero diagnostics, AWS ingress closed and
+      unchanged, live disabled, worker/Caddy/maintenance/listeners stopped, journals/fence closed
+      and stable/quiescent financial state. It was valid from `2026-08-08T18:07:24Z` through
+      `2026-08-08T18:22:24Z` and is point-in-time evidence only.
+- [x] Consume the exact-d096 one-shot and its reviewed local harness. The harness SHA-256 is
+      `358b687a0fc44b7afe2d734097578bafc574d7d7a297d47732b5d2ad96a8633b`; its durable
+      `CreateNew` attempt marker exists and must never be removed. Preserve the separate remote
+      `complete` successor marker. The bounded repair does not
+      admit 8da as a release, alter exact-e4's last-canonical status, or authorize release, ingress,
+      restart, Stripe, live or financial work.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator
@@ -496,9 +528,10 @@ operational drills remain deferred.
       `PASS_CONTAINED`; the one-time helper must not be executed again. ADR 0034's later independent
       review is `NO_GO_REOPENING`. Worker, Caddy, timers and ports 80/443 are required to remain
       stopped pending a tracked successor where required and a separate reopening decision. The
-      admissible 8 August postflight proved that the captured service posture violated this
+      earlier admissible 8 August postflights proved that the captured service posture violated this
       requirement while the AWS edge, live interlocks and financial state remained
-      closed/quiescent. Its `FAIL` is not authorization to repair or reopen.
+      closed/quiescent. Exact-d096 later restored the required contained posture at its final
+      point-in-time postflight; that pass authorizes neither reopening nor restart.
 - [x] Complete the real managed-sandbox credential, object, webhook and cross-environment gate.
 
 ## Persistent hosted-sandbox autonomy checkpoint
@@ -518,6 +551,8 @@ remains historical failure evidence. The corrected path restored the exact archi
 ancestor of configured `origin/main`, but no exact GitHub artifact attestation is claimed for e4.
 Lifecycle and App observations remain bound to their earlier revisions; the normal direct
 controlled-browser financial App transport remains `BLOCKED_TOOLING`.
+The later exact-d096 ADR 0035 containment repair passed and left the prohibited surfaces stopped,
+but it does not alter exact-e4's last-canonical release status or admit 8da as a release.
 
 - [x] Record the narrow authorization for the configured RefundDesk GitHub repository/Actions and
       the dedicated AWS test/sandbox topology under a total ceiling of EUR 10 per month. This does
@@ -771,17 +806,28 @@ Evidence:
   `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, top-level result `FAIL`,
   admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING`; this proves the host unchanged after
   the pre-effect refusal and remains expired point-in-time evidence only.
+- `host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`, SHA-256
+  `a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`, result `FAIL`, posture
+  `COHERENT_RUNNING`; this fresh bounded artifact admitted only the exact-d096 reconciliation.
+- `containment-reconciliation-20260808T180631Z-84a498eb6859.local.json`, SHA-256
+  `c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`, result `PASS`, code
+  `PASS_CONTAINED_JOURNAL_CLEARED`; marker complete, journal cleared and every containment and
+  financial assertion true.
+- `host-postflight-20260808T180724Z-40c305db3399.local.json`, SHA-256
+  `532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`, result `PASS`, posture
+  `COHERENT_CONTAINED`, code `PASS_CONTAINED`, zero diagnostics; this expired point-in-time artifact
+  closes only the exact-8da containment repair.
 
 ## Commercial, live and Marketplace verdict
 
 Status: `NO_GO`.
 
 The historical `e4cec060...` backend passed its admitted controlled test/sandbox operational gates.
-That does not establish e4 as the active backend today. The admissible point-in-time postflight
-observed `8da280b7...` active but returned `FAIL`; its expiration prevents any inference about later
-host state. This is not a complete financial pilot, a commercial v1.0, a live-mode authorization or
-a Marketplace submission. Keep `REFUNDDESK_GLOBAL_LIVE_ENABLED=false` and every tenant live switch
-false.
+That does not establish e4 as the active backend today. The bounded ADR 0035 chain observed
+`8da280b7...` active, first divergent and finally `PASS_CONTAINED`; its expiration prevents any
+inference about later host state and the repair does not admit 8da as a release. This is not a
+complete financial pilot, a commercial v1.0, a live-mode authorization or a Marketplace submission.
+Keep `REFUNDDESK_GLOBAL_LIVE_ENABLED=false` and every tenant live switch false.
 
 Before revisiting that verdict:
 

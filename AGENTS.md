@@ -111,10 +111,41 @@ A local real-Docker reproduction identified the implementation defect: canonical
 inspection has `Config.AttachStdout=true` and `Config.AttachStderr=true`, while the exact-442
 predicate incorrectly required both fields to be false. The disposable container was never
 started, had networking disabled, was removed with its volumes and left zero residue. Do not rerun
-the exact-442 reconciliation. A corrected successor must be committed and published, pass its own
-exact CI and sandbox-bundle gates, use a new fresh preflight and produce a final independent
-contained postflight. Until then the one-shot remains unconsumed and the sandbox remains
-`BLOCKED_RECONCILIATION`. Perform no release, ingress reopening, service restart or financial proof.
+the exact-442 reconciliation. Its three artifacts remain historical `failed_pre_effect` evidence
+and do not inherit the corrected successor's result.
+
+At execution time, corrected exact successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` had been
+published to the configured `main` and `release/sandbox-edge-2026-08-03` refs. A later
+documentation commit may advance those refs; the operational evidence remains bound to d096.
+Exact CI run `31269541134` and sandbox-bundle run `31269550192` passed. GitHub artifact `9025216948`
+has ZIP SHA-256
+`f17f7b074c11a3283d7f9fb06ab446825ef7492351463a1f21defb57fa5b2b2a`; attestation `39599897`
+covered two subjects with Rekor entry `2386447207`.
+
+The fresh initial postflight
+`sandbox-evidence.local/aws/host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`, SHA-256
+`a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`, observed
+`FAIL`/`COHERENT_RUNNING` and was valid from `2026-08-08T18:06:16Z` through
+`2026-08-08T18:21:16Z`. The single exact-d096 reconciliation then returned
+`PASS`/`PASS_CONTAINED_JOURNAL_CLEARED` for operation `retention`, advanced the successor marker to
+`complete`, cleared the quiescence journal and left every containment and financial assertion true.
+Its counters were restart fences `2`, stopped containers `2`, journal clears `1`, marker
+transitions `4`, reservation reconciliations `0` and stopped units `5`. Evidence is
+`sandbox-evidence.local/aws/containment-reconciliation-20260808T180631Z-84a498eb6859.local.json`,
+SHA-256 `c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`.
+
+The immediate final postflight
+`sandbox-evidence.local/aws/host-postflight-20260808T180724Z-40c305db3399.local.json`, SHA-256
+`532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`, returned
+`PASS`/`COHERENT_CONTAINED`/`PASS_CONTAINED` with zero diagnostics. The AWS firewall remained closed
+and unchanged, live remained disabled, worker, Caddy, maintenance units and TCP/UDP 80/443
+listeners were stopped, journals and the runtime fence were closed, and the financial snapshots
+were stable and quiescent. It was valid from `2026-08-08T18:07:24Z` through
+`2026-08-08T18:22:24Z` and is point-in-time evidence only. The exact-d096 one-shot and its harness
+are consumed and must never be executed or resumed. Preserve the durable `complete` successor
+marker and never remove it. This closes only the exact-8da containment repair. Exact-e4 remains the
+last admitted canonical release, and no release, ingress reopening, service restart, Stripe action,
+live mode or financial proof is authorized.
 
 The historical e4 release passed with five healthy services, closed journals,
 active timers and live disabled. The release performed one
@@ -160,17 +191,18 @@ admissible 8 August postflight proved that the captured host service posture vio
 requirements while the AWS edge, live interlocks and financial state remained closed/quiescent.
 ADR 0029 records a later bounded public window, but ADR 0031 classifies its generic CloudFront
 allowlist as non-authenticating and the window as unadmitted hosted evidence. The exact-442
-reconciliation failure and its control postflight prove no improvement: the observed service
-posture remained divergent. Do not restore or change any surface without the corrected tracked
-successor where required and a separate decision.
+reconciliation failure and its control postflight remain historical `failed_pre_effect` evidence.
+The exact-d096 successor later restored the required contained posture at its final postflight, but
+that short-lived result authorizes no reopening or restart. Do not restore or change any surface
+without a new tracked successor where required and a separate decision.
 
 Later on 1 August 2026, the operator pasted one managed-sandbox restricted read key, one
 managed-sandbox restricted effect key and one full-access test secret into the conversation. Treat
 all three secret API credentials as compromised. The publishable test key shown with them is not a
 secret, but must not be mistaken for a server credential. The worker was stopped immediately and
-remains required to be stopped; both the first admissible 8 August postflight and the later
-exact-442 control postflight observed it running, so do not report that requirement as currently
-satisfied. Redacted evidence is
+remains required to be stopped. Both the first admissible 8 August postflight and the exact-442
+control postflight observed it running; the final exact-d096 postflight later observed it stopped.
+That final capture is point-in-time only, so do not infer later state from it. Redacted evidence is
 `sandbox-evidence.local/aws/stripe-api-key-chat-exposure-2026-08-01.local.json`. Do not use, test,
 copy into tooling or redeploy any exposed value. ADR 0024 records a `PASS_CONTAINED` outcome under
 the ADR 0019 admission contract, which required Dashboard revocation/activity review and real
@@ -178,8 +210,7 @@ least-privilege proof of the replacement managed-sandbox read/effect bindings. T
 cleaned by design, and ADR 0034's independent review ended `NO_GO_REOPENING`, so ADR 0024 is not
 standalone retained evidence of those details. The 1 August JSON remains an initial
 `IN_PROGRESS_CONTAINED` record. Worker, Caddy, timers and public financial proofs are required to
-stay stopped; neither postflight `FAIL` nor the exact-442 pre-effect reconciliation failure relaxes
-that requirement or authorizes a restart.
+stay stopped; the exact-d096 containment pass does not authorize a restart.
 
 An unintended `stripe apps list` later launched Stripe CLI authentication against the pinned
 platform test account and created one platform-test and one platform-live CLI key. Local logout

@@ -11,7 +11,8 @@
 > for the key-rotation drills completed on 3 August. ADR 0034's independent-review result and
 > read-only current-host postflight add the evidence-provenance threat covered by T39. The
 > exact-442 pre-effect reconciliation failure adds the real-runtime fixture-divergence threat
-> covered by T40.
+> covered by T40; corrected exact-d096 then exercised the reviewed real-Docker contract through one
+> bounded contained repair and independent final postflight.
 
 ## 1. Security objectives
 
@@ -277,8 +278,24 @@ The pilot explicitly accepts:
   `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`. Real-Docker reproduction
   proved canonical `Config.AttachStdout=true` and `Config.AttachStderr=true`, while exact 442
   required false. The never-started, network-disabled disposable container was removed with its
-  volumes and left zero residue. Exact 442 must not be retried; a corrected, exact-gated successor
-  remains required, and every postflight remains short-lived point-in-time evidence only;
+  volumes and left zero residue. Exact 442 must not be retried; its three artifacts remain historical
+  `failed_pre_effect` evidence;
+- corrected exact successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` passed CI run
+  `31269541134` and sandbox-bundle run `31269550192`. Its initial preflight observed
+  `FAIL/COHERENT_RUNNING`; evidence SHA-256 is
+  `a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`. Reconciliation returned
+  `PASS/PASS_CONTAINED_JOURNAL_CLEARED` for `retention`, completed the marker, cleared the journal
+  and kept all containment/financial assertions true, with restart fences `2`, stopped containers
+  `2`, journal clears `1`, marker transitions `4`, reservation reconciliations `0` and stopped units
+  `5`; evidence SHA-256 is
+  `c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`. The final postflight
+  returned `PASS/COHERENT_CONTAINED/PASS_CONTAINED`, zero diagnostics, closed/unchanged AWS ingress,
+  disabled live, stopped worker/Caddy/maintenance/listeners, closed journals/fence and stable,
+  quiescent financial state; evidence SHA-256 is
+  `532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`. The one-shot/harness is
+  consumed and its durable `complete` marker must remain. This is short-lived point-in-time
+  containment evidence only; exact-e4 remains the last admitted canonical release and no release,
+  reopening, restart, Stripe, live or financial authority follows;
 - the postflight wrapper's credential-file ACL precondition failed closed before AWS/SSH. An
   explicitly approved ACL-only remediation read no credential bytes. Revision `a96ce03...` fixed
   isolated HOME propagation; `74b6da5...` fixed only the OpenSSH child environment (`HOME`,

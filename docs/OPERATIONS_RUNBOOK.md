@@ -155,11 +155,40 @@ Local reproduction with real Docker established that canonical `docker create` i
 `Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate incorrectly
 required both fields to be false. The disposable container was never started, used no network and
 was removed with its volumes, leaving no residue. Never rerun the exact-442 implementation and
-never alter the stopped reservation to fit its defective predicate. A corrected successor must be
-committed and published, pass new exact CI and sandbox-bundle gates, consume a new fresh preflight
-and obtain an independent final contained postflight. Until then the one-shot is unconsumed and the
-sandbox remains `BLOCKED_RECONCILIATION`. Do not release, recover or restart containers, reopen
-ingress or run a financial proof.
+never alter the stopped reservation to fit its defective predicate. Its three artifacts remain
+historical `failed_pre_effect` evidence.
+
+Corrected exact successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` passed CI run
+`31269541134` and sandbox-bundle run `31269550192`. Artifact `9025216948` has ZIP SHA-256
+`f17f7b074c11a3283d7f9fb06ab446825ef7492351463a1f21defb57fa5b2b2a`; attestation `39599897`
+covers two subjects with Rekor entry `2386447207`.
+
+Fresh initial postflight `host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`, SHA-256
+`a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`, observed
+`FAIL/COHERENT_RUNNING` and was valid from `2026-08-08T18:06:16Z` through
+`2026-08-08T18:21:16Z`. Reconciliation
+`containment-reconciliation-20260808T180631Z-84a498eb6859.local.json`, SHA-256
+`c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`, returned
+`PASS/PASS_CONTAINED_JOURNAL_CLEARED` for `retention`. It advanced the successor marker to
+`complete`, cleared the journal and kept every containment and financial assertion true. Exact
+counters were restart fences `2`, stopped containers `2`, journal clears `1`, marker transitions
+`4`, reservation reconciliations `0` and stopped units `5`.
+
+Immediate final postflight `host-postflight-20260808T180724Z-40c305db3399.local.json`, SHA-256
+`532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`, returned
+`PASS/COHERENT_CONTAINED/PASS_CONTAINED` with zero diagnostics. The AWS firewall remained closed and
+unchanged, live remained disabled, worker, Caddy, maintenance units and TCP/UDP 80/443 listeners
+were stopped, journals and the runtime fence were closed, and financial snapshots were stable and
+quiescent. It was valid from `2026-08-08T18:07:24Z` through `2026-08-08T18:22:24Z` and is
+point-in-time evidence only.
+
+The exact-d096 one-shot and reviewed local harness are consumed. The harness SHA-256 is
+`358b687a0fc44b7afe2d734097578bafc574d7d7a297d47732b5d2ad96a8633b`; its durable
+`CreateNew` attempt marker exists and must never be removed. Preserve the separate remote
+`complete` successor marker. Never execute or resume the one-shot or harness. This closes only the
+exact-8da containment repair. Exact-e4 remains the last
+admitted canonical release. Do not release, recover or restart containers, reopen ingress, call
+Stripe, enable live mode or run a financial proof.
 
 The first production invocation had failed closed before AWS/SSH on the default credential file's
 inherited ACL. Explicitly approved remediation restricted only that ACL and did not read credential
@@ -213,36 +242,35 @@ CloudFront origin identity, complete CI or bundle provenance. Even `PASS` cannot
 release, recovery, ingress reopening, worker/timer restart or financial proof. Apply ADR 0031,
 exact-SHA CI/bundle requirements, incident admission and separate authorization independently.
 
-### One-time exact-8da contained journal reconciliation
+### Consumed exact-8da contained journal reconciliation
 
-ADR 0035 is the only permitted successor for the unresolved exact-8da quiescence journal. Do not
-invoke the normal quiescence-recovery service: it starts worker and Caddy and requires public
-verification through ports 80/443. The ADR 0035 path is stop-only and cannot release a revision,
-start a service, open ingress, enable live mode or call Stripe.
+ADR 0035 was the only permitted successor for the exact-8da quiescence journal. Corrected exact
+revision d096 completed that one bounded repair. Do not invoke the normal quiescence-recovery
+service: it starts worker and Caddy and requires public verification through ports 80/443. Do not
+invoke the consumed ADR 0035 path either; its stop-only success cannot release a revision, start a
+service, open ingress, enable live mode or call Stripe.
 
-Run it only from the exact committed and published revision whose complete CI and sandbox-bundle
-gates passed. Immediately beforehand, capture a fresh ADR 0032 postflight. The reconciliation
-wrapper requires at least 720 seconds of its 15-minute window to remain and admits only the exact
-initial six-diagnostic `COHERENT_RUNNING` observation or one of two modeled resume host postures:
-partial stop progress with the original journal, or an already retired journal. The latter
-postflight is not marker evidence by itself; the runner must additionally validate the exact
-successor marker. Then run from the repository root:
+The execution was admitted only from the exact committed and published revision whose complete CI
+and sandbox-bundle gates passed. Immediately beforehand it consumed a fresh ADR 0032 postflight
+with at least 720 seconds of its 15-minute window remaining. The wrapper admitted the exact initial
+six-diagnostic `COHERENT_RUNNING` observation. Its historical invocation form is retained only for
+audit and must never be executed again:
 
 ```powershell
 pnpm sandbox:containment:reconcile -- -PreflightEvidencePath "<fresh-postflight.local.json>" -ExpectedSshCidr "<current-operator-public-ipv4>/32"
 ```
 
-The wrapper pins worktree, index and `HEAD` bytes for both the ADR 0034 preflight chain and the ADR
-0035 runner/validator/schema/wrapper; it rechecks the exact AWS account, instance and firewall
-before and after the bounded SSH operation. The remote runner holds the operator lock exclusively,
-stops maintenance plus Caddy before worker, proves stable financial and core-runtime snapshots,
-and retires the journal only after a durable `contained_verified` marker. Both backup and retention
-require the existing stopped database-owner reservation to be exact; this successor never removes
-or recreates it and refuses every bootstrap, migrate or maintenance one-shot. For the canonical
-never-started reservation created by Docker, exact inspection requires
+The wrapper pinned worktree, index and `HEAD` bytes for both the ADR 0034 preflight chain and the ADR
+0035 runner/validator/schema/wrapper; it rechecked the exact AWS account, instance and firewall
+before and after the bounded SSH operation. The remote runner held the operator lock exclusively,
+stopped maintenance plus Caddy before worker, proved stable financial and core-runtime snapshots,
+and retired the journal only after a durable `contained_verified` marker. Both backup and retention
+required the existing stopped database-owner reservation to be exact; the successor never removed
+or recreated it and refused every bootstrap, migrate or maintenance one-shot. For the canonical
+never-started reservation created by Docker, exact inspection required
 `Config.AttachStdin=false`, `Config.AttachStdout=true`, `Config.AttachStderr=true`,
-`Config.Tty=false`, `Config.OpenStdin=false` and `Config.StdinOnce=false`. Assert this contract
-against real Docker as well as synthetic negative fixtures. Any mismatch must return
+`Config.Tty=false`, `Config.OpenStdin=false` and `Config.StdinOnce=false`. The reviewed contracts
+asserted this against real Docker as well as synthetic negative fixtures. Any mismatch returned
 `CORE_RUNTIME_INVALID` before marker creation, journal retirement or another mutation; never modify
 the reservation as a workaround. Preserve the successor marker and do not fabricate or restore the
 old journal.
@@ -254,17 +282,14 @@ Interpret status exactly:
 - `21`: an `INCOMPLETE` artifact was written and durable state may require the modeled resume;
 - `1`: the local admission/transport/provenance envelope failed and no artifact is claimed.
 
-After every nonzero or ambiguous transport result, capture a new read-only postflight before any
-retry. After status `0`, immediately capture another postflight and require `PASS`, posture
-`COHERENT_CONTAINED`, code `PASS_CONTAINED`, closed/unchanged AWS ingress, live disabled, financial
-quiescence, worker/Caddy/timers stopped and no quiescence journal. This closes only the one host
-repair; it never authorizes release, ingress reopening, credential use or a financial proof.
-Record both evidence hashes and treat the one-shot as consumed after the wrapper `PASS` and final
-postflight `PASS`. Do not run it again except for the immediate modeled recovery of an ambiguous
-transport result.
-
-The exact-442 attempt did not reach a resumable marker state and must not be retried. Only the
-corrected, newly gated successor may perform the next reconciliation attempt.
+Exact 442 returned a nonzero pre-effect result and never reached a resumable marker state; it must
+not be retried. Exact d096 returned status `0`, then its immediate postflight returned `PASS`,
+posture `COHERENT_CONTAINED`, code `PASS_CONTAINED`, closed and unchanged AWS ingress, disabled
+live, financial quiescence, stopped worker/Caddy/timers/listeners and no quiescence journal. The
+one-shot and reviewed harness are consumed. Never execute or resume either, and never remove the
+local durable `CreateNew` attempt marker or the remote `complete` successor marker. This closes
+only the one host repair; it never authorizes
+release, ingress reopening, credential use, service restart or a financial proof.
 
 Build the three provider-neutral targets from the repository root on Linux:
 
@@ -1111,20 +1136,25 @@ Dashboard, replaced, and the replacement proved in real use by the exact-e4 tran
 secret was never retested. The recorded 3 August containment had public Caddy, worker, retention
 and backup timers and Lightsail ports 80/443 stopped, with live disabled. The admitted 8 August
 postflight later proved the captured host service posture had diverged while the AWS 80/443
-firewall, live interlocks and financial state remained closed/quiescent. **Reopening public ingress
-is still a separate decision.** ADR 0034 records that the two independent static reviews ended
-`NO_GO_REOPENING`; a new tracked successor where applicable and separate authorization are
-required. Evidence:
+firewall, live interlocks and financial state remained closed/quiescent. Exact-d096 later completed
+the bounded containment repair and its final postflight observed worker, Caddy, timers and
+listeners stopped with AWS ingress closed and live disabled. That observation was point-in-time
+only. **Reopening public ingress is still a separate decision.** ADR 0034 records that the two
+independent static reviews ended `NO_GO_REOPENING`; a new tracked successor where applicable and
+separate authorization are required. Evidence:
 `sandbox-evidence.local/aws/stripe-app-signing-secret-exposure-2026-08-01.local.json`.
 That JSON retains its original `IN_PROGRESS_CONTAINED` result and is initial incident evidence, not
 the final 3 August proof recorded by ADR 0024.
 
 ADR 0029 records a later bounded ingress window, but ADR 0031 classifies it as unadmitted because
-the repository has no reconciled complete authorization/probe/containment artifact and the generic
-CloudFront CIDRs do not authenticate the expected distribution. The required and last recorded
-incident state is closed; the admitted 8 August postflight recorded a point-in-time containment
-`FAIL`. ADR 0034's review is `NO_GO_REOPENING`, and any new reopening remains prohibited pending a
-tracked successor where applicable and a separate authorization decision.
+the repository has no complete artifact joining authentic origin authorization and a signed-route
+probe to the contained host state, and the generic CloudFront CIDRs do not authenticate the
+expected distribution. Exact-d096 closes only the host
+containment repair; it does not supply CloudFront origin identity, reopening authorization or a
+signed-route probe. The required incident state is closed and the final exact-d096 postflight
+recorded a point-in-time `PASS_CONTAINED`. ADR 0034's review is `NO_GO_REOPENING`, and any new
+reopening remains prohibited pending a tracked successor where applicable and a separate
+authorization decision.
 
 **Rotate with an overlap, not a cutover.** Stripe documents one signing secret per App with a
 temporary overlap during rotation, so during that window a Dashboard extension request may arrive
@@ -1146,8 +1176,9 @@ procedure.
 A later conversation exposure on the same date included the managed-sandbox restricted read and
 effect keys and one full-access test secret. The worker was stopped for the recorded incident
 containment and is still required to be stopped; the admitted 8 August postflight observed it
-running, so do not report that requirement as currently satisfied. Do not reuse or validate those
-raw values. ADR 0024 records `PASS_CONTAINED` under ADR 0019's
+running, while the final exact-d096 postflight later observed it stopped. That final capture does
+not prove later state or authorize restart. Do not reuse or validate those raw values. ADR 0024
+records `PASS_CONTAINED` under ADR 0019's
 Dashboard revocation/activity-review and replacement least-privilege admission contract. Its final
 proof was cleaned by design, and ADR 0034's independent review ended `NO_GO_REOPENING`; it is not
 standalone retained evidence of those details. Initial evidence:

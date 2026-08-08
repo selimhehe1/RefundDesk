@@ -128,8 +128,35 @@ Local real-Docker reproduction showed that canonical `docker create` inspection 
 `Config.AttachStdout=true` and `Config.AttachStderr=true`, while the exact-442 predicate required
 false. Its network-disabled disposable container was never started and was removed with its
 volumes, leaving zero residue. This local diagnosis is not maintenance or host-repair evidence. The
-original retention operation remains failed and unresolved; exact 442 must not be retried, and no
-timer or maintenance service may be started while a corrected, newly gated successor is pending.
+original retention operation remained failed and unresolved at that point; exact 442 must not be
+retried.
+
+Corrected exact successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` later passed exact CI run
+`31269541134` and sandbox-bundle run `31269550192`. Initial postflight
+`host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`, SHA-256
+`a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`, observed
+`FAIL/COHERENT_RUNNING` and was valid from `2026-08-08T18:06:16Z` through
+`2026-08-08T18:21:16Z`.
+
+Reconciliation `containment-reconciliation-20260808T180631Z-84a498eb6859.local.json`, SHA-256
+`c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63`, returned
+`PASS/PASS_CONTAINED_JOURNAL_CLEARED` for `retention`. It advanced the successor marker to
+`complete`, cleared the journal and left every containment and financial assertion true. Exact
+counters were restart fences `2`, stopped containers `2`, journal clears `1`, marker transitions
+`4`, reservation reconciliations `0` and stopped units `5`.
+
+Final postflight `host-postflight-20260808T180724Z-40c305db3399.local.json`, SHA-256
+`532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`, returned
+`PASS/COHERENT_CONTAINED/PASS_CONTAINED` with zero diagnostics. It observed the AWS firewall closed
+and unchanged, live disabled, worker, Caddy, maintenance and TCP/UDP 80/443 listeners stopped,
+journals and the runtime fence closed, and financial snapshots stable and quiescent. It was valid
+from `2026-08-08T18:07:24Z` through `2026-08-08T18:22:24Z` and cannot establish later state.
+
+This is a successful containment reconciliation, not a successful retention run: the original
+retention operation remains failed/reconciled and gains no maintenance evidence. The exact-d096
+one-shot and harness are consumed, the durable `complete` marker must remain, and timers and
+maintenance services remain stopped unless a separate tracked and authorized operation changes
+that boundary.
 
 ## 6. Uninstallation lifecycle
 

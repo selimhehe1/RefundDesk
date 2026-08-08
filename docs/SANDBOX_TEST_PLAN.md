@@ -12,7 +12,10 @@
 > release, reopening or financial proof. Exact candidate `4429559...` later passed its exact CI and
 > sandbox-bundle gates, but its contained reconciliation failed closed before effect on a Docker
 > reservation-inspection mismatch. The immediate control postflight found the host unchanged in
-> `COHERENT_RUNNING`; a corrected successor remains required.
+> `COHERENT_RUNNING`. Corrected exact successor `d096b0e...` then passed its own exact CI/bundle,
+> returned `PASS_CONTAINED_JOURNAL_CLEARED` and was independently observed
+> `PASS/COHERENT_CONTAINED/PASS_CONTAINED`. This is point-in-time containment repair evidence only;
+> it does not admit the 8da release or authorize reopening, restart or Stripe work.
 
 ## 1. Rules of execution
 
@@ -555,7 +558,7 @@ admission and separate authorization remain independent gates.
 | Mutation proof     | Marker absent, journal present, `resumed=false`, every current and cumulative mutation counter zero                                                                   | `zero_effect`                  |
 | Control postflight | Exit `20`, same `FAIL`/`COHERENT_RUNNING` posture and six diagnostics                                                                                                 | `host_observed_unchanged`      |
 | Local diagnosis    | Real Docker reports canonical `Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate required false                                       | `implementation_defect`        |
-| Next gate          | Corrected committed/published successor, new exact CI/bundle, fresh preflight, reconciliation and final independent postflight                                        | `pending`                      |
+| Next gate          | At that point: corrected committed/published successor, new exact CI/bundle, fresh preflight, reconciliation and final independent postflight                         | `then_pending`                 |
 
 The preflight, reconciliation and control-postflight evidence SHA-256 values are, respectively,
 `d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`,
@@ -563,7 +566,31 @@ The preflight, reconciliation and control-postflight evidence SHA-256 values are
 `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`. The local disposable
 container was network-disabled, never started and removed with its volumes, leaving zero residue.
 This evidence proves neither a contained host nor a Stripe or financial gate. Exact 442 must not be
-rerun; the sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
+rerun; at that point the sandbox remained `BLOCKED_RECONCILIATION` and the one-shot was unconsumed.
+
+### 7.13 Exact-d096 contained reconciliation — bounded pass
+
+| Gate                | Admissible observation                                                                                                                                                    | Result                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Exact source gates  | Revision `d096b0ea23b44090c2f7b10762002d6b2de7cb7e`; CI run `31269541134` and sandbox-bundle run `31269550192` passed                                                     | `passed_source_gates`          |
+| Bundle provenance   | Artifact `9025216948`, ZIP SHA-256 `f17f7b074c11a3283d7f9fb06ab446825ef7492351463a1f21defb57fa5b2b2a`; attestation `39599897`, two subjects, Rekor `2386447207`           | `passed_bundle_gate`           |
+| Initial preflight   | `FAIL/COHERENT_RUNNING`; valid `2026-08-08T18:06:16Z`–`2026-08-08T18:21:16Z`                                                                                              | `admitted_for_bounded_attempt` |
+| Reconciliation      | `PASS/PASS_CONTAINED_JOURNAL_CLEARED`, operation `retention`; marker `complete`, journal cleared, every containment and financial assertion true                          | `passed_contained_repair`      |
+| Mutation accounting | Restart fences `2`, stopped containers `2`, journal clears `1`, marker transitions `4`, reservation reconciliations `0`, stopped units `5`                                | `exact_accounting`             |
+| Final postflight    | `PASS/COHERENT_CONTAINED/PASS_CONTAINED`, zero diagnostics; valid `2026-08-08T18:07:24Z`–`2026-08-08T18:22:24Z`                                                           | `passed_point_in_time`         |
+| Contained posture   | AWS ingress closed/unchanged; live disabled; worker, Caddy, maintenance and TCP/UDP 80/443 listeners stopped; journals/fence closed; financial snapshots stable/quiescent | `observed_contained`           |
+| Authority boundary  | One-shot/harness consumed; exact-e4 remains last admitted canonical release; no release, ingress, restart, Stripe, live or financial authority                            | `not_authorized`               |
+
+The initial preflight, reconciliation and final-postflight evidence are
+`host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`,
+`containment-reconciliation-20260808T180631Z-84a498eb6859.local.json` and
+`host-postflight-20260808T180724Z-40c305db3399.local.json`. Their respective SHA-256 values are
+`a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`,
+`c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63` and
+`532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`. Preserve the durable
+`complete` successor marker and never remove it. The one-shot and harness are consumed and must
+never be executed or resumed. The final postflight expired; it proves only the observed bounded
+repair, not later host state or another pilot gate.
 
 ## 8. Verdict procedure
 

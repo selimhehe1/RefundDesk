@@ -39,12 +39,26 @@ six diagnostics and unchanged host posture.
 Local reproduction with real Docker found that a canonically created container has
 `Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate incorrectly
 required both to be false. Its disposable, network-disabled container was never started and was
-removed with its volumes without residue. Exact 442 must not be rerun. A corrected, newly committed
-and published successor requires its own exact CI, bundle, fresh preflight and final independent
-postflight. The sandbox remains `BLOCKED_RECONCILIATION`, the one-shot remains unconsumed and no
-release, restart, ingress reopening or financial proof is authorized. Evidence artifacts named
-below are redacted and retained locally under the ignored `sandbox-evidence.local/` directory; they
-are not committed to the repository.
+removed with its volumes without residue. Exact 442 must not be rerun; its three artifacts remain
+historical `failed_pre_effect` evidence.
+
+Corrected successor `d096b0ea23b44090c2f7b10762002d6b2de7cb7e` then passed exact CI run
+`31269541134` and sandbox-bundle run `31269550192`. Artifact `9025216948` has ZIP SHA-256
+`f17f7b074c11a3283d7f9fb06ab446825ef7492351463a1f21defb57fa5b2b2a`; attestation `39599897`
+covers two subjects with Rekor entry `2386447207`. Its fresh preflight observed
+`FAIL/COHERENT_RUNNING`. The single reconciliation returned
+`PASS/PASS_CONTAINED_JOURNAL_CLEARED`, completed the successor marker, cleared the `retention`
+journal and kept every containment and financial assertion true. The immediate final postflight
+returned `PASS/COHERENT_CONTAINED/PASS_CONTAINED` with zero diagnostics: AWS ingress remained
+closed and unchanged, live remained disabled, worker, Caddy, maintenance and listeners were
+stopped, journals and the runtime fence were closed, and financial state was stable and quiescent.
+
+The final artifact expired at `2026-08-08T18:22:24Z`; it is bounded point-in-time containment
+evidence only. The exact-d096 one-shot and harness are consumed, and the durable `complete` marker
+must be preserved. Exact-e4 remains the last admitted canonical hosted release. No release, restart,
+ingress reopening, Stripe action, live mode or financial proof is authorized. Evidence artifacts
+named below are redacted and retained locally under the ignored `sandbox-evidence.local/`
+directory; they are not committed to the repository.
 
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
@@ -119,8 +133,9 @@ Exact-e4 (`e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`) is the last revision with 
 canonical deployment evidence on the approved AWS Lightsail instance. ADR 0030 records later
 release attempts involving `8da280b7...`; both the first admitted postflight and the later
 exact-442 control postflight observed that revision active and returned `FAIL` with posture
-`COHERENT_RUNNING`. Do not infer later host state, public health or complete release/Compose
-correctness from either expired artifact. A postflight is a point-in-time
+`COHERENT_RUNNING`. The final exact-d096 postflight later observed
+`PASS/COHERENT_CONTAINED/PASS_CONTAINED`, but it neither admits 8da as a release nor proves later
+host state, public health or complete release/Compose correctness. A postflight is a point-in-time
 containment observer only; it cannot authorize release, recovery, ingress reopening, worker or
 maintenance restart, or a financial proof. Those operations also require the applicable tracked
 successor, exact CI and attested bundle where relevant, and a separate decision.
@@ -134,7 +149,14 @@ After explicit approval, the ACL was restricted without reading credential bytes
 failed reconciliation and control postflight have SHA-256 values
 `d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`,
 `921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c` and
-`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, respectively.
+`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, respectively. The exact-d096
+initial postflight, successful reconciliation and final postflight are
+`host-postflight-20260808T180616Z-fc8d1e3837e6.local.json`,
+`containment-reconciliation-20260808T180631Z-84a498eb6859.local.json` and
+`host-postflight-20260808T180724Z-40c305db3399.local.json`, with respective SHA-256 values
+`a9665dc7c49866fd87569d9cdd952279057c35cb913e3f7aa229fc6f02888430`,
+`c5c69f4339c242f2ff7bb6b9d80c0422199d20bb79d93738d0e12f154b399d63` and
+`532b56318fcf30234e43e068da72577135ed45c12712b430af6e6575ab83ac2e`.
 
 Web, worker and migration have separate configuration and database authority. Four distinct
 restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the
