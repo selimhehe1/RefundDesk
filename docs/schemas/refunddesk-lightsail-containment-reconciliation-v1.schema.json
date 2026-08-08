@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.invalid/schemas/refunddesk-lightsail-containment-reconciliation-v1.schema.json",
+  "title": "RefundDesk exact-8da contained quiescence reconciliation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "nonce",
+    "expectedRevision",
+    "operation",
+    "startedAt",
+    "completedAt",
+    "exitCode",
+    "result",
+    "code",
+    "diagnostics",
+    "marker",
+    "captures",
+    "containment",
+    "mutations",
+    "redaction"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "refunddesk.lightsail.containment-reconciliation" },
+    "nonce": { "$ref": "#/$defs/lowerHex64" },
+    "expectedRevision": { "const": "8da280b78a9d1475c7bd79063e72c5af77121e8d" },
+    "operation": { "$ref": "#/$defs/nullableOperation" },
+    "startedAt": { "$ref": "#/$defs/timestamp" },
+    "completedAt": { "$ref": "#/$defs/timestamp" },
+    "exitCode": { "enum": [0, 20, 21] },
+    "result": { "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+    "code": { "$ref": "#/$defs/resultCode" },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "marker": { "$ref": "#/$defs/marker" },
+    "captures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admission", "before", "after"],
+      "properties": {
+        "admission": { "$ref": "#/$defs/capture" },
+        "before": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["a", "b"],
+          "properties": {
+            "a": { "$ref": "#/$defs/capture" },
+            "b": { "$ref": "#/$defs/capture" }
+          }
+        },
+        "after": { "$ref": "#/$defs/capture" }
+      }
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceExact",
+        "liveDisabled",
+        "financialStable",
+        "financialQuiescent",
+        "coreHealthy",
+        "coreContainerIdentitiesStable",
+        "workerStopped",
+        "caddyStopped",
+        "oneShotsStopped",
+        "maintenanceStopped",
+        "publicListenersClosed",
+        "releaseFenceAbsent",
+        "reservationValid",
+        "journalCleared",
+        "markerComplete"
+      ],
+      "properties": {
+        "sourceExact": { "type": "boolean" },
+        "liveDisabled": { "type": "boolean" },
+        "financialStable": { "type": "boolean" },
+        "financialQuiescent": { "type": "boolean" },
+        "coreHealthy": { "type": "boolean" },
+        "coreContainerIdentitiesStable": { "type": "boolean" },
+        "workerStopped": { "type": "boolean" },
+        "caddyStopped": { "type": "boolean" },
+        "oneShotsStopped": { "type": "boolean" },
+        "maintenanceStopped": { "type": "boolean" },
+        "publicListenersClosed": { "type": "boolean" },
+        "releaseFenceAbsent": { "type": "boolean" },
+        "reservationValid": { "type": "boolean" },
+        "journalCleared": { "type": "boolean" },
+        "markerComplete": { "type": "boolean" }
+      }
+    },
+    "mutations": {
+      "type": "object",
+      "description": "Bounded reconciliation effects. markerTransitions, journalCleared, and reservationReconciled are cumulative durable operation facts proven by the bound successor marker. unitsStopRequested, containersRestartFenced, and containersStopped count successful idempotent effects of this invocation only.",
+      "additionalProperties": false,
+      "required": [
+        "unitsStopRequested",
+        "containersRestartFenced",
+        "containersStopped",
+        "reservationReconciled",
+        "journalCleared",
+        "markerTransitions"
+      ],
+      "properties": {
+        "unitsStopRequested": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Successful idempotent systemd stop requests issued by this invocation."
+        },
+        "containersRestartFenced": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Validated target containers whose restart policy was successfully set to no by this invocation."
+        },
+        "containersStopped": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Validated running target containers for which this invocation performed a real stop or kill and then verified the stopped state."
+        },
+        "reservationReconciled": {
+          "const": 0,
+          "description": "Cumulative durable operation fact fixed to zero: this reconciliation validates the exact harmless reservation and performs no reservation removal, creation, or repair."
+        },
+        "journalCleared": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Cumulative durable operation fact: one only when the bound original journal has been retired after contained_verified, including crash resumption."
+        },
+        "markerTransitions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "Cumulative durable successor-marker state count: absent=0, prepared=1, contained_verified=2, quiesce_cleared=3, complete=4."
+        }
+      }
+    },
+    "redaction": { "$ref": "#/$defs/redaction" }
+  },
+  "$defs": {
+    "lowerHex40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "lowerHex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "operation": { "enum": ["backup", "retention"] },
+    "nullableOperation": {
+      "oneOf": [{ "$ref": "#/$defs/operation" }, { "type": "null" }]
+    },
+    "nullableRevision": {
+      "oneOf": [{ "$ref": "#/$defs/lowerHex40" }, { "type": "null" }]
+    },
+    "nullableHex64": {
+      "oneOf": [{ "$ref": "#/$defs/lowerHex64" }, { "type": "null" }]
+    },
+    "sha256ImageId": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "nullableSha256ImageId": {
+      "oneOf": [{ "$ref": "#/$defs/sha256ImageId" }, { "type": "null" }]
+    },
+    "nullableCount": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        { "type": "null" }
+      ]
+    },
+    "markerState": {
+      "enum": ["absent", "prepared", "contained_verified", "quiesce_cleared", "complete", "invalid"]
+    },
+    "nullableMarkerState": {
+      "oneOf": [{ "$ref": "#/$defs/markerState" }, { "type": "null" }]
+    },
+    "nullableBoolean": {
+      "oneOf": [{ "type": "boolean" }, { "type": "null" }]
+    },
+    "diagnostic": {
+      "enum": [
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "SOURCE_IDENTITY_UNAVAILABLE",
+        "SOURCE_IDENTITY_INVALID",
+        "JOURNAL_UNAVAILABLE",
+        "JOURNAL_INVALID",
+        "JOURNAL_CHANGED",
+        "MARKER_INVALID",
+        "MARKER_TRANSITION_FAILED",
+        "CONTROL_STATE_UNAVAILABLE",
+        "RELEASE_FENCE_ACTIVE",
+        "TRANSITION_ACTIVE",
+        "BACKUP_UPLOAD_ACTIVE",
+        "CONTAINER_INVENTORY_UNAVAILABLE",
+        "CONTAINER_IDENTITY_INVALID",
+        "UNEXPECTED_RUNNING_CONTAINER",
+        "SYSTEMD_INVENTORY_UNAVAILABLE",
+        "LISTENER_INVENTORY_UNAVAILABLE",
+        "LIVE_INTERLOCK_UNAVAILABLE",
+        "LIVE_INTERLOCK_ENABLED",
+        "DATABASE_SNAPSHOT_UNAVAILABLE",
+        "FINANCIAL_WORK_ACTIVE",
+        "FINANCIAL_STATE_CHANGED",
+        "CORE_RUNTIME_INVALID",
+        "CORE_IDENTITY_CHANGED",
+        "WORKER_RUNNING",
+        "CADDY_RUNNING",
+        "ONE_SHOT_RUNNING",
+        "MAINTENANCE_ACTIVE",
+        "PUBLIC_LISTENER_ACTIVE",
+        "RESERVATION_INVALID",
+        "MUTATION_FAILED",
+        "CAPTURE_CHANGED"
+      ]
+    },
+    "resultCode": {
+      "enum": [
+        "PASS_CONTAINED_JOURNAL_CLEARED",
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "SOURCE_IDENTITY_UNAVAILABLE",
+        "SOURCE_IDENTITY_INVALID",
+        "JOURNAL_UNAVAILABLE",
+        "JOURNAL_INVALID",
+        "JOURNAL_CHANGED",
+        "MARKER_INVALID",
+        "MARKER_TRANSITION_FAILED",
+        "CONTROL_STATE_UNAVAILABLE",
+        "RELEASE_FENCE_ACTIVE",
+        "TRANSITION_ACTIVE",
+        "BACKUP_UPLOAD_ACTIVE",
+        "CONTAINER_INVENTORY_UNAVAILABLE",
+        "CONTAINER_IDENTITY_INVALID",
+        "UNEXPECTED_RUNNING_CONTAINER",
+        "SYSTEMD_INVENTORY_UNAVAILABLE",
+        "LISTENER_INVENTORY_UNAVAILABLE",
+        "LIVE_INTERLOCK_UNAVAILABLE",
+        "LIVE_INTERLOCK_ENABLED",
+        "DATABASE_SNAPSHOT_UNAVAILABLE",
+        "FINANCIAL_WORK_ACTIVE",
+        "FINANCIAL_STATE_CHANGED",
+        "CORE_RUNTIME_INVALID",
+        "CORE_IDENTITY_CHANGED",
+        "WORKER_RUNNING",
+        "CADDY_RUNNING",
+        "ONE_SHOT_RUNNING",
+        "MAINTENANCE_ACTIVE",
+        "PUBLIC_LISTENER_ACTIVE",
+        "RESERVATION_INVALID",
+        "MUTATION_FAILED",
+        "CAPTURE_CHANGED"
+      ]
+    },
+    "marker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "resumedFromState",
+        "journalPresentAtInvocationStart",
+        "revision",
+        "operation",
+        "runnerSha256",
+        "journalSha256",
+        "admissionInvariantSha256",
+        "containedStateSha256"
+      ],
+      "properties": {
+        "state": { "$ref": "#/$defs/markerState" },
+        "resumedFromState": { "$ref": "#/$defs/nullableMarkerState" },
+        "journalPresentAtInvocationStart": { "$ref": "#/$defs/nullableBoolean" },
+        "revision": { "$ref": "#/$defs/nullableRevision" },
+        "operation": { "$ref": "#/$defs/nullableOperation" },
+        "runnerSha256": { "$ref": "#/$defs/nullableHex64" },
+        "journalSha256": { "$ref": "#/$defs/nullableHex64" },
+        "admissionInvariantSha256": {
+          "$ref": "#/$defs/nullableHex64",
+          "description": "At prepared and later, SHA-256 of the compact recursively key-sorted UTF-8 stable admission projection containing exact source identity, five container identities/images, the complete database snapshot, and live-disable observations, with no trailing LF; null before a valid marker exists."
+        },
+        "containedStateSha256": {
+          "$ref": "#/$defs/nullableHex64",
+          "description": "At contained_verified and later, SHA-256 of the compact recursively key-sorted UTF-8 public capture after removing capturedAt and journal, with no trailing LF; null before contained_verified."
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeRevision",
+        "currentRevision",
+        "sourceRevision",
+        "releaseEnvironmentRevision",
+        "manifestSha256",
+        "composeSha256",
+        "commonSha256",
+        "helperSha256"
+      ],
+      "properties": {
+        "activeRevision": { "$ref": "#/$defs/nullableRevision" },
+        "currentRevision": { "$ref": "#/$defs/nullableRevision" },
+        "sourceRevision": { "$ref": "#/$defs/nullableRevision" },
+        "releaseEnvironmentRevision": { "$ref": "#/$defs/nullableRevision" },
+        "manifestSha256": { "$ref": "#/$defs/nullableHex64" },
+        "composeSha256": { "$ref": "#/$defs/nullableHex64" },
+        "commonSha256": { "$ref": "#/$defs/nullableHex64" },
+        "helperSha256": { "$ref": "#/$defs/nullableHex64" }
+      }
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "operation", "revision", "status", "sha256"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "operation": { "$ref": "#/$defs/nullableOperation" },
+        "revision": { "$ref": "#/$defs/nullableRevision" },
+        "status": { "oneOf": [{ "const": "in_progress" }, { "type": "null" }] },
+        "sha256": { "$ref": "#/$defs/nullableHex64" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeReleaseUnitCount",
+        "activeFenceUnitCount",
+        "releaseRuntimeMarkerCount",
+        "transitionPresent",
+        "backupUploadJournalPresent",
+        "managedTransitionPresent",
+        "reservationValid",
+        "knownOneShotsPresentCount",
+        "knownOneShotsRunningCount",
+        "unexpectedRunningContainerCount"
+      ],
+      "properties": {
+        "activeReleaseUnitCount": { "$ref": "#/$defs/nullableCount" },
+        "activeFenceUnitCount": { "$ref": "#/$defs/nullableCount" },
+        "releaseRuntimeMarkerCount": { "$ref": "#/$defs/nullableCount" },
+        "transitionPresent": { "type": "boolean" },
+        "backupUploadJournalPresent": { "type": "boolean" },
+        "managedTransitionPresent": { "type": "boolean" },
+        "reservationValid": { "type": "boolean" },
+        "knownOneShotsPresentCount": { "$ref": "#/$defs/nullableCount" },
+        "knownOneShotsRunningCount": { "$ref": "#/$defs/nullableCount" },
+        "unexpectedRunningContainerCount": { "$ref": "#/$defs/nullableCount" }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "presentCount",
+        "containerId",
+        "imageId",
+        "expectedImageId",
+        "imageReferenceMatches",
+        "status",
+        "health",
+        "restartPolicy",
+        "projectLabelMatches",
+        "serviceLabelMatches",
+        "revisionLabelMatches"
+      ],
+      "properties": {
+        "service": { "enum": ["postgres", "verifier", "worker", "web", "caddy"] },
+        "presentCount": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "containerId": { "$ref": "#/$defs/nullableHex64" },
+        "imageId": { "$ref": "#/$defs/nullableSha256ImageId" },
+        "expectedImageId": { "$ref": "#/$defs/nullableSha256ImageId" },
+        "imageReferenceMatches": { "type": "boolean" },
+        "status": {
+          "enum": [
+            "MISSING",
+            "CREATED",
+            "RUNNING",
+            "RESTARTING",
+            "REMOVING",
+            "PAUSED",
+            "EXITED",
+            "DEAD",
+            "UNKNOWN"
+          ]
+        },
+        "health": { "enum": ["MISSING", "NONE", "STARTING", "HEALTHY", "UNHEALTHY", "UNKNOWN"] },
+        "restartPolicy": {
+          "oneOf": [
+            { "enum": ["no", "unless-stopped", "always", "on-failure", "unknown"] },
+            { "type": "null" }
+          ]
+        },
+        "projectLabelMatches": { "type": "boolean" },
+        "serviceLabelMatches": { "type": "boolean" },
+        "revisionLabelMatches": { "type": "boolean" }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "systemdInventoryAvailable",
+        "listenerInventoryAvailable",
+        "liveInterlocksAvailable",
+        "platformLiveDisabled",
+        "workerLiveDisabled",
+        "liveWebhookDisabled",
+        "webEffectiveLiveDisabled",
+        "workerEffectiveLiveDisabled",
+        "backupTimerActive",
+        "retentionTimerActive",
+        "backupServiceActive",
+        "retentionServiceActive",
+        "quiesceRecoveryActive",
+        "tcp80Listening",
+        "tcp443Listening",
+        "udp80Listening",
+        "udp443Listening"
+      ],
+      "properties": {
+        "systemdInventoryAvailable": { "type": "boolean" },
+        "listenerInventoryAvailable": { "type": "boolean" },
+        "liveInterlocksAvailable": { "type": "boolean" },
+        "platformLiveDisabled": { "type": "boolean" },
+        "workerLiveDisabled": { "type": "boolean" },
+        "liveWebhookDisabled": { "type": "boolean" },
+        "webEffectiveLiveDisabled": { "type": "boolean" },
+        "workerEffectiveLiveDisabled": { "type": "boolean" },
+        "backupTimerActive": { "type": "boolean" },
+        "retentionTimerActive": { "type": "boolean" },
+        "backupServiceActive": { "type": "boolean" },
+        "retentionServiceActive": { "type": "boolean" },
+        "quiesceRecoveryActive": { "type": "boolean" },
+        "tcp80Listening": { "type": "boolean" },
+        "tcp443Listening": { "type": "boolean" },
+        "udp80Listening": { "type": "boolean" },
+        "udp443Listening": { "type": "boolean" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotAvailable",
+        "systemIdentifier",
+        "activeWorkflows",
+        "unreleasedPaymentGuards",
+        "activeFinancialJobs",
+        "liveTenants",
+        "liveInstallations",
+        "preparedTransactions",
+        "refundRequests",
+        "auditEvents"
+      ],
+      "properties": {
+        "snapshotAvailable": { "type": "boolean" },
+        "systemIdentifier": {
+          "oneOf": [{ "type": "string", "pattern": "^[1-9][0-9]{17,19}$" }, { "type": "null" }]
+        },
+        "activeWorkflows": { "$ref": "#/$defs/nullableCount" },
+        "unreleasedPaymentGuards": { "$ref": "#/$defs/nullableCount" },
+        "activeFinancialJobs": { "$ref": "#/$defs/nullableCount" },
+        "liveTenants": { "$ref": "#/$defs/nullableCount" },
+        "liveInstallations": { "$ref": "#/$defs/nullableCount" },
+        "preparedTransactions": { "$ref": "#/$defs/nullableCount" },
+        "refundRequests": { "$ref": "#/$defs/nullableCount" },
+        "auditEvents": { "$ref": "#/$defs/nullableCount" }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capturedAt",
+        "identity",
+        "journal",
+        "control",
+        "containers",
+        "surface",
+        "database"
+      ],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "journal": { "$ref": "#/$defs/journal" },
+        "control": { "$ref": "#/$defs/control" },
+        "containers": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "postgres" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "verifier" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "worker" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "web" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "caddy" } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "surface": { "$ref": "#/$defs/surface" },
+        "database": { "$ref": "#/$defs/database" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawSecretPresent",
+        "rawApiKeyPresent",
+        "rawSignaturePresent",
+        "rawPayloadPresent",
+        "customerDataPresent",
+        "arbitraryPathPresent",
+        "ipAddressPresent",
+        "stderrPresent",
+        "keyDigestPresent"
+      ],
+      "properties": {
+        "rawSecretPresent": { "const": false },
+        "rawApiKeyPresent": { "const": false },
+        "rawSignaturePresent": { "const": false },
+        "rawPayloadPresent": { "const": false },
+        "customerDataPresent": { "const": false },
+        "arbitraryPathPresent": { "const": false },
+        "ipAddressPresent": { "const": false },
+        "stderrPresent": { "const": false },
+        "keyDigestPresent": { "const": false }
+      }
+    }
+  }
+}

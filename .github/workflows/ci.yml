@@ -806,4 +806,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           node --test scripts/validate-lightsail-postflight.test.mjs
+          node --test scripts/validate-lightsail-containment-reconciliation.test.mjs
           powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-postflight.contract.Tests.ps1
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-containment-reconciliation.contract.Tests.ps1

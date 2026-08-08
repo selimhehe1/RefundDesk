@@ -38,3 +38,4 @@ ADRs are immutable after acceptance. Supersede an ADR with a new file instead of
 | [0032](0032-failed-release-is-recoverable-not-available.md)                  | Failed release is recoverable, not necessarily available     | Accepted                   |
 | [0033](0033-bounded-transaction-retry-and-lifecycle-terminology.md)          | Bounded transaction retry and lifecycle terminology          | Accepted                   |
 | [0034](0034-exact-e4-independent-review-and-read-only-host-postflight.md)    | Independent exact-e4 review and read-only host postflight    | Accepted                   |
+| [0035](0035-exact-8da-contained-quiescence-reconciliation.md)                | Exact-8da contained quiescence reconciliation                | Accepted                   |

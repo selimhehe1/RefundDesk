@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -3287,4 +3289,1032 @@ test("quiesce and backup-upload journals reject divergence and clear durably", a
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
+});
+
+const containmentRevision = "8da280b78a9d1475c7bd79063e72c5af77121e8d";
+const containmentImageIds = Object.freeze({
+  postgres: "sha256:0a314d409a9633cff4f89dc18482262625c0ee78cb1aa2ff8e47bc6da0251e1b",
+  verifier: "sha256:af555904a0961945f16bb323a501457b13a4f7e9bde969b145b97da80b38ecbe",
+  worker: "sha256:e3ead31f6c3084b69731e095a250b8d0a4e3e9d6e8d239dccf077e6b90d53f64",
+  web: "sha256:c1d13b7db80e019e8a0ea24717c2a2028052b5959e1aaf65746336073606601f",
+  caddy: "sha256:af555904a0961945f16bb323a501457b13a4f7e9bde969b145b97da80b38ecbe",
+  migrate: "sha256:7b6124fb1c02f8fbb0a2cd45cf53bb5b6bc196c85edb620aa8ec903f99888279",
+});
+const containmentReferences = Object.freeze({
+  postgres:
+    "postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
+  verifier:
+    "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+  caddy:
+    "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+  worker: `refunddesk-worker:sandbox-${containmentRevision}`,
+  web: `refunddesk-web:sandbox-${containmentRevision}`,
+  migrate: `refunddesk-migrate:sandbox-${containmentRevision}`,
+});
+const containmentPostgresImageEnvironment = Object.freeze([
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/postgresql/18/bin",
+  "GOSU_VERSION=1.19",
+  "LANG=en_US.utf8",
+  "PG_MAJOR=18",
+  "PG_VERSION=18.4-1.pgdg12+1",
+  "PGDATA=/var/lib/postgresql/18/docker",
+]);
+
+function containmentTimestamp(value = Date.now()) {
+  return new Date(value).toISOString().replace(/\.[0-9]{3}Z$/u, "Z");
+}
+
+function containmentContainer(service, identifier) {
+  const labels = {
+    "com.docker.compose.project": "refunddesk",
+    "com.docker.compose.service": service,
+  };
+  if (service !== "postgres") labels["com.refunddesk.revision"] = containmentRevision;
+  const environment = [];
+  if (service === "worker" || service === "web") {
+    environment.push("REFUNDDESK_GLOBAL_LIVE_ENABLED=false");
+  }
+  if (service === "web") environment.push("STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled");
+  return {
+    Id: identifier.repeat(64),
+    Name: `/refunddesk-${service}-1`,
+    Image: containmentImageIds[service],
+    Config: {
+      Image: containmentReferences[service],
+      User:
+        service === "postgres"
+          ? "999:999"
+          : service === "worker" || service === "web"
+            ? "node"
+            : "",
+      Labels: labels,
+      Env: environment,
+    },
+    HostConfig: {
+      RestartPolicy: { Name: "unless-stopped" },
+      PortBindings: service === "caddy" ? { "80/tcp": [{}], "443/tcp": [{}] } : {},
+      NetworkMode: "default",
+      ReadonlyRootfs: service !== "postgres",
+      Tmpfs: {},
+    },
+    State: {
+      Running: true,
+      Status: "running",
+      ExitCode: 0,
+      Error: "",
+      Health: { Status: "healthy" },
+    },
+    Mounts: [],
+  };
+}
+
+function containmentReservation() {
+  return {
+    Id: "6".repeat(64),
+    Name: "/refunddesk-database-owner-job",
+    Image: containmentImageIds.postgres,
+    Path: "/bin/true",
+    Args: [],
+    Config: {
+      Image: containmentReferences.postgres,
+      User: "",
+      Entrypoint: ["/bin/true"],
+      Cmd: null,
+      WorkingDir: "",
+      StopSignal: "SIGINT",
+      Healthcheck: null,
+      Shell: null,
+      ExposedPorts: { "5432/tcp": {} },
+      Volumes: { "/var/lib/postgresql": {} },
+      AttachStdin: false,
+      AttachStdout: false,
+      AttachStderr: false,
+      Tty: false,
+      OpenStdin: false,
+      StdinOnce: false,
+      Labels: {
+        "com.docker.compose.project": "refunddesk",
+        "com.docker.compose.service": "database-owner-reservation",
+        "com.refunddesk.revision": containmentRevision,
+        "com.refunddesk.database-owner-reservation": "true",
+      },
+      Env: [...containmentPostgresImageEnvironment],
+    },
+    HostConfig: {
+      RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
+      AutoRemove: false,
+      PortBindings: {},
+      PublishAllPorts: false,
+      NetworkMode: "none",
+      ReadonlyRootfs: true,
+      Privileged: false,
+      Binds: null,
+      Mounts: null,
+      VolumesFrom: null,
+      CapAdd: null,
+      CapDrop: ["ALL"],
+      SecurityOpt: ["no-new-privileges:true"],
+      Devices: null,
+      DeviceRequests: null,
+      DeviceCgroupRules: null,
+      Links: null,
+      ExtraHosts: null,
+      GroupAdd: null,
+      PidMode: "",
+      IpcMode: "private",
+      UTSMode: "",
+      UsernsMode: "",
+      CgroupnsMode: "private",
+      Tmpfs: { "/var/lib/postgresql": "rw,nosuid,nodev,noexec,size=65536" },
+      PidsLimit: 8,
+      Memory: 16_777_216,
+      MemoryReservation: 0,
+      MemorySwap: 33_554_432,
+      OomKillDisable: null,
+      CpuShares: 0,
+      NanoCpus: 0,
+      CpuPeriod: 0,
+      CpuQuota: 0,
+      CpusetCpus: "",
+      CpusetMems: "",
+    },
+    State: {
+      Running: false,
+      Paused: false,
+      Restarting: false,
+      OOMKilled: false,
+      Dead: false,
+      Status: "created",
+      Pid: 0,
+      ExitCode: 0,
+      Error: "",
+      Health: null,
+    },
+    Mounts: [],
+    NetworkSettings: { Ports: { "5432/tcp": null } },
+  };
+}
+
+async function createContainmentHostFixture(
+  operation = "backup",
+  { stickyListeners = false } = {},
+) {
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-containment-test-"));
+  const root = join(temporaryDirectory, "root");
+  const configRoot = join(temporaryDirectory, "config");
+  const controlRoot = join(temporaryDirectory, "control");
+  const runtimeRoot = join(temporaryDirectory, "runtime");
+  const operatorDirectory = join(temporaryDirectory, "operator");
+  const operatorLock = join(operatorDirectory, "operator.lock");
+  const sourceRoot = join(root, "releases", containmentRevision, "source");
+  const lightsailRoot = join(sourceRoot, "deploy", "lightsail");
+  const sourceScripts = join(lightsailRoot, "scripts");
+  const manifestPath = join(root, "releases", containmentRevision, "manifest.json");
+  const fakeBin = join(temporaryDirectory, "bin");
+  const fakeStatePath = join(temporaryDirectory, "host-state.json");
+  for (const [path, mode] of [
+    [root, 0o755],
+    [join(root, "releases"), 0o755],
+    [join(root, "releases", containmentRevision), 0o755],
+    [sourceRoot, 0o755],
+    [join(sourceRoot, "deploy"), 0o755],
+    [lightsailRoot, 0o755],
+    [sourceScripts, 0o755],
+    [configRoot, 0o700],
+    [controlRoot, 0o700],
+    [runtimeRoot, 0o755],
+    [operatorDirectory, 0o700],
+    [fakeBin, 0o755],
+  ]) {
+    await mkdir(path, { mode, recursive: true });
+    await chmod(path, mode);
+  }
+
+  for (const relativePath of [
+    "compose.yml",
+    "scripts/_common.sh",
+    "scripts/release-transition-journal.py",
+  ]) {
+    const bytes = await readFile(resolve(directory, relativePath));
+    const target = join(lightsailRoot, relativePath);
+    await writeFile(target, bytes, { mode: 0o644 });
+    await chmod(target, 0o644);
+  }
+  await writeFile(join(root, "ACTIVE_REVISION"), `${containmentRevision}\n`, { mode: 0o644 });
+  await chmod(join(root, "ACTIVE_REVISION"), 0o644);
+  await writeFile(join(sourceRoot, ".refunddesk-revision"), `${containmentRevision}\n`, {
+    mode: 0o600,
+  });
+  await chmod(join(sourceRoot, ".refunddesk-revision"), 0o600);
+  await symlink(sourceRoot, join(root, "current"));
+
+  const manifest = {
+    schemaVersion: 1,
+    revision: containmentRevision,
+    source: "https://github.com/selimhehe1/RefundDesk",
+    platform: "linux/amd64",
+    createdAt: "2026-08-08T12:00:00Z",
+    bundle: {
+      file: `refunddesk-sandbox-${containmentRevision}.images.tar.zst`,
+      sha256: "a".repeat(64),
+    },
+    images: [
+      {
+        role: "migrate",
+        expectedUser: "node",
+        imageId: containmentImageIds.migrate,
+        reference: containmentReferences.migrate,
+      },
+      {
+        role: "web",
+        expectedUser: "node",
+        imageId: containmentImageIds.web,
+        reference: containmentReferences.web,
+      },
+      {
+        role: "worker",
+        expectedUser: "node",
+        imageId: containmentImageIds.worker,
+        reference: containmentReferences.worker,
+      },
+    ],
+  };
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  await writeFile(manifestPath, manifestBytes, { mode: 0o644 });
+  await chmod(manifestPath, 0o644);
+  const manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
+
+  await writeFile(
+    join(configRoot, "release.env"),
+    `REFUNDDESK_IMAGE_TAG=sandbox-${containmentRevision}\nREFUNDDESK_REVISION=${containmentRevision}\n`,
+    { mode: 0o600 },
+  );
+  await writeFile(
+    join(configRoot, "platform.env"),
+    "REFUNDDESK_GLOBAL_LIVE_ENABLED=false\nSTRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled\n",
+    { mode: 0o600 },
+  );
+  await writeFile(join(configRoot, "worker.env"), "REFUNDDESK_GLOBAL_LIVE_ENABLED=false\n", {
+    mode: 0o600,
+  });
+  for (const file of ["release.env", "platform.env", "worker.env"]) {
+    await chmod(join(configRoot, file), 0o600);
+  }
+  const journal = {
+    operation,
+    revision: containmentRevision,
+    schemaVersion: 1,
+    status: "in_progress",
+  };
+  await writeFile(
+    join(controlRoot, "runtime-quiesce-in-progress.json"),
+    `${JSON.stringify(journal, Object.keys(journal).sort())}\n`,
+    { mode: 0o600 },
+  );
+  await chmod(join(controlRoot, "runtime-quiesce-in-progress.json"), 0o600);
+  await writeFile(operatorLock, "", { mode: 0o600 });
+  await chmod(operatorLock, 0o600);
+
+  const source = "https://github.com/selimhehe1/RefundDesk";
+  const images = Object.fromEntries(
+    Object.entries(containmentReferences).map(([role, reference]) => [
+      reference,
+      {
+        Id: containmentImageIds[role],
+        Os: "linux",
+        Architecture: "amd64",
+        Config:
+          role === "postgres"
+            ? {
+                User: "",
+                Labels: {},
+                Env: [...containmentPostgresImageEnvironment],
+                Entrypoint: ["docker-entrypoint.sh"],
+                Cmd: ["postgres"],
+                WorkingDir: "",
+                StopSignal: "SIGINT",
+                Healthcheck: null,
+                Shell: null,
+                ExposedPorts: { "5432/tcp": {} },
+                Volumes: { "/var/lib/postgresql": {} },
+              }
+            : {
+                User: new Set(["worker", "web", "migrate"]).has(role) ? "node" : "",
+                Labels: new Set(["worker", "web", "migrate"]).has(role)
+                  ? {
+                      "org.opencontainers.image.revision": containmentRevision,
+                      "org.opencontainers.image.source": source,
+                    }
+                  : {},
+              },
+      },
+    ]),
+  );
+  const state = {
+    images,
+    containers: [
+      containmentContainer("postgres", "1"),
+      containmentContainer("verifier", "2"),
+      containmentContainer("worker", "3"),
+      containmentContainer("web", "4"),
+      containmentContainer("caddy", "5"),
+      containmentReservation(),
+    ],
+    nextContainerId: "9".repeat(64),
+    units: {
+      "refunddesk-backup.timer": "active",
+      "refunddesk-retention.timer": "active",
+      "refunddesk-backup.service": "inactive",
+      "refunddesk-retention.service": "inactive",
+      "refunddesk-quiesce-recovery.service": "inactive",
+    },
+    releaseUnits: [],
+    listeners: { tcp80: true, tcp443: true, udp80: false, udp443: false },
+    stickyListeners,
+    financeLine: "7574638204102381941|0|0|0|0|0|0|34|100",
+    operations: [],
+  };
+  await writeFile(fakeStatePath, `${JSON.stringify(state)}\n`);
+
+  const fakeSource = await readFile(
+    resolve(directory, "test-fixtures/containment-host-command.py"),
+  );
+  const fakeExecutable = join(fakeBin, "containment-host-command.py");
+  await writeFile(fakeExecutable, fakeSource, { mode: 0o755 });
+  await chmod(fakeExecutable, 0o755);
+  for (const command of ["docker", "systemctl", "ss"]) {
+    await symlink(fakeExecutable, join(fakeBin, command));
+  }
+
+  return {
+    temporaryDirectory,
+    root,
+    configRoot,
+    controlRoot,
+    runtimeRoot,
+    operatorLock,
+    fakeBin,
+    fakeStatePath,
+    manifestSha256,
+  };
+}
+
+test("exact-8da containment runner is stop-only, bounded and source-pinned", async () => {
+  const runner = await read("scripts/reconcile-host-containment.sh");
+  assert.match(runner, /readonly EXACT_REVISION="8da280b78a9d1475c7bd79063e72c5af77121e8d"/u);
+  assert.match(runner, /readonly EXACT_COMPOSE_SHA256="92a96553/u);
+  assert.match(runner, /readonly EXACT_COMMON_SHA256="e3582a5/u);
+  assert.match(runner, /readonly EXACT_HELPER_SHA256="76fba53/u);
+  assert.match(runner, /flock --exclusive --timeout 30 9/u);
+  assert.match(runner, /timeout 20 python3 "\$\{HELPER_FILE\}" clear-quiesce/u);
+  assert.match(runner, /for service in caddy worker bootstrap migrate maintenance/u);
+  assert.match(runner, /admissionInvariantSha256/u);
+  assert.match(runner, /containedStateSha256/u);
+  assert.match(runner, /captures: \{admission: \$admission/u);
+  assert.doesNotMatch(
+    runner,
+    /recover_retention_database_owner_job|clear_database_owner_job_reservation/u,
+  );
+  const executableLines = runner
+    .split(/\r?\n/u)
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+  assert.doesNotMatch(
+    executableLines,
+    /^\s*(?:timeout [0-9]+ )?(?:refunddesk_compose (?:up|start)(?:\s|$)|docker (?:compose )?(?:up|start)(?:\s|$)|systemctl (?:enable|start)(?:\s|$)|(?:stripe|aws|ssh)(?:\s|$))/imu,
+  );
+  assert.doesNotMatch(
+    executableLines,
+    /^\s*(?:timeout [0-9]+ )?docker (?:rm|create|rename)(?:\s|$)/imu,
+  );
+});
+
+test("exact-8da containment runner passes, fails closed, and resumes after durable clear", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Linux ownership, flock and command fixtures run in CI");
+    return;
+  }
+  for (const command of ["bash", "jq", "python3", "sha256sum", "timeout"]) {
+    const probe = spawnSync(command, ["--version"], { encoding: "utf8" });
+    if (probe.error?.code === "ENOENT") {
+      t.skip(`${command} is unavailable; Linux CI executes this contract`);
+      return;
+    }
+  }
+
+  const runnerPath = resolve(directory, "scripts/reconcile-host-containment.sh");
+  const runnerBytes = await readFile(runnerPath);
+  const runnerSha256 = createHash("sha256").update(runnerBytes).digest("hex");
+  const traceRunner = process.env.REFUNDDESK_CONTAINMENT_TEST_TRACE === "1";
+  let invocationRunnerPath = runnerPath;
+  if (traceRunner) {
+    const traceDirectory = await mkdtemp(join(tmpdir(), "refunddesk-containment-trace-"));
+    invocationRunnerPath = join(traceDirectory, "reconcile-host-containment.trace.sh");
+    const traceBytes = runnerBytes
+      .toString("utf8")
+      .replace("set +x", "PS4='+${LINENO}: '\nset -x")
+      .replace("exec 2>/dev/null", "exec 2>&2");
+    await writeFile(invocationRunnerPath, traceBytes, { mode: 0o700 });
+    await chmod(invocationRunnerPath, 0o700);
+    t.after(() => rm(traceDirectory, { force: true, recursive: true }));
+  }
+  const schema = JSON.parse(
+    await readFile(
+      resolve(
+        directory,
+        "../../docs/schemas/refunddesk-lightsail-containment-reconciliation-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const { validateContainmentReconciliationDocument } =
+    await import("../../scripts/validate-lightsail-containment-reconciliation.mjs");
+
+  const invokeFixture = (fixture, nonce, extraEnvironment = {}) => {
+    const notBefore = containmentTimestamp(Date.now() - 10_000);
+    const result = spawnSync(
+      "bash",
+      [
+        invocationRunnerPath,
+        "--nonce",
+        nonce,
+        "--expected-revision",
+        containmentRevision,
+        "--runner-sha256",
+        runnerSha256,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 180_000,
+        env: {
+          ...process.env,
+          PATH: `${fixture.fakeBin}:${process.env.PATH}`,
+          REFUNDDESK_CONTAINMENT_TEST_MODE: "1",
+          REFUNDDESK_CONTAINMENT_ROOT: fixture.root,
+          REFUNDDESK_CONTAINMENT_CONFIG_ROOT: fixture.configRoot,
+          REFUNDDESK_CONTAINMENT_CONTROL_ROOT: fixture.controlRoot,
+          REFUNDDESK_CONTAINMENT_RUNTIME_ROOT: fixture.runtimeRoot,
+          REFUNDDESK_CONTAINMENT_OPERATOR_LOCK: fixture.operatorLock,
+          REFUNDDESK_CONTAINMENT_TEST_MANIFEST_SHA256: fixture.manifestSha256,
+          REFUNDDESK_CONTAINMENT_FAKE_STATE: fixture.fakeStatePath,
+          ...extraEnvironment,
+        },
+      },
+    );
+    const notAfter = containmentTimestamp(Date.now() + 10_000);
+    return { result, notBefore, notAfter };
+  };
+
+  const runFixture = (fixture, nonce, extraEnvironment = {}) => {
+    const { result, notBefore, notAfter } = invokeFixture(fixture, nonce, extraEnvironment);
+    assert.equal(result.signal, null);
+    if (!traceRunner) assert.equal(result.stderr, "");
+    assert.ok(Buffer.byteLength(result.stdout) < 128 * 1024);
+    assert.notEqual(
+      result.stdout,
+      "",
+      `runner emitted no JSON (status ${result.status})\n${result.stderr.slice(0, 48_000)}`,
+    );
+    const document = JSON.parse(result.stdout);
+    let validated;
+    try {
+      validated = validateContainmentReconciliationDocument(Buffer.from(result.stdout), {
+        schema,
+        expectedNonce: nonce,
+        expectedRunnerSha256: runnerSha256,
+        processExitCode: result.status,
+        notBefore,
+        notAfter,
+      });
+    } catch (error) {
+      if (traceRunner && error instanceof Error) {
+        const failureOffset = result.stderr.indexOf("fail HOST_INVENTORY_UNAVAILABLE");
+        const traceStart = Math.max(0, failureOffset - 48_000);
+        const traceEnd = failureOffset < 0 ? 48_000 : failureOffset + 4_000;
+        error.message += `\nrunner status=${result.status} result=${document.result} code=${document.code}\n${result.stderr.slice(traceStart, traceEnd)}`;
+      }
+      throw error;
+    }
+    assert.equal(validated.remote.nonce, nonce);
+    return { result, document };
+  };
+
+  await t.test("backup containment reaches complete without a start surface", async () => {
+    const fixture = await createContainmentHostFixture("backup");
+    try {
+      const protectedSourcePaths = [
+        join(
+          fixture.root,
+          "releases",
+          containmentRevision,
+          "source",
+          "deploy",
+          "lightsail",
+          "compose.yml",
+        ),
+        join(
+          fixture.root,
+          "releases",
+          containmentRevision,
+          "source",
+          "deploy",
+          "lightsail",
+          "scripts",
+          "_common.sh",
+        ),
+        join(
+          fixture.root,
+          "releases",
+          containmentRevision,
+          "source",
+          "deploy",
+          "lightsail",
+          "scripts",
+          "release-transition-journal.py",
+        ),
+      ];
+      const sourceDigestsBefore = await Promise.all(
+        protectedSourcePaths.map(async (path) =>
+          createHash("sha256")
+            .update(await readFile(path))
+            .digest("hex"),
+        ),
+      );
+      const { result, document } = runFixture(fixture, "a".repeat(64));
+      assert.equal(result.status, 0, result.stdout);
+      assert.equal(document.code, "PASS_CONTAINED_JOURNAL_CLEARED");
+      assert.equal(document.marker.resumedFromState, "absent");
+      assert.equal(document.marker.journalPresentAtInvocationStart, true);
+      assert.equal(document.marker.state, "complete");
+      assert.match(document.marker.admissionInvariantSha256, /^[0-9a-f]{64}$/u);
+      assert.match(document.marker.containedStateSha256, /^[0-9a-f]{64}$/u);
+      assert.equal(document.captures.admission.surface.backupTimerActive, true);
+      assert.equal(document.captures.admission.surface.retentionTimerActive, true);
+      assert.equal(document.captures.admission.surface.tcp80Listening, true);
+      assert.equal(document.captures.admission.surface.tcp443Listening, true);
+      assert.equal(document.captures.admission.control.knownOneShotsPresentCount, 0);
+      assert.equal(document.captures.before.a.control.knownOneShotsPresentCount, 0);
+      assert.equal(document.mutations.markerTransitions, 4);
+      assert.equal(document.mutations.journalCleared, 1);
+      assert.equal(document.mutations.reservationReconciled, 0);
+      const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+      assert.equal(state.financeLine, "7574638204102381941|0|0|0|0|0|0|34|100");
+      assert.deepEqual(
+        await Promise.all(
+          protectedSourcePaths.map(async (path) =>
+            createHash("sha256")
+              .update(await readFile(path))
+              .digest("hex"),
+          ),
+        ),
+        sourceDigestsBefore,
+      );
+      const operations = state.operations.join("\n");
+      assert.ok(
+        state.operations.indexOf("docker:update:caddy") <
+          state.operations.indexOf("docker:update:worker"),
+      );
+      assert.ok(
+        state.operations.indexOf("docker:stop:caddy") <
+          state.operations.indexOf("docker:stop:worker"),
+      );
+      assert.doesNotMatch(operations, /(?:^|:)(?:start|up|release|stripe|aws|ssh)(?::|$)/iu);
+      await assert.rejects(readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json")));
+    } finally {
+      await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  await t.test("retention preserves the exact reservation without repair", async () => {
+    const fixture = await createContainmentHostFixture("retention");
+    try {
+      const { result, document } = runFixture(fixture, "e".repeat(64));
+      assert.equal(result.status, 0, result.stdout);
+      assert.equal(document.operation, "retention");
+      assert.equal(document.mutations.reservationReconciled, 0);
+      const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+      assert.equal(
+        state.operations.some((operation) => /docker:(?:rm|create|rename):/u.test(operation)),
+        false,
+      );
+    } finally {
+      await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  await t.test("financial work rejects before any containment mutation", async () => {
+    const fixture = await createContainmentHostFixture("backup");
+    try {
+      const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+      state.financeLine = "7574638204102381941|1|0|0|0|0|0|34|100";
+      await writeFile(fixture.fakeStatePath, `${JSON.stringify(state)}\n`);
+      const { result, document } = runFixture(fixture, "f".repeat(64));
+      assert.equal(result.status, 20, result.stdout);
+      assert.equal(document.code, "FINANCIAL_WORK_ACTIVE");
+      assert.equal(document.marker.state, "absent");
+      assert.equal(document.mutations.unitsStopRequested, 0);
+      const finalState = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+      assert.equal(
+        finalState.operations.some(
+          (operation) =>
+            operation.startsWith("systemctl:stop:") || operation.startsWith("docker:update:"),
+        ),
+        false,
+      );
+      assert.equal(
+        JSON.parse(
+          await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+        ).operation,
+        "backup",
+      );
+    } finally {
+      await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+    }
+  });
+
+  for (const [name, nonceCharacter, mutate] of [
+    [
+      "unavailable systemd inventory",
+      "1",
+      (state) => {
+        state.systemdUnavailable = true;
+      },
+    ],
+    [
+      "unavailable listener inventory",
+      "2",
+      (state) => {
+        state.listenerUnavailable = true;
+      },
+    ],
+    [
+      "active quiesce recovery service",
+      "3",
+      (state) => {
+        state.units["refunddesk-quiesce-recovery.service"] = "active";
+      },
+    ],
+    [
+      "stopped stale maintenance container",
+      "4",
+      (state) => {
+        const maintenance = containmentContainer("migrate", "7");
+        maintenance.Name = "/refunddesk-maintenance-stale";
+        maintenance.Config.Labels["com.docker.compose.service"] = "maintenance";
+        maintenance.State.Running = false;
+        maintenance.State.Status = "exited";
+        maintenance.HostConfig.RestartPolicy.Name = "no";
+        state.containers.push(maintenance);
+      },
+    ],
+    [
+      "invalid database owner reservation",
+      "5",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.RestartPolicy.Name = "unless-stopped";
+      },
+    ],
+    [
+      "reservation with an arbitrary image",
+      "6",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Image = `sha256:${"f".repeat(64)}`;
+      },
+    ],
+    [
+      "reservation with a bind mount",
+      "7",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.Binds = ["/tmp/fixture-source:/tmp/fixture-target:ro"];
+        reservation.Mounts = [
+          {
+            Type: "bind",
+            Source: "/tmp/fixture-source",
+            Destination: "/tmp/fixture-target",
+            RW: false,
+          },
+        ];
+      },
+    ],
+    [
+      "reservation with a published port",
+      "8",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.PortBindings = {
+          "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "15432" }],
+        };
+        reservation.NetworkSettings.Ports["5432/tcp"] = [
+          { HostIp: "127.0.0.1", HostPort: "15432" },
+        ];
+      },
+    ],
+    [
+      "privileged reservation",
+      "9",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.Privileged = true;
+      },
+    ],
+    [
+      "reservation with an added capability",
+      "a",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.CapAdd = ["SYS_ADMIN"];
+      },
+    ],
+    [
+      "reservation without no-new-privileges",
+      "b",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.SecurityOpt = [];
+      },
+    ],
+    [
+      "reservation with a command override",
+      "c",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Config.Cmd = ["postgres"];
+        reservation.Args = ["postgres"];
+      },
+    ],
+    [
+      "reservation with a user override",
+      "d",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Config.User = "0:0";
+      },
+    ],
+    [
+      "reservation with an injected secret environment binding",
+      "e",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Config.Env.push("DATABASE_URL=synthetic-denied");
+      },
+    ],
+    [
+      "reservation without its memory and pid limits",
+      "f",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.HostConfig.Memory = 0;
+        reservation.HostConfig.PidsLimit = 0;
+      },
+    ],
+  ]) {
+    await t.test(`${name} rejects before any effect`, async () => {
+      const fixture = await createContainmentHostFixture("backup");
+      try {
+        const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        mutate(state);
+        await writeFile(fixture.fakeStatePath, `${JSON.stringify(state)}\n`);
+        const { result, document } = runFixture(fixture, nonceCharacter.repeat(64));
+        assert.equal(result.status, 20, result.stdout);
+        assert.equal(document.marker.state, "absent");
+        assert.equal(document.mutations.unitsStopRequested, 0);
+        assert.equal(document.mutations.containersRestartFenced, 0);
+        assert.equal(document.mutations.containersStopped, 0);
+        assert.equal(document.mutations.reservationReconciled, 0);
+        const finalState = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        assert.equal(
+          finalState.operations.some((operation) =>
+            /^(?:systemctl:stop|docker:(?:update|stop|kill|rm|create|rename)):/u.test(operation),
+          ),
+          false,
+        );
+        assert.equal(
+          JSON.parse(
+            await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+          ).operation,
+          "backup",
+        );
+      } finally {
+        await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+      }
+    });
+  }
+
+  await t.test(
+    "an uncleared public listener fails with journal and containment fence preserved",
+    async () => {
+      const fixture = await createContainmentHostFixture("backup", { stickyListeners: true });
+      try {
+        const { result, document } = runFixture(fixture, "b".repeat(64));
+        assert.equal(result.status, 20, result.stdout);
+        assert.equal(document.result, "FAIL");
+        assert.equal(document.marker.state, "prepared");
+        assert.equal(document.mutations.journalCleared, 0);
+        assert.equal(document.mutations.unitsStopRequested, 5);
+        assert.equal(document.mutations.containersRestartFenced, 2);
+        assert.equal(document.mutations.containersStopped, 2);
+        assert.equal(document.mutations.reservationReconciled, 0);
+        assert.equal(
+          JSON.parse(
+            await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+          ).operation,
+          "backup",
+        );
+        const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        for (const service of ["worker", "caddy"]) {
+          const container = state.containers.find(
+            (candidate) => candidate.Config.Labels["com.docker.compose.service"] === service,
+          );
+          assert.equal(container.State.Running, false);
+          assert.equal(container.HostConfig.RestartPolicy.Name, "no");
+        }
+      } finally {
+        await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  for (const [killPoint, nonceCharacter, expectedResumeStops] of [
+    ["after_prepared", "6", 2],
+    ["after_units", "7", 2],
+    ["after_caddy", "8", 1],
+    ["after_worker", "9", 0],
+  ]) {
+    await t.test(`SIGKILL ${killPoint} resumes directly without replayed claims`, async () => {
+      const fixture = await createContainmentHostFixture("backup");
+      try {
+        const interrupted = invokeFixture(fixture, nonceCharacter.repeat(64), {
+          REFUNDDESK_CONTAINMENT_TEST_KILL_POINT: killPoint,
+        }).result;
+        assert.equal(interrupted.status, null);
+        assert.equal(interrupted.signal, "SIGKILL");
+        assert.equal(interrupted.stdout, "");
+        if (!traceRunner) assert.equal(interrupted.stderr, "");
+        const marker = JSON.parse(
+          await readFile(join(fixture.controlRoot, "containment-reconciliation.json"), "utf8"),
+        );
+        assert.equal(marker.state, "prepared");
+        assert.match(marker.admissionInvariantSha256, /^[0-9a-f]{64}$/u);
+        assert.equal(marker.containedStateSha256, null);
+        assert.equal(
+          JSON.parse(
+            await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+          ).operation,
+          "backup",
+        );
+
+        const resumed = runFixture(fixture, (15 - Number(nonceCharacter)).toString(16).repeat(64));
+        assert.equal(resumed.result.status, 0, resumed.result.stdout);
+        assert.equal(resumed.document.marker.resumedFromState, "prepared");
+        assert.equal(resumed.document.marker.state, "complete");
+        assert.equal(resumed.document.mutations.markerTransitions, 4);
+        assert.equal(resumed.document.mutations.journalCleared, 1);
+        assert.equal(resumed.document.mutations.reservationReconciled, 0);
+        assert.equal(resumed.document.mutations.unitsStopRequested, 5);
+        assert.equal(resumed.document.mutations.containersStopped, expectedResumeStops);
+        const state = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        assert.equal(
+          state.operations.filter((operation) => operation === "docker:stop:caddy").length,
+          1,
+        );
+        assert.equal(
+          state.operations.filter((operation) => operation === "docker:stop:worker").length,
+          1,
+        );
+      } finally {
+        await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+      }
+    });
+  }
+
+  await t.test(
+    "contained digest drift is rejected before effects while the journal remains",
+    async () => {
+      const fixture = await createContainmentHostFixture("backup");
+      try {
+        const interrupted = invokeFixture(fixture, "0".repeat(64), {
+          REFUNDDESK_CONTAINMENT_TEST_KILL_POINT: "after_contained_verified",
+        }).result;
+        assert.equal(interrupted.status, null);
+        assert.equal(interrupted.signal, "SIGKILL");
+        assert.equal(interrupted.stdout, "");
+        const marker = JSON.parse(
+          await readFile(join(fixture.controlRoot, "containment-reconciliation.json"), "utf8"),
+        );
+        assert.equal(marker.state, "contained_verified");
+        assert.match(marker.containedStateSha256, /^[0-9a-f]{64}$/u);
+        assert.equal(
+          JSON.parse(
+            await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+          ).operation,
+          "backup",
+        );
+
+        const driftedState = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        const driftedWorker = driftedState.containers.find(
+          (container) => container.Config.Labels["com.docker.compose.service"] === "worker",
+        );
+        driftedWorker.State.Status = "created";
+        const mutationPattern =
+          /^(?:systemctl:stop|docker:(?:update|stop|kill|rm|create|rename)):/u;
+        const mutationsBefore = driftedState.operations.filter((operation) =>
+          mutationPattern.test(operation),
+        );
+        await writeFile(fixture.fakeStatePath, `${JSON.stringify(driftedState)}\n`);
+
+        const rejected = runFixture(fixture, "1".repeat(64));
+        assert.equal(rejected.result.status, 20, rejected.result.stdout);
+        assert.equal(rejected.document.code, "CAPTURE_CHANGED");
+        assert.equal(rejected.document.marker.state, "contained_verified");
+        assert.equal(rejected.document.marker.resumedFromState, "contained_verified");
+        assert.equal(rejected.document.marker.journalPresentAtInvocationStart, true);
+        assert.equal(rejected.document.mutations.markerTransitions, 2);
+        assert.equal(rejected.document.mutations.journalCleared, 0);
+        assert.equal(rejected.document.mutations.unitsStopRequested, 0);
+        assert.equal(rejected.document.mutations.containersRestartFenced, 0);
+        assert.equal(rejected.document.mutations.containersStopped, 0);
+        assert.equal(rejected.document.mutations.reservationReconciled, 0);
+        const rejectedState = JSON.parse(await readFile(fixture.fakeStatePath, "utf8"));
+        assert.deepEqual(
+          rejectedState.operations.filter((operation) => mutationPattern.test(operation)),
+          mutationsBefore,
+        );
+        assert.equal(
+          JSON.parse(
+            await readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json"), "utf8"),
+          ).operation,
+          "backup",
+        );
+
+        rejectedState.containers.find(
+          (container) => container.Config.Labels["com.docker.compose.service"] === "worker",
+        ).State.Status = "exited";
+        await writeFile(fixture.fakeStatePath, `${JSON.stringify(rejectedState)}\n`);
+        const resumed = runFixture(fixture, "2".repeat(64));
+        assert.equal(resumed.result.status, 0, resumed.result.stdout);
+        assert.equal(resumed.document.marker.resumedFromState, "contained_verified");
+        assert.equal(resumed.document.marker.journalPresentAtInvocationStart, true);
+        assert.equal(resumed.document.marker.state, "complete");
+      } finally {
+        await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+      }
+    },
+  );
+
+  await t.test("fresh nonce resumes contained_verified after durable journal unlink", async () => {
+    const fixture = await createContainmentHostFixture("backup");
+    try {
+      const interrupted = runFixture(fixture, "c".repeat(64), {
+        REFUNDDESK_CONTAINMENT_TEST_ABORT_AFTER_CLEAR: "1",
+      });
+      assert.equal(interrupted.result.status, 21, interrupted.result.stdout);
+      assert.equal(interrupted.document.marker.state, "contained_verified");
+      assert.equal(interrupted.document.mutations.journalCleared, 1);
+      await assert.rejects(readFile(join(fixture.controlRoot, "runtime-quiesce-in-progress.json")));
+      const resumed = runFixture(fixture, "d".repeat(64));
+      assert.equal(resumed.result.status, 0, resumed.result.stdout);
+      assert.equal(resumed.document.marker.resumedFromState, "contained_verified");
+      assert.equal(resumed.document.marker.journalPresentAtInvocationStart, false);
+      assert.equal(resumed.document.marker.state, "complete");
+      assert.equal(resumed.document.mutations.markerTransitions, 4);
+    } finally {
+      await rm(fixture.temporaryDirectory, { force: true, recursive: true });
+    }
+  });
 });

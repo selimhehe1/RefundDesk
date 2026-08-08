@@ -352,6 +352,20 @@ operational drills remain deferred.
       `2026-08-08T12:52:17Z`; this closes the observation task with a point-in-time failure, not a
       current availability claim or authorization to repair, release, reopen ingress or run a
       financial proof.
+- [x] Implement the ADR 0035 exact-8da, stop-only successor for the unresolved quiescence journal.
+      The runner, exact schema/validator and local wrapper are bound to committed source and the
+      observed exact-8da host identities. They never repair the database-owner reservation, start a
+      service, open ingress, release a revision or call Stripe. The validator passes 29 cases, the
+      fake Windows transport contract passes, and the isolated Linux runner harness passes all 26
+      cases, including strict reservation falsifications, four forced-crash boundaries and
+      journal-retirement recovery. Bash parsing,
+      ShellCheck, PowerShell parsing, Prettier, ESLint and `git diff --check` pass. These were local,
+      network-disabled checks only; no AWS, SSH or Stripe call occurred.
+- [ ] Commit and publish the exact ADR 0035 source, obtain complete CI and a sandbox bundle for the
+      same SHA, capture a fresh ADR 0034 postflight with at least 720 seconds remaining, run or
+      safely resume the single contained reconciliation, and capture the final independent
+      `PASS/COHERENT_CONTAINED/PASS_CONTAINED` postflight. Until every step passes, the hosted
+      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator

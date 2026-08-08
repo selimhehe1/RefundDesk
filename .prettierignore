@@ -7,3 +7,5 @@ pnpm-lock.yaml
 packages/db/prisma/migrations
 scripts/invoke-lightsail-postflight.ps1
 scripts/invoke-lightsail-postflight.contract.Tests.ps1
+scripts/invoke-lightsail-containment-reconciliation.ps1
+scripts/invoke-lightsail-containment-reconciliation.contract.Tests.ps1

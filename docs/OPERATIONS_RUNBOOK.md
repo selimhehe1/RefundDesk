@@ -186,6 +186,50 @@ CloudFront origin identity, complete CI or bundle provenance. Even `PASS` cannot
 release, recovery, ingress reopening, worker/timer restart or financial proof. Apply ADR 0031,
 exact-SHA CI/bundle requirements, incident admission and separate authorization independently.
 
+### One-time exact-8da contained journal reconciliation
+
+ADR 0035 is the only permitted successor for the unresolved exact-8da quiescence journal. Do not
+invoke the normal quiescence-recovery service: it starts worker and Caddy and requires public
+verification through ports 80/443. The ADR 0035 path is stop-only and cannot release a revision,
+start a service, open ingress, enable live mode or call Stripe.
+
+Run it only from the exact committed and published revision whose complete CI and sandbox-bundle
+gates passed. Immediately beforehand, capture a fresh ADR 0032 postflight. The reconciliation
+wrapper requires at least 720 seconds of its 15-minute window to remain and admits only the exact
+initial six-diagnostic `COHERENT_RUNNING` observation or one of two modeled resume host postures:
+partial stop progress with the original journal, or an already retired journal. The latter
+postflight is not marker evidence by itself; the runner must additionally validate the exact
+successor marker. Then run from the repository root:
+
+```powershell
+pnpm sandbox:containment:reconcile -- -PreflightEvidencePath "<fresh-postflight.local.json>" -ExpectedSshCidr "<current-operator-public-ipv4>/32"
+```
+
+The wrapper pins worktree, index and `HEAD` bytes for both the ADR 0034 preflight chain and the ADR
+0035 runner/validator/schema/wrapper; it rechecks the exact AWS account, instance and firewall
+before and after the bounded SSH operation. The remote runner holds the operator lock exclusively,
+stops maintenance plus Caddy before worker, proves stable financial and core-runtime snapshots,
+and retires the journal only after a durable `contained_verified` marker. Both backup and retention
+require the existing stopped database-owner reservation to be exact; this successor never removes
+or recreates it and refuses every bootstrap, migrate or maintenance one-shot. Preserve the successor
+marker and do not fabricate or restore the old journal.
+
+Interpret status exactly:
+
+- `0`: a `PASS_CONTAINED_JOURNAL_CLEARED` reconciliation artifact was written;
+- `20`: a complete fail-closed `FAIL` artifact was written;
+- `21`: an `INCOMPLETE` artifact was written and durable state may require the modeled resume;
+- `1`: the local admission/transport/provenance envelope failed and no artifact is claimed.
+
+After every nonzero or ambiguous transport result, capture a new read-only postflight before any
+retry. After status `0`, immediately capture another postflight and require `PASS`, posture
+`COHERENT_CONTAINED`, code `PASS_CONTAINED`, closed/unchanged AWS ingress, live disabled, financial
+quiescence, worker/Caddy/timers stopped and no quiescence journal. This closes only the one host
+repair; it never authorizes release, ingress reopening, credential use or a financial proof.
+Record both evidence hashes and treat the one-shot as consumed after the wrapper `PASS` and final
+postflight `PASS`. Do not run it again except for the immediate modeled recovery of an ambiguous
+transport result.
+
 Build the three provider-neutral targets from the repository root on Linux:
 
 ```bash

@@ -177,7 +177,9 @@ const requiredCiFragments = [
   "- name: Check out the exact Windows event revision",
   "- name: Validate Windows postflight transport contracts",
   "node --test scripts/validate-lightsail-postflight.test.mjs",
+  "node --test scripts/validate-lightsail-containment-reconciliation.test.mjs",
   "scripts/invoke-lightsail-postflight.contract.Tests.ps1",
+  "scripts/invoke-lightsail-containment-reconciliation.contract.Tests.ps1",
 ];
 
 for (const fragment of requiredCiFragments) {
