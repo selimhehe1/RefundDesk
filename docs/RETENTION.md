@@ -100,12 +100,15 @@ exact active revision, leaves all five runtime services healthy and clears every
 transition/quiescence journal. Successful `OnFailure` recovery after a primary error is
 `FAIL_RECOVERED`, not retention evidence. See ADR 0015 and the operations runbook.
 
-Two read-only pre-final postflight diagnostics on 8 August observed both retention and backup
-timers active while a runtime quiescence journal was present. The same diagnostics observed no
-active financial workflow or guard, but they are not a final committed-source ADR 0032 capture and
-do not prove a successful timer invocation, retention execution or recoverable maintenance state.
-Do not start another maintenance operation or interpret current timer state as evidence until the
-final postflight is reviewed and a separate operational decision is made.
+The admissible read-only postflight on 8 August returned `FAIL` and observed both retention and
+backup timers active while a runtime quiescence journal was present. Its stable/quiescent financial
+snapshots contained no active financial workflow or guard, but timer state does not prove a
+successful invocation, retention execution or recoverable maintenance state. The artifact expired
+at `2026-08-08T12:52:17Z` and does not establish later state. Evidence is
+`sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. Do not start another
+maintenance operation or interpret the captured timer state as maintenance evidence without a
+separate operational decision and authorization.
 
 ## 6. Uninstallation lifecycle
 
@@ -175,8 +178,9 @@ Application users cannot create an indefinite hold through a free-text field. Le
 ## 10. Backups and local copies
 
 The authorized AWS test/sandbox contract uses a private versioned bucket and a daily cold-backup
-timer. Current execution state remains subject to the ADR 0032 postflight above. This is not a
-managed production backup service and it carries synthetic pilot data only.
+timer. The ADR 0032 postflight above recorded a point-in-time containment failure, not a backup or
+retention pass. This is not a managed production backup service and it carries synthetic pilot data
+only.
 
 Hosted backup rules:
 

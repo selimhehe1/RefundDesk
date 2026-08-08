@@ -7,29 +7,32 @@
 > Current delivery status: exact-e4 is the last admitted canonical hosted release. Its scheduled
 > cold backup and corrected disposable PostgreSQL 18 restore both passed; the earlier 31 July
 > attempt remains a distinct `FAIL_PRE_EFFECT_CLEANED`. ADR 0030 records later `8da280b7...`
-> release attempts, so the host is `HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` until the redacted
-> ADR 0032 postflight from final committed source resolves it. Two read-only pre-commit diagnostics
-> on 8 August observed `8da280b7...`, worker, Caddy and both maintenance timers active, internal TCP
-> listeners on ports 80/443 and a runtime quiescence journal. The AWS 80/443 firewall remained
-> closed and unchanged, live was disabled and the financial state was quiescent. Those captures used
-> pre-final tooling and are not admissible; the final HEAD-bound capture remains pending. Stripe App
-> financial direct-browser delivery remains `BLOCKED_TOOLING`.
+> release attempts. The admissible read-only postflight from clean HEAD `74b6da5...` captured active
+> revision `8da280b78a9d1475c7bd79063e72c5af77121e8d` at `2026-08-08T12:37:17Z` with result `FAIL`,
+> admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING` and remote code `CADDY_RUNNING`.
+> Worker, Caddy, both maintenance timers, internal TCP 80/443 listeners, two unexpected running
+> containers and a runtime quiescence journal violated containment. All five services were healthy;
+> the AWS 80/443 firewall was closed and unchanged, live was disabled and the financial state was
+> stable/quiescent. The capture expired at `12:52:17Z` and is point-in-time evidence, not proof of
+> later state. Stripe App financial direct-browser delivery remains `BLOCKED_TOOLING`.
 > Allowed environment: local + approved GitHub/AWS sandbox + Stripe test/managed sandbox
-> GitHub `main` is `20b9c55680d18ada448fdc2965830e4b10d0e990`; e4 is its ancestor, but no
-> exact GitHub artifact attestation is claimed for e4. The current release-branch HEAD
-> `9a170529d19afb252ccba2d69ab3c049a26f5c18` has no recorded exact full-CI plus attested-bundle
-> pair. Evidence remains revision-bound and is never transferred from an ancestor or another bundle.
+> Configured GitHub `main` and `release/sandbox-edge-2026-08-03` are
+> `9263d7075815b26e911efc8fe95deb665034798c`; e4 is their ancestor, but no exact GitHub artifact
+> attestation is claimed for e4. Implementation commit `e86241d1...` has the exact full-CI plus
+> attested-bundle pair recorded below. The later local postflight-source fixes `a96ce03...` and
+> `74b6da5...` do not inherit that pair. Evidence remains revision-bound and is never transferred
+> from an ancestor or another bundle.
 > Safety containment: ADR 0024 records `PASS_CONTAINED` for the 3 August exact-e4 replacement of the
 > exposed managed-sandbox read/effect and App-signing bindings. The two 1 August incident JSONs remain
 > initial `IN_PROGRESS_CONTAINED` records, not the final proof. ADR 0034 records that two independent
 > reviews of the nine corrected artifacts ended `NO_GO_REOPENING`; the consumed chain cannot admit
 > the historical outcome or support another transition. The normative containment requirement and
 > last admitted incident record have public Caddy, the worker, Lightsail 80/443 and maintenance
-> timers stopped, with live disabled. The preliminary diagnostics observed a divergent host service
-> posture but do not relax those requirements or establish an admitted current state.
+> timers stopped, with live disabled. The admitted postflight proves that the captured service
+> posture violated those requirements; its `FAIL` does not relax them or authorize remediation.
 > ADR 0029's historical public window is unadmitted under ADR 0031 and cannot authorize another.
-> Reopening or releasing is prohibited pending the ADR 0032 postflight, a tracked successor for any
-> future transition and a separate decision.
+> Repair, reopening, release and financial proof remain prohibited without the applicable tracked
+> successor and a separate authorization decision.
 > PostgreSQL integration, workspace verification, `pnpm audit:prod`, Lightsail contracts, all three
 > OCI targets and smokes, plus standalone Stripe App lint/build/test/audit passed.
 
@@ -324,13 +327,31 @@ operational drills remain deferred.
       Ignored redacted evidence is
       `sandbox-evidence.local/github/sandbox-bundle-e86241d1-2026-08-08.local.json`, SHA-256
       `79d58c399e2c7da0d04decc31842c09eb2cec67d71ed99ed55da8f80f5d885e5`.
-- [ ] Capture the final committed-HEAD host postflight. The first production-mode invocation from
-      clean commit `e86241d1...` failed locally with `AWS_CREDENTIAL_FILE_INVALID`: the default AWS
-      credential file has an unapproved inherited ACL. The guard ran before AWS or SSH and before
-      evidence creation; the two older diagnostic artifacts were unchanged. Do not weaken this guard,
-      copy credentials or infer any current host state. Restricting that external file's ACL requires
-      explicit operator approval, after which a fresh capture from the then-current committed HEAD is
-      still required.
+- [x] Capture the committed-HEAD read-only host postflight without mutating AWS or the host. The first
+      production-mode invocation failed closed on `AWS_CREDENTIAL_FILE_INVALID` before AWS, SSH or
+      evidence creation. After explicit approval, the default AWS credential file ACL was restricted
+      without reading credential bytes. Ignored evidence is
+      `sandbox-evidence.local/aws/aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
+      `0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`.
+      Revision `a96ce03...` fixed isolated HOME propagation and clean HEAD
+      `74b6da5742cd032204373d24006f0396d9c5ac0c` fixed only the OpenSSH child environment
+      (`HOME`, `USERPROFILE`, `PROGRAMDATA` plus guards); source provenance had already been
+      hardened. Relevant contracts, the 38-case Linux observer suite and `shellcheck` passed. The
+      admissible capture at
+      `2026-08-08T12:37:17Z` returned top-level `FAIL`, admission `ADMISSIBLE_READ_ONLY`, posture
+      `COHERENT_RUNNING`, remote code `CADDY_RUNNING` and exact diagnostics `CADDY_RUNNING`,
+      `MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_ACTIVE`, `UNEXPECTED_RUNNING_CONTAINER`,
+      `UNRESOLVED_JOURNAL`, `WORKER_RUNNING`. It observed active
+      `8da280b78a9d1475c7bd79063e72c5af77121e8d`, five healthy services, the AWS 80/443 firewall closed
+      and unchanged, live disabled and stable/quiescent financial snapshots. It also observed worker,
+      Caddy, both maintenance timers and internal TCP 80/443 listeners active, two unexpected
+      running containers (`unexpectedRunningContainerCount=2`) and the runtime quiescence journal.
+      Evidence is
+      `sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+      `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. The artifact expired at
+      `2026-08-08T12:52:17Z`; this closes the observation task with a point-in-time failure, not a
+      current availability claim or authorization to repair, release, reopen ingress or run a
+      financial proof.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator
@@ -373,8 +394,9 @@ operational drills remain deferred.
       ADR 0034 closes the independent-review task with `NO_GO_REOPENING`. Redacted evidence is
       `sandbox-evidence.local/aws/exact-e4-independent-static-review-2026-08-08.local.json`, SHA-256
       `613f868c80e52b834b7fe33594f590fea1990c52b155eef9dfcbaf9fc7b9fba2`.
-      Any future transition needs a new tracked successor; ingress still needs the ADR 0032
-      postflight and a separate reopening decision.
+      Any future transition needs a new tracked successor. The ADR 0032 postflight now has an
+      admitted `FAIL`; ingress still requires a separate reopening decision after explicitly
+      authorized remediation and every other gate.
       Initial incident record: `stripe-api-key-chat-exposure-2026-08-01.local.json`, SHA-256
       `791c2832500e59b5147e09add7d429e1c871f92e06f73432559156c0d22f9d2f`.
       Replacement managed-sandbox read/effect candidates then passed real read-only account/test
@@ -421,10 +443,10 @@ operational drills remain deferred.
       supersedes that historical outcome and the old frozen hashes after recording the completed
       `PASS_CONTAINED`; the one-time helper must not be executed again. ADR 0034's later independent
       review is `NO_GO_REOPENING`. Worker, Caddy, timers and ports 80/443 are required to remain
-      stopped pending the final committed-source current-host postflight, a tracked successor and a
-      separate reopening decision. The preliminary 8 August diagnostics observed that the service
-      posture violated this requirement while the AWS edge, live interlocks and financial state
-      remained closed/quiescent; they are not an admitted current-state record.
+      stopped pending a tracked successor where required and a separate reopening decision. The
+      admissible 8 August postflight proved that the captured service posture violated this
+      requirement while the AWS edge, live interlocks and financial state remained
+      closed/quiescent. Its `FAIL` is not authorization to repair or reopen.
 - [x] Complete the real managed-sandbox credential, object, webhook and cross-environment gate.
 
 ## Persistent hosted-sandbox autonomy checkpoint
@@ -630,8 +652,9 @@ controlled-browser financial App transport remains `BLOCKED_TOOLING`.
       `8da280b78a9d1475c7bd79063e72c5af77121e8d`; that is not complete CI and does not cover current
       HEAD `9a170529...`. The final candidate remains open until both workflows pass on the same
       exact SHA. ADR 0030's later host-release account conflicts with the e4 current-state claim;
-      no `8da...` deployment is admitted until the ADR 0032 postflight resolves that conflict. Do
-      not promote or redeploy either historical bundle or transfer evidence between revisions.
+      the ADR 0032 postflight resolved the metadata conflict only by observing `8da...` active at
+      capture time, while returning `FAIL`. It does not admit the `8da...` release. Do not promote or
+      redeploy either historical bundle or transfer evidence between revisions.
 
 Evidence:
 
@@ -679,16 +702,24 @@ Evidence:
 - `restore-e4cec060-2026-08-01.local.json`, SHA-256
   `951505c6b61ce77a4bc04645837e595e33c2b0a13543088913af4c153fc3acf3`, top-level result `PASS`;
   this is the admitted exact-e4 restore evidence and does not erase or relabel the 31 July failure.
+- `aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
+  `0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`; this records the explicitly
+  approved ACL-only remediation and no credential-byte read.
+- `host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+  `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`, top-level result `FAIL`,
+  admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING`; this expired point-in-time artifact
+  records containment divergence and authorizes no mutation.
 
 ## Commercial, live and Marketplace verdict
 
 Status: `NO_GO`.
 
 The historical `e4cec060...` backend passed its admitted controlled test/sandbox operational gates.
-That does not establish e4 as the active backend today: the host remains
-`HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` pending the final committed-source capture. This is
-not a complete financial pilot, a commercial v1.0, a live-mode authorization or a Marketplace
-submission. Keep `REFUNDDESK_GLOBAL_LIVE_ENABLED=false` and every tenant live switch false.
+That does not establish e4 as the active backend today. The admissible point-in-time postflight
+observed `8da280b7...` active but returned `FAIL`; its expiration prevents any inference about later
+host state. This is not a complete financial pilot, a commercial v1.0, a live-mode authorization or
+a Marketplace submission. Keep `REFUNDDESK_GLOBAL_LIVE_ENABLED=false` and every tenant live switch
+false.
 
 Before revisiting that verdict:
 

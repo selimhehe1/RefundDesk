@@ -69,15 +69,23 @@ never reuse an evidenced version for changed source.
 
 The last admitted canonical hosted release is immutable test/sandbox revision
 `e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`. ADR 0030 records later release attempts involving
-`8da280b7...`, but no admitted redacted postflight resolves whether any attempt committed. Treat the
-host state as `HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` under ADR 0032 and perform no release, recovery,
-ingress reopening or financial proof until that postflight is reviewed. Two read-only pre-commit
-diagnostics on 8 August observed revision `8da280b7...`, worker, Caddy and both maintenance timers
-active, internal TCP listeners on ports 80/443 and a runtime quiescence journal. They also observed
-the AWS 80/443 firewall closed and unchanged, live disabled and the financial state quiescent. The
-diagnostics used pre-final tooling and are not an admissible ADR 0032 postflight; the final
-committed-HEAD capture remains pending. The historical e4 release passed with five healthy services,
-closed journals, active timers and live disabled. The release performed one
+`8da280b7...`. The admissible read-only ADR 0032 postflight from clean HEAD
+`74b6da5742cd032204373d24006f0396d9c5ac0c` captured the host at `2026-08-08T12:37:17Z` with
+top-level `FAIL`, admission `ADMISSIBLE_READ_ONLY` and posture `COHERENT_RUNNING`. It observed active
+revision `8da280b78a9d1475c7bd79063e72c5af77121e8d`, all five services healthy, worker and Caddy
+running, backup and retention timers active, internal TCP listeners on ports 80/443, two unexpected
+running containers and a runtime quiescence journal. Remote code was
+`CADDY_RUNNING`; `unexpectedRunningContainerCount` was `2`; exact
+diagnostics were `CADDY_RUNNING`, `MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_ACTIVE`,
+`UNEXPECTED_RUNNING_CONTAINER`, `UNRESOLVED_JOURNAL` and `WORKER_RUNNING`. The AWS 80/443 firewall
+was closed and unchanged, live was disabled, and the financial snapshots were stable and
+quiescent. Evidence is
+`sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. It expired at
+`2026-08-08T12:52:17Z`; retain it as the authoritative point-in-time failure, not proof of later
+host state. Perform no repair, release, ingress reopening or financial proof without separate
+authorization. The historical e4 release passed with five healthy services, closed journals,
+active timers and live disabled. The release performed one
 bounded PostgreSQL container recreation because the canonical Compose project path changed, while
 preserving the PostgreSQL system identifier and every financial/audit count. A later scheduled
 retention invocation and scheduled cold backup both passed through the exact e4 Compose path; the
@@ -95,6 +103,15 @@ cleaned every disposable resource. Redacted evidence is
 attestation is claimed for e4. Do not repeat the restore or create a second paid verifier without
 new authorization.
 
+Before that admissible capture, the production wrapper failed closed on an unsafe inherited ACL for
+the default AWS credential file. Explicitly authorized ACL remediation changed only access control
+and never read credential bytes. Ignored evidence is
+`sandbox-evidence.local/aws/aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
+`0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`. The Windows child-process
+HOME isolation correction is revision `a96ce03...`; captured HEAD `74b6da5...` corrects only the
+OpenSSH child environment (`HOME`, `USERPROFILE`, `PROGRAMDATA` plus guards). Source provenance had
+already been hardened. Their relevant contracts passed before capture.
+
 On 1 August 2026 the then-current Stripe App signing secret was exposed in local diagnostic output after
 an ignored legacy configuration file was included in a broad search. Treat that secret as
 compromised and never reuse or retest its raw value. ADR 0024 records that the exact-e4 contained
@@ -107,19 +124,18 @@ historical outcome, but it prevents those artifacts from admitting it or support
 The 1 August incident JSON remains an initial `IN_PROGRESS_CONTAINED` record, not the final proof.
 The normative containment requirement and last admitted incident record have public Caddy, the
 worker, backup and retention timers and Lightsail ports 80/443 stopped, with live disabled. The
-preliminary 8 August diagnostics observed that the host service posture violated those requirements
-while the AWS edge, live interlocks and financial state remained closed/quiescent; they are not a
-final admitted current-state record. ADR 0029 records a later bounded public window, but ADR 0031 classifies its generic
-CloudFront allowlist as non-authenticating and the window as unadmitted hosted evidence. Do not
-restore any surface before the ADR 0032 postflight, a new tracked successor for any future
-transition, and a separate reopening decision.
+admissible 8 August postflight proved that the captured host service posture violated those
+requirements while the AWS edge, live interlocks and financial state remained closed/quiescent.
+ADR 0029 records a later bounded public window, but ADR 0031 classifies its generic CloudFront
+allowlist as non-authenticating and the window as unadmitted hosted evidence. Do not restore or
+change any surface without a new tracked successor where required and a separate decision.
 
 Later on 1 August 2026, the operator pasted one managed-sandbox restricted read key, one
 managed-sandbox restricted effect key and one full-access test secret into the conversation. Treat
 all three secret API credentials as compromised. The publishable test key shown with them is not a
 secret, but must not be mistaken for a server credential. The worker was stopped immediately and
-remains required to be stopped; the preliminary 8 August diagnostics observed it running, so do
-not report that requirement as currently satisfied. Redacted evidence is
+remains required to be stopped; the admissible 8 August postflight observed it running, so do not
+report that requirement as currently satisfied. Redacted evidence is
 `sandbox-evidence.local/aws/stripe-api-key-chat-exposure-2026-08-01.local.json`. Do not use, test,
 copy into tooling or redeploy any exposed value. ADR 0024 records a `PASS_CONTAINED` outcome under
 the ADR 0019 admission contract, which required Dashboard revocation/activity review and real
@@ -127,8 +143,7 @@ least-privilege proof of the replacement managed-sandbox read/effect bindings. T
 cleaned by design, and ADR 0034's independent review ended `NO_GO_REOPENING`, so ADR 0024 is not
 standalone retained evidence of those details. The 1 August JSON remains an initial
 `IN_PROGRESS_CONTAINED` record. Worker, Caddy, timers and public financial proofs are required to
-stay stopped until the final committed-source current-host postflight and a separate reopening
-decision; a diagnostic observation of divergence does not relax that requirement.
+stay stopped; the postflight `FAIL` does not relax that requirement or authorize remediation.
 
 An unintended `stripe apps list` later launched Stripe CLI authentication against the pinned
 platform test account and created one platform-test and one platform-live CLI key. Local logout
@@ -156,8 +171,8 @@ removed during the designed final cleanup. Do not substitute either 1 August inc
 final proof. Execution exposed eleven defects and required corrections to nine artifacts; ADR 0034
 records two independent static reviews and a chain-level `NO_GO_REOPENING`. The one-time helper is
 consumed and must not be installed, resumed or executed again. Preserve containment until a new
-tracked successor, the current-host postflight and a separate reopening decision; no evidence or
-authorization transfers to a later revision.
+tracked successor where required and a separate reopening decision; no evidence or authorization
+transfers to a later revision.
 
 Unpublished Stripe App `0.1.3` was uploaded from clean commit
 `c241a097fc5f4b8e8eaa2f057f9c7db40d9dffa3`, observed installed in a distinct test sandbox and

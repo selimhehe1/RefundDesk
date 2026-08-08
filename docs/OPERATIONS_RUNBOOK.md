@@ -115,17 +115,33 @@ customer data, another repository, production hosting, Stripe review or Marketpl
 Check cost before every temporary resource because an AWS Budget alert is not a hard cap.
 
 Exact-e4 is the last admitted canonical hosted release, but ADR 0030 records later release attempts
-involving `8da280b7...`. The host is `HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` until the redacted
-ADR 0032 postflight binds the host's metadata, containers, journals, fence and live interlocks. Do
-not release, recover containers, reopen ingress or run a financial proof while that state applies.
+involving `8da280b7...`. The clean-HEAD ADR 0032 postflight captured the host at
+`2026-08-08T12:37:17Z` with top-level `FAIL`, admission `ADMISSIBLE_READ_ONLY`, posture
+`COHERENT_RUNNING` and remote code `CADDY_RUNNING`. It observed active revision
+`8da280b78a9d1475c7bd79063e72c5af77121e8d`, all five services healthy, worker and public Caddy
+running, backup and retention timers active, internal TCP listeners on ports 80/443, two unexpected
+running containers (`unexpectedRunningContainerCount=2`) and a runtime quiescence journal. Exact
+diagnostics were `CADDY_RUNNING`,
+`MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_ACTIVE`, `UNEXPECTED_RUNNING_CONTAINER`,
+`UNRESOLVED_JOURNAL` and `WORKER_RUNNING`. The AWS 80/443 firewall stayed closed and unchanged,
+both live interlocks were false and the financial snapshots were stable and quiescent.
 
-Two read-only captures made on 8 August while the new postflight was still being hardened are
-diagnostic only. Both observed `8da280b7...`, worker and public Caddy running, backup and retention
-timers active, internal TCP listeners on ports 80/443 and a runtime quiescence journal. The AWS
-80/443 firewall stayed closed and unchanged, both live interlocks were false and the financial
-snapshots were quiescent. Because those captures predate the final source contract and a committed
-HEAD, they do not resolve ADR 0032 and must not be assigned a final evidence hash or admission
-status.
+The redacted ignored artifact is
+`sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. It was captured from HEAD
+`74b6da5742cd032204373d24006f0396d9c5ac0c` and expired at `2026-08-08T12:52:17Z`. Treat it as an
+authoritative point-in-time containment failure, not proof of later host state or permission to
+repair. Do not release, recover containers, reopen ingress or run a financial proof without
+separate authorization.
+
+The first production invocation had failed closed before AWS/SSH on the default credential file's
+inherited ACL. Explicitly approved remediation restricted only that ACL and did not read credential
+bytes. Ignored evidence is
+`sandbox-evidence.local/aws/aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
+`0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`. Revision `a96ce03...`
+corrected isolated HOME propagation; captured HEAD `74b6da5...` corrected only the OpenSSH child
+environment (`HOME`, `USERPROFILE`, `PROGRAMDATA` plus guards). Source provenance had already been
+hardened. The relevant contracts, 38 Linux observer cases and `shellcheck` passed.
 
 ### Read-only ADR 0032 postflight
 
@@ -351,9 +367,10 @@ The snapshot contained two pre-existing terminal test/sandbox workflows, no acti
 guard, no pending Refund, no unfinished attempt/correlation, no live tenant or installation and no
 active effect job.
 
-ADR 0030 records later attempts to promote `8da280b7...`, while no admitted redacted postflight
-resolves whether an attempt committed. Do not call either e4 or `8da280b7...` the current revision
-until ADR 0032 is complete.
+ADR 0030 records later attempts to promote `8da280b7...`. The admitted ADR 0032 postflight observed
+that revision active at capture time but returned `FAIL`; this resolves the metadata conflict only
+for that point in time and does not admit the release. Do not call e4 current or promote `8da...`
+from this observation.
 
 For every future candidate, the exact source SHA must pass both the complete CI workflow and the
 sandbox bundle workflow. Bundle provenance is a hard gate: if `actions/attest` fails, neither S3 nor
@@ -1012,12 +1029,12 @@ Incident state on 3 August 2026: `RESOLVED_CONTAINED_INGRESS_STILL_CLOSED`, repl
 `IN_PROGRESS_CONTAINED`. The exposed test/sandbox App signing secret was expired in the Stripe
 Dashboard, replaced, and the replacement proved in real use by the exact-e4 transition; the old raw
 secret was never retested. The recorded 3 August containment had public Caddy, worker, retention
-and backup timers and Lightsail ports 80/443 stopped, with live disabled. The pre-final 8 August
-diagnostics later observed the host service posture had diverged while the AWS 80/443 firewall and
-live interlocks remained closed; they are not a final ADR 0032 capture. **Reopening public ingress
-is still a separate decision.** ADR 0034 records that the two
-independent static reviews ended `NO_GO_REOPENING`; a new tracked successor, the ADR 0032
-current-host postflight and separate authorization are required. Evidence:
+and backup timers and Lightsail ports 80/443 stopped, with live disabled. The admitted 8 August
+postflight later proved the captured host service posture had diverged while the AWS 80/443
+firewall, live interlocks and financial state remained closed/quiescent. **Reopening public ingress
+is still a separate decision.** ADR 0034 records that the two independent static reviews ended
+`NO_GO_REOPENING`; a new tracked successor where applicable and separate authorization are
+required. Evidence:
 `sandbox-evidence.local/aws/stripe-app-signing-secret-exposure-2026-08-01.local.json`.
 That JSON retains its original `IN_PROGRESS_CONTAINED` result and is initial incident evidence, not
 the final 3 August proof recorded by ADR 0024.
@@ -1025,10 +1042,9 @@ the final 3 August proof recorded by ADR 0024.
 ADR 0029 records a later bounded ingress window, but ADR 0031 classifies it as unadmitted because
 the repository has no reconciled complete authorization/probe/containment artifact and the generic
 CloudFront CIDRs do not authenticate the expected distribution. The required and last recorded
-incident state is closed; the preliminary 8 August diagnostics instead signal divergence and do
-not establish a new admitted state. ADR 0034's review is `NO_GO_REOPENING`, and any new reopening
-remains prohibited pending a tracked successor, the final committed-source ADR 0032 postflight and
-a separate authorization decision.
+incident state is closed; the admitted 8 August postflight recorded a point-in-time containment
+`FAIL`. ADR 0034's review is `NO_GO_REOPENING`, and any new reopening remains prohibited pending a
+tracked successor where applicable and a separate authorization decision.
 
 **Rotate with an overlap, not a cutover.** Stripe documents one signing secret per App with a
 temporary overlap during rotation, so during that window a Dashboard extension request may arrive
@@ -1049,7 +1065,7 @@ procedure.
 
 A later conversation exposure on the same date included the managed-sandbox restricted read and
 effect keys and one full-access test secret. The worker was stopped for the recorded incident
-containment and is still required to be stopped; the preliminary 8 August diagnostics observed it
+containment and is still required to be stopped; the admitted 8 August postflight observed it
 running, so do not report that requirement as currently satisfied. Do not reuse or validate those
 raw values. ADR 0024 records `PASS_CONTAINED` under ADR 0019's
 Dashboard revocation/activity-review and replacement least-privilege admission contract. Its final

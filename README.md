@@ -15,14 +15,17 @@ publication remain disabled and unapproved. ADR 0024 records that the exposed ex
 managed-sandbox read/effect and App-signing bindings completed their replacement-only transition
 with `PASS_CONTAINED` on 3 August. ADR 0034 records that two independent reviews of its nine
 execution-time corrections ended `NO_GO_REOPENING`; this does not relabel the historical outcome,
-but the consumed chain cannot admit it or support a reopening. Two read-only pre-commit diagnostics
-on 8 August observed revision `8da280b7...`, public Caddy, the worker and both maintenance timers
-active, internal TCP listeners on ports 80/443 and a runtime quiescence journal. They also observed
-the AWS 80/443 firewall closed and unchanged, live disabled and the financial state quiescent. The
-diagnostics used pre-final tooling and are not an admissible ADR 0032 postflight; a committed,
-HEAD-bound capture remains pending. Evidence artifacts named below are redacted and retained
-locally under the ignored
-`sandbox-evidence.local/` directory; they are not committed to the repository.
+but the consumed chain cannot admit it or support a reopening. The admissible read-only postflight
+from clean HEAD `74b6da5742cd032204373d24006f0396d9c5ac0c` captured active revision
+`8da280b78a9d1475c7bd79063e72c5af77121e8d` at `2026-08-08T12:37:17Z` with top-level `FAIL`,
+admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING` and remote code `CADDY_RUNNING`.
+Worker, public Caddy, both maintenance timers and internal TCP 80/443 listeners were active; two
+unexpected running containers and a runtime quiescence journal were present. All five services were
+healthy, the AWS 80/443 firewall was closed and unchanged, live was disabled and the financial
+state was stable/quiescent. The artifact expired at `12:52:17Z`, so it is authoritative
+point-in-time failure evidence, not proof of later state. Evidence artifacts named below are
+redacted and retained locally under the ignored `sandbox-evidence.local/` directory; they are not
+committed to the repository.
 
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
@@ -83,7 +86,7 @@ PostgreSQL integration suites, build, secret scanning and dependency audits pass
 
 The current local hardening revision also replaces a Prisma sibling-relation load at the financial
 execution boundary with explicit sequential reads on the transaction client. Its full suite now
-passes 716 workspace tests and 29 PostgreSQL 18 integration tests; the latter cover the real
+passes 717 workspace tests and 29 PostgreSQL 18 integration tests; the latter cover the real
 adapter-pg boundary and the isolated queue capability, so neither an overlapping
 `pg.Client.query()` warning nor a worker-capable pg-boss login can be silently accepted. The exact
 standalone Stripe App graph separately passes 115 tests under its pinned pnpm 10.30.3 lockfile.
@@ -95,14 +98,19 @@ gate passed with no generated database or probe role left behind.
 
 Exact-e4 (`e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`) is the last revision with admitted
 canonical deployment evidence on the approved AWS Lightsail instance. ADR 0030 records later
-release attempts involving `8da280b7...`; the active state remains
-`HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` pending a final redacted ADR 0032 host postflight
-captured from committed source. The preliminary diagnostics above are strong evidence of a
-containment divergence but cannot be promoted into an admitted host-state record. Do not infer
-public health or complete release/Compose correctness from them. The implemented postflight is a
-point-in-time containment observer only; it cannot authorize release, recovery, ingress reopening,
-worker or maintenance restart, or a financial proof. Those operations also require the applicable
-tracked successor, exact CI and attested bundle where relevant, and a separate decision.
+release attempts involving `8da280b7...`; the admitted postflight observed that revision active at
+capture time but returned `FAIL`. Do not infer later host state, public health or complete
+release/Compose correctness from the expired artifact. The postflight is a point-in-time
+containment observer only; it cannot authorize release, recovery, ingress reopening, worker or
+maintenance restart, or a financial proof. Those operations also require the applicable tracked
+successor, exact CI and attested bundle where relevant, and a separate decision.
+
+The production wrapper initially failed closed on the default AWS credential file's inherited ACL.
+After explicit approval, the ACL was restricted without reading credential bytes. Evidence is
+`sandbox-evidence.local/aws/aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
+`0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`. The admitted postflight is
+`sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`.
 
 Web, worker and migration have separate configuration and database authority. Four distinct
 restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the

@@ -7,9 +7,9 @@
 > deauthorization replay, fresh App `0.1.4` installation/automatic authorization and exact
 > exact-e4 scheduled backup plus exact disposable restore passed. Direct Refund webhook evidence remains bound to
 > `42a1e4e...`, test-account lifecycle remains open, and direct financial controlled-browser
-> transport is `BLOCKED_TOOLING`. Two 8 August read-only diagnostics observed revision
-> `8da280b7...` with a divergent containment posture, but they used pre-final tooling and are not an
-> admissible ADR 0032 postflight. The final committed-source capture remains pending.
+> transport is `BLOCKED_TOOLING`. The admissible 8 August read-only postflight observed active
+> `8da280b7...` but returned `FAIL` with posture `COHERENT_RUNNING`; it authorizes no repair,
+> release, reopening or financial proof.
 
 ## 1. Rules of execution
 
@@ -513,28 +513,32 @@ then passed on 1 August 2026. Redacted evidence is
 `951505c6b61ce77a4bc04645837e595e33c2b0a13543088913af4c153fc3acf3`, top-level result `PASS`.
 
 This section is historical exact-e4 evidence only. ADR 0030 records later release attempts involving
-`8da280b7...`; neither e4 nor `8da280b7...` is admitted as the current hosted revision until the
-final committed-source ADR 0032 postflight resolves the host state.
+`8da280b7...`. The ADR 0032 postflight observed `8da...` active at capture time but returned `FAIL`,
+so it does not admit that release or establish later host state.
 ADR 0034's rotation review ended `NO_GO_REOPENING`; a tracked successor, real Refund edge states,
 App lifecycle/browser, live and commercial gates remain open.
 
-### 7.11 Read-only host postflight diagnostics — observed 2026-08-08
+### 7.11 Read-only host postflight — observed 2026-08-08
 
-| Gate                              | Preliminary observation                                                                                       | Result                             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Capture provenance                | Two captures ran before the final tooling contract and before a matching committed `HEAD`                     | `diagnostic_only_not_admissible`   |
-| Revision metadata                 | Both observations selected `8da280b7...`                                                                      | `observed_not_admitted`            |
-| Required stopped surfaces         | Worker, public Caddy, backup and retention timers were active                                                 | `divergent`                        |
-| Host listeners and journal        | Internal TCP 80/443 listeners and a runtime quiescence journal were present                                   | `divergent`                        |
-| AWS public edge                   | Lightsail ports 80/443 remained closed before and after each observation                                      | `observed_closed_unchanged`        |
-| Live and financial safety         | Both live interlocks were false and both financial snapshots were quiescent                                   | `observed_quiescent_not_admission` |
-| Final HEAD-bound postflight       | Requires the final observer, validator, wrapper and schema committed as one clean source revision             | `not_run_pending_commit`           |
-| Release/recovery/reopening effect | A diagnostic or future postflight result cannot itself authorize deployment, recovery, ingress or Stripe work | `not_authorized`                   |
+| Gate                              | Admissible observation                                                                                  | Result                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------- |
+| Capture provenance                | Clean HEAD `74b6da5742cd032204373d24006f0396d9c5ac0c`; captured `12:37:17Z`, expired `12:52:17Z`        | `ADMISSIBLE_READ_ONLY`      |
+| Overall host posture              | Top-level `FAIL`, posture `COHERENT_RUNNING`, remote code `CADDY_RUNNING`                               | `failed_operational`        |
+| Revision and health               | Active `8da280b78a9d1475c7bd79063e72c5af77121e8d`; all five services healthy                            | `observed_not_release_pass` |
+| Required stopped surfaces         | Worker, public Caddy, backup and retention timers were active                                           | `divergent`                 |
+| Host listeners and journal        | Internal TCP 80/443 listeners, two unexpected running containers and runtime quiescence journal present | `divergent`                 |
+| Exact diagnostics                 | Caddy, maintenance, listener, unexpected-containers, journal and worker diagnostics all present         | `six_fail_codes`            |
+| AWS public edge                   | Lightsail ports 80/443 remained closed before and after capture                                         | `observed_closed_unchanged` |
+| Live and financial safety         | Live disabled; financial snapshots stable and quiescent                                                 | `observed_quiescent`        |
+| Release/recovery/reopening effect | A postflight `FAIL` cannot authorize deployment, recovery, ingress or Stripe work                       | `not_authorized`            |
 
-These diagnostics are a fail-closed warning, not a transferable hosted gate. Do not assign them an
-evidence hash, call `8da280b7...` the admitted active release, or infer full Compose/release health.
-The implemented postflight observes only its modeled point-in-time containment fields; exact CI,
-attested bundle provenance, complete release admission, CloudFront origin identity, incident
+Exact diagnostics are `CADDY_RUNNING`, `MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_ACTIVE`,
+`UNEXPECTED_RUNNING_CONTAINER`, `UNRESOLVED_JOURNAL` and `WORKER_RUNNING`, with
+`unexpectedRunningContainerCount=2`. Redacted evidence is
+`sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. The expired artifact is
+point-in-time evidence only. It does not admit `8da...`, prove complete Compose/release health or
+authorize repair. Exact CI, attested bundle provenance, CloudFront origin identity, incident
 admission and separate authorization remain independent gates.
 
 ## 8. Verdict procedure

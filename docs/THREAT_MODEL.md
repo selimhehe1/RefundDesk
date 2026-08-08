@@ -254,11 +254,25 @@ The pilot explicitly accepts:
   attestation are implemented and locally tested but are not claimed as hosted until exact-revision
   CloudFront/Caddy traversal and a real Stripe source pass. The durable post-signature GCRA has
   exact PostgreSQL CI evidence but no changed-revision hosted signed-route proof;
-- two pre-final read-only host diagnostics observed `8da280b7...`, active worker/Caddy/maintenance,
-  internal TCP 80/443 listeners and a runtime quiescence journal while the AWS 80/443 firewall,
-  live interlocks and financial state remained closed/quiescent. They are a fail-closed signal,
-  not an admissible current-state artifact. The final committed-HEAD capture remains pending, and
-  even a future `PASS` will not substitute for complete release/Compose admission or authorization;
+- the committed-HEAD read-only host postflight is admissible and returned `FAIL` with posture
+  `COHERENT_RUNNING`. At `2026-08-08T12:37:17Z` it observed active `8da280b7...`, five healthy
+  services, worker/Caddy/maintenance and internal TCP 80/443 listeners active, two unexpected
+  running containers (`unexpectedRunningContainerCount=2`) and a runtime quiescence journal. The
+  AWS 80/443 firewall was closed and unchanged,
+  live was disabled and the financial state was stable/quiescent. Exact diagnostics were
+  `CADDY_RUNNING`, `MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_ACTIVE`,
+  `UNEXPECTED_RUNNING_CONTAINER`, `UNRESOLVED_JOURNAL` and `WORKER_RUNNING`. The evidence expired
+  fifteen minutes after capture and cannot establish later state or substitute for complete
+  release/Compose admission or authorization. Redacted evidence is
+  `sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
+  `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`;
+- the postflight wrapper's credential-file ACL precondition failed closed before AWS/SSH. An
+  explicitly approved ACL-only remediation read no credential bytes. Revision `a96ce03...` fixed
+  isolated HOME propagation; `74b6da5...` fixed only the OpenSSH child environment (`HOME`,
+  `USERPROFILE`, `PROGRAMDATA` plus guards), while source provenance was already hardened. The
+  relevant contracts passed before the admitted capture.
+  Redacted ACL evidence has SHA-256
+  `0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`;
 - key rotation and compromise drills are partly closed. The exact-e4 replacement transition ran to
   `PASS_CONTAINED` on 3 August 2026 and proved the managed-sandbox read key, the managed-sandbox
   effect key and the App signing secret in real use; field encryption, proof HMAC, approval
