@@ -302,6 +302,33 @@ public static class RefundDeskPostflightFake
         return names.Any(name => Environment.GetEnvironmentVariable(name) != null);
     }
 
+    private static string ExpectedAwsHome()
+    {
+        string template = Environment.GetEnvironmentVariable("REFUNDDESK_POSTFLIGHT_FAKE_REMOTE_TEMPLATE");
+        return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(template), "evidence"));
+    }
+
+    private static bool AwsHomeContainsDotAws(string home)
+    {
+        return Directory.GetFileSystemEntries(home)
+            .Any(path => String.Equals(Path.GetFileName(path), ".aws", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool AwsEnvironmentClosed()
+    {
+        HashSet<string> allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "SystemRoot", "WINDIR", "PATH", "LC_ALL", "TZ", "HOME", "USERPROFILE",
+            "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_DEFAULT_REGION", "AWS_REGION",
+            "AWS_EC2_METADATA_DISABLED", "AWS_CLI_AUTO_PROMPT", "AWS_PAGER",
+            "REFUNDDESK_POSTFLIGHT_FAKE_MODE", "REFUNDDESK_POSTFLIGHT_FAKE_REMOTE_TEMPLATE",
+            "REFUNDDESK_POSTFLIGHT_FAKE_STATE"
+        };
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
+            if (!allowed.Contains((string)entry.Key)) return false;
+        }
+        return true;
+    }
+
     public static int Main(string[] args)
     {
         string executable = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).ToLowerInvariant();
@@ -313,13 +340,22 @@ public static class RefundDeskPostflightFake
     private static int RunAws(string[] args)
     {
         string credentialPath = Environment.GetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE");
-        if (String.IsNullOrEmpty(credentialPath) || Path.GetFileName(credentialPath) != "aws-credentials.fixture" || !File.Exists(credentialPath)) return 80;
+        if (String.IsNullOrEmpty(credentialPath) || !Path.IsPathRooted(credentialPath) || Path.GetFileName(credentialPath) != "aws-credentials.fixture" || !File.Exists(credentialPath)) return 80;
         if (Environment.GetEnvironmentVariable("AWS_CONFIG_FILE") != "NUL") return 81;
         if (Environment.GetEnvironmentVariable("AWS_REGION") != "eu-west-3" || Environment.GetEnvironmentVariable("AWS_DEFAULT_REGION") != "eu-west-3") return 82;
         if (Environment.GetEnvironmentVariable("AWS_EC2_METADATA_DISABLED") != "true" || Environment.GetEnvironmentVariable("AWS_CLI_AUTO_PROMPT") != "off") return 83;
         if (PoisonEnvironmentPresent()) return 84;
+        string home = Environment.GetEnvironmentVariable("HOME");
+        if (String.IsNullOrEmpty(home) || home != ExpectedAwsHome() || Environment.GetEnvironmentVariable("USERPROFILE") != home) return 86;
+        if (AwsHomeContainsDotAws(home) || !AwsEnvironmentClosed()) return 87;
         int regionIndex = Array.IndexOf(args, "--region");
         if (regionIndex < 0 || regionIndex + 1 >= args.Length || args[regionIndex + 1] != "eu-west-3") return 85;
+        if (Mode == "aws-home-create") {
+            string state = Environment.GetEnvironmentVariable("REFUNDDESK_POSTFLIGHT_FAKE_STATE");
+            int invocation = File.Exists(state) ? Int32.Parse(File.ReadAllText(state)) + 1 : 1;
+            File.WriteAllText(state, invocation.ToString());
+            if (invocation == 6) Directory.CreateDirectory(Path.Combine(home, ".aws"));
+        }
         if (Mode == "aws-oversize") {
             Console.Out.Write(new string('A', 300000));
             return 0;
@@ -476,6 +512,27 @@ public static class RefundDeskPostflightFake
         Assert-Contract -Condition ($invalidCidr.Stderr -ceq ("postflight-capture-error:{0}`r`n" -f $invalidCidrCase.Code)) -Code "invalid-cidr-safe-error"
     }
 
+    $dotAwsPath = Join-Path $evidenceDirectory ".aws"
+    [IO.Directory]::CreateDirectory($dotAwsPath) | Out-Null
+    $preexistingHomeEvidence = Join-Path $evidenceDirectory "preexisting-aws-home.json"
+    $preexistingHome = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $preexistingHomeEvidence -TemplatePath $templatePath -Mode "pass" -StatePath $statePath
+    Assert-Contract -Condition ($preexistingHome.ExitCode -eq 1) -Code "preexisting-aws-home-exit"
+    Assert-Contract -Condition (-not [IO.File]::Exists($preexistingHomeEvidence)) -Code "preexisting-aws-home-evidence"
+    Assert-Contract -Condition ($preexistingHome.Stderr -ceq "postflight-capture-error:AWS_HOME_NOT_ISOLATED`r`n") -Code "preexisting-aws-home-safe-error"
+    [IO.Directory]::Delete($dotAwsPath, $false)
+
+    if ([IO.File]::Exists($statePath)) {
+        [IO.File]::Delete($statePath)
+    }
+    $createdHomeEvidence = Join-Path $evidenceDirectory "created-aws-home.json"
+    $createdHome = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $createdHomeEvidence -TemplatePath $templatePath -Mode "aws-home-create" -StatePath $statePath
+    Assert-Contract -Condition ($createdHome.ExitCode -eq 1) -Code "created-aws-home-exit"
+    Assert-Contract -Condition (-not [IO.File]::Exists($createdHomeEvidence)) -Code "created-aws-home-evidence"
+    Assert-Contract -Condition ($createdHome.Stderr -ceq "postflight-capture-error:AWS_HOME_NOT_ISOLATED`r`n") -Code "created-aws-home-safe-error"
+    Assert-Contract -Condition ([IO.Directory]::Exists($dotAwsPath)) -Code "created-aws-home-missing"
+    [IO.Directory]::Delete($dotAwsPath, $false)
+    [IO.File]::Delete($statePath)
+
     $passEvidence = Join-Path $evidenceDirectory "pass.json"
     $pass = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $passEvidence -TemplatePath $templatePath -Mode "pass" -StatePath $statePath
     Assert-Contract -Condition ($pass.ExitCode -eq 0) -Code "pass-exit"
@@ -610,6 +667,9 @@ public static class RefundDeskPostflightFake
         "9a4eb5f1c29c6a2e93852ead46b999e284a6a5ca8bab4d4e241d587d025a52de",
         "5385ff9ae361ca41e7a31b335fc0d81f2de9c35fc62a165c5e34850d837b59cc",
         "GIT_NO_REPLACE_OBJECTS",
+        "Assert-IsolatedAwsHome",
+        '$values["HOME"] = $AwsHomePath',
+        '$values["USERPROFILE"] = $AwsHomePath',
         "VALIDATOR_PROVENANCE_MISMATCH",
         "EVIDENCE_ACL_FAILED",
         "Assert-ExactFirewallClosed",

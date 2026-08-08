@@ -1000,10 +1000,35 @@ function Write-EvidenceCreateNew {
     }
 }
 
+function Assert-IsolatedAwsHome {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $FailureCode
+    )
+
+    try {
+        $canonical = Assert-SecureDirectory -Path $Path -FailureCode $FailureCode
+        $directory = [IO.DirectoryInfo]::new($canonical)
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            if ([string]::Equals($entry.Name, ".aws", [StringComparison]::OrdinalIgnoreCase)) {
+                Throw-SafeError $FailureCode
+            }
+        }
+        return $canonical
+    }
+    catch {
+        if ($_.Exception.Message -match "^REFUNDDESK_") {
+            throw
+        }
+        Throw-SafeError $FailureCode
+    }
+}
+
 function New-ChildEnvironment {
     param(
         [Parameter(Mandatory = $true)][ValidateSet("AWS", "SSH", "NODE")][string] $Kind,
         [Parameter()][string] $AwsCredentialPath,
+        [Parameter()][string] $AwsHomePath,
         [Parameter()][Collections.IDictionary] $FixtureValues
     )
 
@@ -1015,9 +1040,16 @@ function New-ChildEnvironment {
         TZ = "UTC"
     }
     if ($Kind -ceq "AWS") {
-        if ([string]::IsNullOrWhiteSpace($AwsCredentialPath)) {
+        if (
+            [string]::IsNullOrWhiteSpace($AwsCredentialPath) -or
+            [string]::IsNullOrWhiteSpace($AwsHomePath) -or
+            -not [IO.Path]::IsPathRooted($AwsCredentialPath) -or
+            -not [IO.Path]::IsPathRooted($AwsHomePath)
+        ) {
             Throw-SafeError "AWS_CREDENTIAL_FILE_INVALID"
         }
+        $values["HOME"] = $AwsHomePath
+        $values["USERPROFILE"] = $AwsHomePath
         $values["AWS_SHARED_CREDENTIALS_FILE"] = $AwsCredentialPath
         $values["AWS_CONFIG_FILE"] = "NUL"
         $values["AWS_DEFAULT_REGION"] = $ExpectedAwsRegion
@@ -1143,7 +1175,8 @@ try {
         $gitExecutableSha256 = $PinnedGitSha256
     }
 
-    $awsEnvironment = New-ChildEnvironment -Kind "AWS" -AwsCredentialPath $awsCredentialPath -FixtureValues $fixtureEnvironmentValues
+    $awsHomePath = Assert-IsolatedAwsHome -Path $evidenceParent -FailureCode "AWS_HOME_NOT_ISOLATED"
+    $awsEnvironment = New-ChildEnvironment -Kind "AWS" -AwsCredentialPath $awsCredentialPath -AwsHomePath $awsHomePath -FixtureValues $fixtureEnvironmentValues
     $sshEnvironment = New-ChildEnvironment -Kind "SSH" -FixtureValues $fixtureEnvironmentValues
     $nodeEnvironment = New-ChildEnvironment -Kind "NODE"
     $nonce = Get-RandomNonce
@@ -1198,6 +1231,7 @@ try {
     $identityAfter = Get-AwsIdentity -AwsExecutable $awsExecutable -AwsExecutableSha256 $awsExecutableSha256 -AwsEnvironment $awsEnvironment -TimeoutSeconds $awsTimeout
     $instanceAfter = Get-AwsInstance -AwsExecutable $awsExecutable -AwsExecutableSha256 $awsExecutableSha256 -AwsEnvironment $awsEnvironment -TimeoutSeconds $awsTimeout
     $firewallAfter = Get-AwsFirewall -AwsExecutable $awsExecutable -AwsExecutableSha256 $awsExecutableSha256 -AwsEnvironment $awsEnvironment -ExpectedSshCidr $expectedSshCidrValue -TimeoutSeconds $awsTimeout
+    [void] (Assert-IsolatedAwsHome -Path $awsHomePath -FailureCode "AWS_HOME_NOT_ISOLATED")
 
     if ($null -ne $sshResult.FailureCode) {
         Throw-SafeError $sshResult.FailureCode
