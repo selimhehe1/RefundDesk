@@ -306,9 +306,31 @@ operational drills remain deferred.
       mappings now match their explicit deployed foreign-key names with an empty migration diff. The
       concurrent limiter harness serializes calls per `pg.Client` while keeping eight clients
       parallel. Integration promotes every Node deprecation to an error, and patched transitives
-      remain pinned at `fast-uri 3.1.5` and `nanoid 3.3.17`. These are local gates only. No final
-      HEAD-bound host capture, remote CI result, attested bundle, release delivery, AWS mutation or
-      Stripe action is claimed here.
+      remain pinned at `fast-uri 3.1.5` and `nanoid 3.3.17`. These are local gates; no host capture,
+      release, AWS mutation or Stripe action is claimed by them.
+- [x] Publish implementation commit `e86241d1f1097c2e9018ed4628bdfe1f975ab6c6` atomically to the
+      configured `main` and `release/sandbox-edge-2026-08-03` refs, then close both exact-revision
+      GitHub gates. CI run `31255267222` passed its complete Linux `verify` job and the Windows
+      postflight contract job. Ignored redacted evidence is
+      `sandbox-evidence.local/github/ci-e86241d1-2026-08-08.local.json`, SHA-256
+      `42585a4da65965c28fb2aba5012ff37a32abce078fdac4f6eaec6a742649540f`.
+- [x] Complete sandbox bundle run `31255272748` for the same exact revision. Provenance creation and
+      its hard gate passed; the repository has no configured private-bucket secret, so the S3 step
+      was skipped and one-day GitHub artifact `9021236979` was uploaded instead. The downloaded
+      five-file set, both companion hashes, both Zstandard archives, the strict manifest and both
+      GitHub attestations were independently verified. The image bundle SHA-256 is
+      `5c4fcc688c34840a2bdddd3687e900ff8f79c32ed52995bb3e3e9f4286048edb`; the operator-source bundle
+      SHA-256 is `ce95bd84ee62df274cfe3c179abe7ec2c94db42f2db88fa05be01891ed095d8f`.
+      Ignored redacted evidence is
+      `sandbox-evidence.local/github/sandbox-bundle-e86241d1-2026-08-08.local.json`, SHA-256
+      `79d58c399e2c7da0d04decc31842c09eb2cec67d71ed99ed55da8f80f5d885e5`.
+- [ ] Capture the final committed-HEAD host postflight. The first production-mode invocation from
+      clean commit `e86241d1...` failed locally with `AWS_CREDENTIAL_FILE_INVALID`: the default AWS
+      credential file has an unapproved inherited ACL. The guard ran before AWS or SSH and before
+      evidence creation; the two older diagnostic artifacts were unchanged. Do not weaken this guard,
+      copy credentials or infer any current host state. Restricting that external file's ACL requires
+      explicit operator approval, after which a fresh capture from the then-current committed HEAD is
+      still required.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator
