@@ -329,6 +329,29 @@ public static class RefundDeskPostflightFake
         return true;
     }
 
+    private static bool SshHomeContainsForbiddenEntry(string home)
+    {
+        return Directory.GetFileSystemEntries(home)
+            .Any(path => {
+                string name = Path.GetFileName(path);
+                return String.Equals(name, ".ssh", StringComparison.OrdinalIgnoreCase) ||
+                    String.Equals(name, "ssh", StringComparison.OrdinalIgnoreCase);
+            });
+    }
+
+    private static bool SshEnvironmentClosed()
+    {
+        HashSet<string> allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "SystemRoot", "WINDIR", "PATH", "LC_ALL", "TZ", "HOME", "USERPROFILE", "PROGRAMDATA",
+            "REFUNDDESK_POSTFLIGHT_FAKE_MODE", "REFUNDDESK_POSTFLIGHT_FAKE_REMOTE_TEMPLATE",
+            "REFUNDDESK_POSTFLIGHT_FAKE_STATE"
+        };
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
+            if (!allowed.Contains((string)entry.Key)) return false;
+        }
+        return true;
+    }
+
     public static int Main(string[] args)
     {
         string executable = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).ToLowerInvariant();
@@ -397,6 +420,10 @@ public static class RefundDeskPostflightFake
     {
         if (PoisonEnvironmentPresent()) return 97;
         if (Environment.GetEnvironmentVariable("AWS_SHARED_CREDENTIALS_FILE") != null || Environment.GetEnvironmentVariable("AWS_CONFIG_FILE") != null) return 98;
+        string home = Environment.GetEnvironmentVariable("HOME");
+        if (String.IsNullOrEmpty(home) || home != ExpectedAwsHome()) return 76;
+        if (Environment.GetEnvironmentVariable("USERPROFILE") != home || Environment.GetEnvironmentVariable("PROGRAMDATA") != home) return 77;
+        if (SshHomeContainsForbiddenEntry(home) || !SshEnvironmentClosed()) return 78;
         using (MemoryStream input = new MemoryStream()) {
             Console.OpenStandardInput().CopyTo(input);
             byte[] bytes = input.ToArray();
@@ -423,6 +450,9 @@ public static class RefundDeskPostflightFake
         if (args.Length < tail.Length || !args.Skip(args.Length - tail.Length).SequenceEqual(tail)) return 95;
         string nonce = args.Length == 0 ? "" : args[args.Length - 1];
         if (!Regex.IsMatch(nonce, "^[0-9a-f]{64}$")) return 94;
+        if (Mode == "ssh-home-create") {
+            Directory.CreateDirectory(Path.Combine(home, ".ssh"));
+        }
         if (Mode == "timeout") {
             Thread.Sleep(10000);
             return 0;
@@ -532,6 +562,40 @@ public static class RefundDeskPostflightFake
     Assert-Contract -Condition ([IO.Directory]::Exists($dotAwsPath)) -Code "created-aws-home-missing"
     [IO.Directory]::Delete($dotAwsPath, $false)
     [IO.File]::Delete($statePath)
+
+    foreach ($forbiddenSshHomeCase in @(
+        [pscustomobject]@{ Name = ".SsH"; Directory = $true; Label = "dot-ssh" },
+        [pscustomobject]@{ Name = "SsH"; Directory = $false; Label = "ssh" }
+    )) {
+        $forbiddenSshHomeName = $forbiddenSshHomeCase.Name
+        $forbiddenSshHomePath = Join-Path $evidenceDirectory $forbiddenSshHomeName
+        if ($forbiddenSshHomeCase.Directory) {
+            [IO.Directory]::CreateDirectory($forbiddenSshHomePath) | Out-Null
+        }
+        else {
+            [IO.File]::WriteAllText($forbiddenSshHomePath, "fixture", [Text.UTF8Encoding]::new($false))
+        }
+        $preexistingSshHomeEvidence = Join-Path $evidenceDirectory ("preexisting-ssh-home-{0}.json" -f $forbiddenSshHomeCase.Label)
+        $preexistingSshHome = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $preexistingSshHomeEvidence -TemplatePath $templatePath -Mode "pass" -StatePath $statePath
+        Assert-Contract -Condition ($preexistingSshHome.ExitCode -eq 1) -Code ("preexisting-ssh-home-exit-{0}" -f $forbiddenSshHomeName)
+        Assert-Contract -Condition (-not [IO.File]::Exists($preexistingSshHomeEvidence)) -Code ("preexisting-ssh-home-evidence-{0}" -f $forbiddenSshHomeName)
+        Assert-Contract -Condition ($preexistingSshHome.Stderr -ceq "postflight-capture-error:SSH_HOME_NOT_ISOLATED`r`n") -Code ("preexisting-ssh-home-safe-error-{0}" -f $forbiddenSshHomeName)
+        if ($forbiddenSshHomeCase.Directory) {
+            [IO.Directory]::Delete($forbiddenSshHomePath, $false)
+        }
+        else {
+            [IO.File]::Delete($forbiddenSshHomePath)
+        }
+    }
+
+    $createdSshHomeEvidence = Join-Path $evidenceDirectory "created-ssh-home.json"
+    $createdSshHome = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $createdSshHomeEvidence -TemplatePath $templatePath -Mode "ssh-home-create" -StatePath $statePath
+    Assert-Contract -Condition ($createdSshHome.ExitCode -eq 1) -Code "created-ssh-home-exit"
+    Assert-Contract -Condition (-not [IO.File]::Exists($createdSshHomeEvidence)) -Code "created-ssh-home-evidence"
+    Assert-Contract -Condition ($createdSshHome.Stderr -ceq "postflight-capture-error:SSH_HOME_NOT_ISOLATED`r`n") -Code "created-ssh-home-safe-error"
+    $createdDotSshPath = Join-Path $evidenceDirectory ".ssh"
+    Assert-Contract -Condition ([IO.Directory]::Exists($createdDotSshPath)) -Code "created-ssh-home-missing"
+    [IO.Directory]::Delete($createdDotSshPath, $false)
 
     $passEvidence = Join-Path $evidenceDirectory "pass.json"
     $pass = Invoke-WrapperFixture -PowerShellExecutable $powerShellExecutable -WrapperPath $wrapperPath -ToolDirectory $toolDirectory -EvidencePath $passEvidence -TemplatePath $templatePath -Mode "pass" -StatePath $statePath
@@ -668,8 +732,12 @@ public static class RefundDeskPostflightFake
         "5385ff9ae361ca41e7a31b335fc0d81f2de9c35fc62a165c5e34850d837b59cc",
         "GIT_NO_REPLACE_OBJECTS",
         "Assert-IsolatedAwsHome",
+        "Assert-IsolatedSshHome",
         '$values["HOME"] = $AwsHomePath',
         '$values["USERPROFILE"] = $AwsHomePath',
+        '$values["HOME"] = $SshHomePath',
+        '$values["USERPROFILE"] = $SshHomePath',
+        '$values["PROGRAMDATA"] = $SshHomePath',
         "VALIDATOR_PROVENANCE_MISMATCH",
         "EVIDENCE_ACL_FAILED",
         "Assert-ExactFirewallClosed",

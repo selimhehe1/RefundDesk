@@ -1024,11 +1024,39 @@ function Assert-IsolatedAwsHome {
     }
 }
 
+function Assert-IsolatedSshHome {
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][string] $FailureCode
+    )
+
+    try {
+        $canonical = Assert-SecureDirectory -Path $Path -FailureCode $FailureCode
+        $directory = [IO.DirectoryInfo]::new($canonical)
+        foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+            if (
+                [string]::Equals($entry.Name, ".ssh", [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals($entry.Name, "ssh", [StringComparison]::OrdinalIgnoreCase)
+            ) {
+                Throw-SafeError $FailureCode
+            }
+        }
+        return $canonical
+    }
+    catch {
+        if ($_.Exception.Message -match "^REFUNDDESK_") {
+            throw
+        }
+        Throw-SafeError $FailureCode
+    }
+}
+
 function New-ChildEnvironment {
     param(
         [Parameter(Mandatory = $true)][ValidateSet("AWS", "SSH", "NODE")][string] $Kind,
         [Parameter()][string] $AwsCredentialPath,
         [Parameter()][string] $AwsHomePath,
+        [Parameter()][string] $SshHomePath,
         [Parameter()][Collections.IDictionary] $FixtureValues
     )
 
@@ -1057,6 +1085,14 @@ function New-ChildEnvironment {
         $values["AWS_EC2_METADATA_DISABLED"] = "true"
         $values["AWS_CLI_AUTO_PROMPT"] = "off"
         $values["AWS_PAGER"] = ""
+    }
+    elseif ($Kind -ceq "SSH") {
+        if ([string]::IsNullOrWhiteSpace($SshHomePath) -or -not [IO.Path]::IsPathRooted($SshHomePath)) {
+            Throw-SafeError "SSH_HOME_NOT_ISOLATED"
+        }
+        $values["HOME"] = $SshHomePath
+        $values["USERPROFILE"] = $SshHomePath
+        $values["PROGRAMDATA"] = $SshHomePath
     }
     elseif ($Kind -ceq "NODE") {
         $values["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -1176,8 +1212,9 @@ try {
     }
 
     $awsHomePath = Assert-IsolatedAwsHome -Path $evidenceParent -FailureCode "AWS_HOME_NOT_ISOLATED"
+    $sshHomePath = Assert-IsolatedSshHome -Path $evidenceParent -FailureCode "SSH_HOME_NOT_ISOLATED"
     $awsEnvironment = New-ChildEnvironment -Kind "AWS" -AwsCredentialPath $awsCredentialPath -AwsHomePath $awsHomePath -FixtureValues $fixtureEnvironmentValues
-    $sshEnvironment = New-ChildEnvironment -Kind "SSH" -FixtureValues $fixtureEnvironmentValues
+    $sshEnvironment = New-ChildEnvironment -Kind "SSH" -SshHomePath $sshHomePath -FixtureValues $fixtureEnvironmentValues
     $nodeEnvironment = New-ChildEnvironment -Kind "NODE"
     $nonce = Get-RandomNonce
     $localStartedAt = Get-UtcTimestamp
@@ -1227,6 +1264,7 @@ try {
         -MaximumStdoutBytes $MaximumSshOutputBytes `
         -MaximumStderrBytes $MaximumDiagnosticBytes
     $remoteNotAfter = Get-UtcTimestamp
+    [void] (Assert-IsolatedSshHome -Path $sshHomePath -FailureCode "SSH_HOME_NOT_ISOLATED")
 
     $identityAfter = Get-AwsIdentity -AwsExecutable $awsExecutable -AwsExecutableSha256 $awsExecutableSha256 -AwsEnvironment $awsEnvironment -TimeoutSeconds $awsTimeout
     $instanceAfter = Get-AwsInstance -AwsExecutable $awsExecutable -AwsExecutableSha256 $awsExecutableSha256 -AwsEnvironment $awsEnvironment -TimeoutSeconds $awsTimeout
