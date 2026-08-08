@@ -2908,6 +2908,16 @@ test("one-shot database jobs reserve one global name without retaining secrets",
   assert.match(reservationTest, /volume_inventory/u);
   assert.match(reservationTest, /leaked an anonymous Docker volume/u);
   assert.match(reservationTest, /docker rm --force --volumes/u);
+  assert.match(reservationTest, /\.Config\.AttachStdin == false/u);
+  assert.match(reservationTest, /\.Config\.AttachStdout == true/u);
+  assert.match(reservationTest, /\.Config\.AttachStderr == true/u);
+  assert.match(reservationTest, /\.Config\.Tty == false/u);
+  assert.match(reservationTest, /\.Config\.OpenStdin == false/u);
+  assert.match(reservationTest, /\.Config\.StdinOnce == false/u);
+  assert.match(
+    reservationTest,
+    /docker inspect -- "\$\{REFUNDDESK_DATABASE_OWNER_JOB_NAME\}" \|[\s\S]*jq --exit-status[\s\S]*>\/dev\/null/u,
+  );
   assert.match(reservationTest, /docker create \\\n\s+--pull=never/u);
   assert.match(common, /\.State\.ExitCode == 0/u);
   assert.match(common, /\(\.\[0\]\.State\.Error \/\/ ""\) == ""/u);
@@ -3387,8 +3397,8 @@ function containmentReservation() {
       ExposedPorts: { "5432/tcp": {} },
       Volumes: { "/var/lib/postgresql": {} },
       AttachStdin: false,
-      AttachStdout: false,
-      AttachStderr: false,
+      AttachStdout: true,
+      AttachStderr: true,
       Tty: false,
       OpenStdin: false,
       StdinOnce: false,
@@ -4067,6 +4077,28 @@ test("exact-8da containment runner passes, fails closed, and resumes after durab
         );
         reservation.Config.Cmd = ["postgres"];
         reservation.Args = ["postgres"];
+      },
+    ],
+    [
+      "reservation with stdout detached",
+      "0",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Config.AttachStdout = false;
+      },
+    ],
+    [
+      "reservation with stderr detached",
+      "1",
+      (state) => {
+        const reservation = state.containers.find(
+          (container) =>
+            container.Config.Labels["com.docker.compose.service"] === "database-owner-reservation",
+        );
+        reservation.Config.AttachStderr = false;
       },
     ],
     [

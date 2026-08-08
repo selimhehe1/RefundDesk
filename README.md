@@ -15,17 +15,36 @@ publication remain disabled and unapproved. ADR 0024 records that the exposed ex
 managed-sandbox read/effect and App-signing bindings completed their replacement-only transition
 with `PASS_CONTAINED` on 3 August. ADR 0034 records that two independent reviews of its nine
 execution-time corrections ended `NO_GO_REOPENING`; this does not relabel the historical outcome,
-but the consumed chain cannot admit it or support a reopening. The admissible read-only postflight
+but the consumed chain cannot admit it or support a reopening. The first admissible read-only postflight
 from clean HEAD `74b6da5742cd032204373d24006f0396d9c5ac0c` captured active revision
 `8da280b78a9d1475c7bd79063e72c5af77121e8d` at `2026-08-08T12:37:17Z` with top-level `FAIL`,
 admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING` and remote code `CADDY_RUNNING`.
 Worker, public Caddy, both maintenance timers and internal TCP 80/443 listeners were active; two
 unexpected running containers and a runtime quiescence journal were present. All five services were
 healthy, the AWS 80/443 firewall was closed and unchanged, live was disabled and the financial
-state was stable/quiescent. The artifact expired at `12:52:17Z`, so it is authoritative
-point-in-time failure evidence, not proof of later state. Evidence artifacts named below are
-redacted and retained locally under the ignored `sandbox-evidence.local/` directory; they are not
-committed to the repository.
+state was stable/quiescent. The artifact expired at `12:52:17Z`, so it remains historical
+point-in-time failure evidence, not proof of later state.
+
+Exact candidate `442955960d326bd0c1c6f7424e4b842566c75f92` subsequently passed exact CI run
+`31267023532` and sandbox-bundle run `31267027925`. The bundle fallback artifact is `9024495857`,
+named `refunddesk-sandbox-442955960d32`, with ZIP SHA-256
+`2c29c4d8d8a7ae3dcca8ea06fd6c981c5aa104a09a3620d568b0936fb833a32`; attestation `39596414`
+covers two subjects with Rekor entry `2386077969`. Its fresh admissible preflight returned the same
+`FAIL`/`COHERENT_RUNNING` posture. The one reconciliation invocation then failed closed before any
+effect with exit `20`, result `FAIL`, code `CORE_RUNTIME_INVALID` and operation `retention`.
+The successor marker remained absent, the quiescence journal remained present, `resumed` was false
+and every mutation counter was zero. An immediate read-only control postflight observed the same
+six diagnostics and unchanged host posture.
+
+Local reproduction with real Docker found that a canonically created container has
+`Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate incorrectly
+required both to be false. Its disposable, network-disabled container was never started and was
+removed with its volumes without residue. Exact 442 must not be rerun. A corrected, newly committed
+and published successor requires its own exact CI, bundle, fresh preflight and final independent
+postflight. The sandbox remains `BLOCKED_RECONCILIATION`, the one-shot remains unconsumed and no
+release, restart, ingress reopening or financial proof is authorized. Evidence artifacts named
+below are redacted and retained locally under the ignored `sandbox-evidence.local/` directory; they
+are not committed to the repository.
 
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
@@ -98,9 +117,10 @@ gate passed with no generated database or probe role left behind.
 
 Exact-e4 (`e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`) is the last revision with admitted
 canonical deployment evidence on the approved AWS Lightsail instance. ADR 0030 records later
-release attempts involving `8da280b7...`; the admitted postflight observed that revision active at
-capture time but returned `FAIL`. Do not infer later host state, public health or complete
-release/Compose correctness from the expired artifact. The postflight is a point-in-time
+release attempts involving `8da280b7...`; both the first admitted postflight and the later
+exact-442 control postflight observed that revision active and returned `FAIL` with posture
+`COHERENT_RUNNING`. Do not infer later host state, public health or complete release/Compose
+correctness from either expired artifact. A postflight is a point-in-time
 containment observer only; it cannot authorize release, recovery, ingress reopening, worker or
 maintenance restart, or a financial proof. Those operations also require the applicable tracked
 successor, exact CI and attested bundle where relevant, and a separate decision.
@@ -108,9 +128,13 @@ successor, exact CI and attested bundle where relevant, and a separate decision.
 The production wrapper initially failed closed on the default AWS credential file's inherited ACL.
 After explicit approval, the ACL was restricted without reading credential bytes. Evidence is
 `sandbox-evidence.local/aws/aws-credentials-acl-remediation-2026-08-08.local.json`, SHA-256
-`0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`. The admitted postflight is
+`0ba446b4de31b56876744219269900f65c584c754e3b6714c0358eb48bd9e2b1`. The first admitted postflight is
 `sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
-`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`.
+`8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. The exact-442 preflight,
+failed reconciliation and control postflight have SHA-256 values
+`d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`,
+`921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c` and
+`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, respectively.
 
 Web, worker and migration have separate configuration and database authority. Four distinct
 restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the

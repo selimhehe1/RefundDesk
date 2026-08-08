@@ -7,21 +7,25 @@
 > Current delivery status: exact-e4 is the last admitted canonical hosted release. Its scheduled
 > cold backup and corrected disposable PostgreSQL 18 restore both passed; the earlier 31 July
 > attempt remains a distinct `FAIL_PRE_EFFECT_CLEANED`. ADR 0030 records later `8da280b7...`
-> release attempts. The admissible read-only postflight from clean HEAD `74b6da5...` captured active
-> revision `8da280b78a9d1475c7bd79063e72c5af77121e8d` at `2026-08-08T12:37:17Z` with result `FAIL`,
-> admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING` and remote code `CADDY_RUNNING`.
-> Worker, Caddy, both maintenance timers, internal TCP 80/443 listeners, two unexpected running
-> containers and a runtime quiescence journal violated containment. All five services were healthy;
-> the AWS 80/443 firewall was closed and unchanged, live was disabled and the financial state was
-> stable/quiescent. The capture expired at `12:52:17Z` and is point-in-time evidence, not proof of
-> later state. Stripe App financial direct-browser delivery remains `BLOCKED_TOOLING`.
+> release attempts. On 8 August, the exact ADR 0035 candidate `4429559...` passed complete CI and
+> its attested sandbox-bundle gate, then admitted a fresh read-only postflight of active revision
+> `8da280b78a9d1475c7bd79063e72c5af77121e8d`. Its reconciliation failed before effect with
+> `CORE_RUNTIME_INVALID`: the successor marker was absent, the `retention` journal remained present
+> and every mutation counter remained zero. A second read-only postflight at
+> `2026-08-08T16:42:38Z` proved the same `FAIL/COHERENT_RUNNING` posture, closed and unchanged AWS
+> 80/443 firewall, disabled live mode and stable/quiescent financial state. That capture expired and
+> is point-in-time evidence, not proof of later state. Local real-Docker reproduction found that the
+> candidate fixture had modeled the harmless stopped reservation's canonical `AttachStdout` and
+> `AttachStderr` values incorrectly. Revision 442 must not be rerun; a corrected successor still
+> requires a new exact commit, CI, bundle, fresh preflight and final proof. Stripe App financial
+> direct-browser delivery remains `BLOCKED_TOOLING`.
 > Allowed environment: local + approved GitHub/AWS sandbox + Stripe test/managed sandbox
 > Configured GitHub `main` and `release/sandbox-edge-2026-08-03` are
-> `9263d7075815b26e911efc8fe95deb665034798c`; e4 is their ancestor, but no exact GitHub artifact
-> attestation is claimed for e4. Implementation commit `e86241d1...` has the exact full-CI plus
-> attested-bundle pair recorded below. The later local postflight-source fixes `a96ce03...` and
-> `74b6da5...` do not inherit that pair. Evidence remains revision-bound and is never transferred
-> from an ancestor or another bundle.
+> `442955960d326bd0c1c6f7424e4b842566c75f92`; e4 is their ancestor, but no exact GitHub artifact
+> attestation is claimed for e4. Candidate 442 has the exact full-CI plus attested-bundle pair
+> recorded below. Its pre-effect reconciliation failure does not transfer those gates to the local
+> corrected successor. Evidence remains revision-bound and is never transferred from an ancestor or
+> another bundle.
 > Safety containment: ADR 0024 records `PASS_CONTAINED` for the 3 August exact-e4 replacement of the
 > exposed managed-sandbox read/effect and App-signing bindings. The two 1 August incident JSONs remain
 > initial `IN_PROGRESS_CONTAINED` records, not the final proof. ADR 0034 records that two independent
@@ -356,20 +360,50 @@ operational drills remain deferred.
       The runner, exact schema/validator and local wrapper are bound to committed source and the
       observed exact-8da host identities. They never repair the database-owner reservation, start a
       service, open ingress, release a revision or call Stripe. The validator passes 29 cases, the
-      fake Windows transport contract passes, and the isolated Linux runner harness passes all 26
-      cases, including strict reservation falsifications, four forced-crash boundaries and
-      journal-retirement recovery. Bash parsing,
-      ShellCheck, PowerShell parsing, Prettier, ESLint and `git diff --check` pass. These were local,
-      network-disabled checks only; no AWS, SSH or Stripe call occurred.
-- [ ] Commit and publish the exact ADR 0035 source, obtain complete CI and a sandbox bundle for the
-      same SHA, capture a fresh ADR 0034 postflight with at least 720 seconds remaining, run or
-      safely resume the single contained reconciliation, and capture the final independent
+      fake Windows transport contract passes, and the corrected isolated Linux runner harness passes
+      all 28 cases, including separate stdout/stderr attachment falsifications, four forced-crash
+      boundaries and journal-retirement recovery. The separate real-Docker reservation test asserts
+      the canonical attachment values. Bash parsing, ShellCheck, PowerShell parsing, Prettier,
+      ESLint and `git diff --check` pass. These were local, network-disabled checks only; no AWS, SSH
+      or Stripe call occurred. On the frozen hashes, workspace lint and typecheck passed across 11
+      projects, 71 files/717 tests passed, the build generated 21 Next.js routes,
+      `container:check` returned 84 passes with 11 expected Windows skips, the validator passed
+      29/29, the secret gates passed 6/6, the fake PowerShell transport contract passed and the
+      standalone Stripe App passed lint/build plus 11 files/115 tests. The disposable real-Docker
+      sentinel remained inactive and left no anonymous volume.
+- [x] Publish ADR 0035 candidate `442955960d326bd0c1c6f7424e4b842566c75f92` to the configured
+      `main` and release refs and obtain its exact gate pair. CI run `31267023532` passed both Linux
+      `verify` and the Windows transport contracts. Bundle run `31267027925` passed the two-subject
+      provenance gate and produced fallback artifact `9024495857`,
+      `refunddesk-sandbox-442955960d32`, ZIP SHA-256
+      `2c29c4d8d8a7ae3dcca8ea06fd6c981c5aa104a09a3620d568b0936fb833a32`, with attestation
+      `39596414` and Rekor entry `2386077969`. Private-bucket delivery was skipped because the
+      repository has no configured bucket secret; the one-day GitHub fallback passed. The previous
+      `fcc67d95...` candidate remains non-admissible because only its bundle passed and its Windows
+      synthetic Git fixture exceeded the hosted runner's path limit.
+- [x] Attempt the exact 442 reconciliation once after a fresh admitted postflight. Preflight
+      `host-postflight-20260808T163955Z-df841d8f0701.local.json`, SHA-256
+      `d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`, returned exit `20`,
+      `FAIL/ADMISSIBLE_READ_ONLY/COHERENT_RUNNING`, the exact six diagnostics, closed/unchanged AWS
+      ingress and disabled live mode. Reconciliation evidence
+      `containment-reconciliation-20260808T164110Z-d5f78e9e3501.local.json`, SHA-256
+      `921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c`, returned exit `20`,
+      `FAIL/CORE_RUNTIME_INVALID`, operation `retention`. It proves marker absent, journal present,
+      `reservationValid=false` and every current plus cumulative mutation counter equal to zero.
+      Control postflight `host-postflight-20260808T164238Z-37c7a198f47f.local.json`, SHA-256
+      `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, returned the unchanged
+      `FAIL/COHERENT_RUNNING` posture. Candidate 442 must not be invoked again.
+- [x] Reproduce the pre-effect failure locally with the exact pinned PostgreSQL image and real
+      `docker create`. The harmless reservation is canonically created with `AttachStdout=true` and
+      `AttachStderr=true`; candidate 442 incorrectly required both to be false. The disposable
+      sentinel was never started, used no network and was removed with its volumes, leaving zero
+      residue. The corrected runner now requires the real values, the real-Docker test asserts them
+      without printing inspection output and two synthetic negatives fail before effect.
+- [ ] Commit and publish the corrected ADR 0035 successor, obtain complete CI and a sandbox bundle
+      for the same new SHA, capture a fresh ADR 0034 postflight with at least 720 seconds remaining,
+      run the single contained reconciliation, and capture the final independent
       `PASS/COHERENT_CONTAINED/PASS_CONTAINED` postflight. Until every step passes, the hosted
-      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed. Published
-      candidate `fcc67d95...` produced a successful exact-SHA sandbox bundle with provenance, but
-      its Windows CI contract failed before any AWS or SSH call because a generated Git-fixture
-      path exceeded the hosted runner's filename limit. That candidate is not admissible; the
-      fixture path is now explicitly bounded and requires a new complete CI plus bundle pair.
+      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator
@@ -727,6 +761,16 @@ Evidence:
   `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`, top-level result `FAIL`,
   admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING`; this expired point-in-time artifact
   records containment divergence and authorizes no mutation.
+- `host-postflight-20260808T163955Z-df841d8f0701.local.json`, SHA-256
+  `d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`, top-level result `FAIL`,
+  admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING`; this admitted candidate 442 only.
+- `containment-reconciliation-20260808T164110Z-d5f78e9e3501.local.json`, SHA-256
+  `921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c`, top-level result `FAIL`,
+  code `CORE_RUNTIME_INVALID`; marker absent, journal preserved and every mutation counter zero.
+- `host-postflight-20260808T164238Z-37c7a198f47f.local.json`, SHA-256
+  `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`, top-level result `FAIL`,
+  admission `ADMISSIBLE_READ_ONLY`, posture `COHERENT_RUNNING`; this proves the host unchanged after
+  the pre-effect refusal and remains expired point-in-time evidence only.
 
 ## Commercial, live and Marketplace verdict
 

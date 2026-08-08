@@ -9,7 +9,10 @@
 > `42a1e4e...`, test-account lifecycle remains open, and direct financial controlled-browser
 > transport is `BLOCKED_TOOLING`. The admissible 8 August read-only postflight observed active
 > `8da280b7...` but returned `FAIL` with posture `COHERENT_RUNNING`; it authorizes no repair,
-> release, reopening or financial proof.
+> release, reopening or financial proof. Exact candidate `4429559...` later passed its exact CI and
+> sandbox-bundle gates, but its contained reconciliation failed closed before effect on a Docker
+> reservation-inspection mismatch. The immediate control postflight found the host unchanged in
+> `COHERENT_RUNNING`; a corrected successor remains required.
 
 ## 1. Rules of execution
 
@@ -540,6 +543,27 @@ Exact diagnostics are `CADDY_RUNNING`, `MAINTENANCE_ACTIVE`, `PUBLIC_LISTENER_AC
 point-in-time evidence only. It does not admit `8da...`, prove complete Compose/release health or
 authorize repair. Exact CI, attested bundle provenance, CloudFront origin identity, incident
 admission and separate authorization remain independent gates.
+
+### 7.12 Exact-442 contained reconciliation — failed pre-effect
+
+| Gate               | Admissible observation                                                                                                                                                | Result                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| Exact source gates | Revision `442955960d326bd0c1c6f7424e4b842566c75f92`; CI run `31267023532` and sandbox-bundle run `31267027925` passed                                                 | `passed_source_gates`          |
+| Bundle provenance  | GitHub artifact `9024495857`, ZIP SHA-256 `2c29c4d8d8a7ae3dcca8ea06fd6c981c5aa104a09a3620d568b0936fb833a32`; attestation `39596414`, two subjects, Rekor `2386077969` | `passed_bundle_gate`           |
+| Fresh preflight    | `FAIL`/`ADMISSIBLE_READ_ONLY`/`COHERENT_RUNNING`; same six diagnostics, AWS firewall closed and unchanged, live disabled                                              | `admitted_for_bounded_attempt` |
+| Reconciliation     | Exit `20`, result `FAIL`, code `CORE_RUNTIME_INVALID`, operation `retention`                                                                                          | `failed_pre_effect`            |
+| Mutation proof     | Marker absent, journal present, `resumed=false`, every current and cumulative mutation counter zero                                                                   | `zero_effect`                  |
+| Control postflight | Exit `20`, same `FAIL`/`COHERENT_RUNNING` posture and six diagnostics                                                                                                 | `host_observed_unchanged`      |
+| Local diagnosis    | Real Docker reports canonical `Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate required false                                       | `implementation_defect`        |
+| Next gate          | Corrected committed/published successor, new exact CI/bundle, fresh preflight, reconciliation and final independent postflight                                        | `pending`                      |
+
+The preflight, reconciliation and control-postflight evidence SHA-256 values are, respectively,
+`d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`,
+`921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c` and
+`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`. The local disposable
+container was network-disabled, never started and removed with its volumes, leaving zero residue.
+This evidence proves neither a contained host nor a Stripe or financial gate. Exact 442 must not be
+rerun; the sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
 
 ## 8. Verdict procedure
 

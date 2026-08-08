@@ -100,7 +100,7 @@ exact active revision, leaves all five runtime services healthy and clears every
 transition/quiescence journal. Successful `OnFailure` recovery after a primary error is
 `FAIL_RECOVERED`, not retention evidence. See ADR 0015 and the operations runbook.
 
-The admissible read-only postflight on 8 August returned `FAIL` and observed both retention and
+The first admissible read-only postflight on 8 August returned `FAIL` and observed both retention and
 backup timers active while a runtime quiescence journal was present. Its stable/quiescent financial
 snapshots contained no active financial workflow or guard, but timer state does not prove a
 successful invocation, retention execution or recoverable maintenance state. The artifact expired
@@ -109,6 +109,27 @@ at `2026-08-08T12:52:17Z` and does not establish later state. Evidence is
 `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. Do not start another
 maintenance operation or interpret the captured timer state as maintenance evidence without a
 separate operational decision and authorization.
+
+Exact candidate `442955960d326bd0c1c6f7424e4b842566c75f92` later passed exact CI run
+`31267023532` and sandbox-bundle run `31267027925`. Its fresh preflight again observed
+`FAIL`/`COHERENT_RUNNING`, the same six diagnostics, a closed and unchanged AWS firewall and
+disabled live mode. Evidence SHA-256 is
+`d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`.
+
+The exact-442 contained reconciliation identified the unresolved journal operation as `retention`
+but returned exit `20`, result `FAIL` and code `CORE_RUNTIME_INVALID` before effect. The successor
+marker remained absent, the retention journal remained present, `resumed` was false and every
+current and cumulative mutation counter was zero. Evidence SHA-256 is
+`921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c`. The immediate
+read-only control postflight observed the same `FAIL`/`COHERENT_RUNNING` posture and diagnostics;
+evidence SHA-256 is `9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`.
+
+Local real-Docker reproduction showed that canonical `docker create` inspection has
+`Config.AttachStdout=true` and `Config.AttachStderr=true`, while the exact-442 predicate required
+false. Its network-disabled disposable container was never started and was removed with its
+volumes, leaving zero residue. This local diagnosis is not maintenance or host-repair evidence. The
+original retention operation remains failed and unresolved; exact 442 must not be retried, and no
+timer or maintenance service may be started while a corrected, newly gated successor is pending.
 
 ## 6. Uninstallation lifecycle
 

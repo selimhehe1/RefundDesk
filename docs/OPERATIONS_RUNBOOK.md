@@ -130,9 +130,36 @@ The redacted ignored artifact is
 `sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
 `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. It was captured from HEAD
 `74b6da5742cd032204373d24006f0396d9c5ac0c` and expired at `2026-08-08T12:52:17Z`. Treat it as an
-authoritative point-in-time containment failure, not proof of later host state or permission to
-repair. Do not release, recover containers, reopen ingress or run a financial proof without
-separate authorization.
+historical point-in-time containment failure, not proof of later host state or permission to
+repair.
+
+Exact candidate `442955960d326bd0c1c6f7424e4b842566c75f92` later passed exact CI run
+`31267023532` and sandbox-bundle run `31267027925`. GitHub fallback artifact `9024495857`, named
+`refunddesk-sandbox-442955960d32`, has ZIP SHA-256
+`2c29c4d8d8a7ae3dcca8ea06fd6c981c5aa104a09a3620d568b0936fb833a32`; attestation `39596414`
+covers two subjects with Rekor entry `2386077969`. A fresh preflight remained
+`FAIL`/`COHERENT_RUNNING`, with the same six diagnostics, closed and unchanged AWS firewall and
+disabled live mode. Its redacted evidence has SHA-256
+`d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`.
+
+The one exact-442 reconciliation invocation returned exit `20`, result `FAIL`, code
+`CORE_RUNTIME_INVALID` and operation `retention` before any effect. The successor marker remained
+absent, the quiescence journal remained present, `resumed` was false and all current and cumulative
+mutation counters were zero. Its redacted evidence has SHA-256
+`921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c`. The immediate
+read-only control postflight returned the same `FAIL`/`COHERENT_RUNNING` posture and six diagnostics,
+proving the observed host state unchanged; its evidence has SHA-256
+`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`.
+
+Local reproduction with real Docker established that canonical `docker create` inspection has
+`Config.AttachStdout=true` and `Config.AttachStderr=true`; the exact-442 predicate incorrectly
+required both fields to be false. The disposable container was never started, used no network and
+was removed with its volumes, leaving no residue. Never rerun the exact-442 implementation and
+never alter the stopped reservation to fit its defective predicate. A corrected successor must be
+committed and published, pass new exact CI and sandbox-bundle gates, consume a new fresh preflight
+and obtain an independent final contained postflight. Until then the one-shot is unconsumed and the
+sandbox remains `BLOCKED_RECONCILIATION`. Do not release, recover or restart containers, reopen
+ingress or run a financial proof.
 
 The first production invocation had failed closed before AWS/SSH on the default credential file's
 inherited ACL. Explicitly approved remediation restricted only that ACL and did not read credential
@@ -211,8 +238,14 @@ before and after the bounded SSH operation. The remote runner holds the operator
 stops maintenance plus Caddy before worker, proves stable financial and core-runtime snapshots,
 and retires the journal only after a durable `contained_verified` marker. Both backup and retention
 require the existing stopped database-owner reservation to be exact; this successor never removes
-or recreates it and refuses every bootstrap, migrate or maintenance one-shot. Preserve the successor
-marker and do not fabricate or restore the old journal.
+or recreates it and refuses every bootstrap, migrate or maintenance one-shot. For the canonical
+never-started reservation created by Docker, exact inspection requires
+`Config.AttachStdin=false`, `Config.AttachStdout=true`, `Config.AttachStderr=true`,
+`Config.Tty=false`, `Config.OpenStdin=false` and `Config.StdinOnce=false`. Assert this contract
+against real Docker as well as synthetic negative fixtures. Any mismatch must return
+`CORE_RUNTIME_INVALID` before marker creation, journal retirement or another mutation; never modify
+the reservation as a workaround. Preserve the successor marker and do not fabricate or restore the
+old journal.
 
 Interpret status exactly:
 
@@ -229,6 +262,9 @@ repair; it never authorizes release, ingress reopening, credential use or a fina
 Record both evidence hashes and treat the one-shot as consumed after the wrapper `PASS` and final
 postflight `PASS`. Do not run it again except for the immediate modeled recovery of an ambiguous
 transport result.
+
+The exact-442 attempt did not reach a resumable marker state and must not be retried. Only the
+corrected, newly gated successor may perform the next reconciliation attempt.
 
 Build the three provider-neutral targets from the repository root on Linux:
 

@@ -867,8 +867,8 @@ reservation_valid() {
           | test("(PASSWORD|PASS|SECRET|TOKEN|DATABASE_URL|HMAC_KEY|ENCRYPTION_KEY|CREDENTIAL)"; "i")
           | not))
       and $c.Config.AttachStdin == false
-      and $c.Config.AttachStdout == false
-      and $c.Config.AttachStderr == false
+      and $c.Config.AttachStdout == true
+      and $c.Config.AttachStderr == true
       and $c.Config.Tty == false
       and $c.Config.OpenStdin == false
       and $c.Config.StdinOnce == false

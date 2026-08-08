@@ -81,6 +81,17 @@ docker start --attach "${completed_id}" >/dev/null ||
 
 seal_database_owner_job_reservation migrate "${TEST_REVISION}"
 assert_database_owner_job_reservation "${TEST_REVISION}"
+docker inspect -- "${REFUNDDESK_DATABASE_OWNER_JOB_NAME}" |
+  jq --exit-status '
+    length == 1
+    and .[0].Config.AttachStdin == false
+    and .[0].Config.AttachStdout == true
+    and .[0].Config.AttachStderr == true
+    and .[0].Config.Tty == false
+    and .[0].Config.OpenStdin == false
+    and .[0].Config.StdinOnce == false
+  ' >/dev/null ||
+  die "database-owner reservation attachment contract is not canonical"
 [[ "$(volume_inventory)" == "${before_volumes}" ]] ||
   die "sealing the database-owner reservation leaked an anonymous Docker volume"
 

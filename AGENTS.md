@@ -69,7 +69,7 @@ never reuse an evidenced version for changed source.
 
 The last admitted canonical hosted release is immutable test/sandbox revision
 `e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`. ADR 0030 records later release attempts involving
-`8da280b7...`. The admissible read-only ADR 0032 postflight from clean HEAD
+`8da280b7...`. The first admissible read-only ADR 0032 postflight from clean HEAD
 `74b6da5742cd032204373d24006f0396d9c5ac0c` captured the host at `2026-08-08T12:37:17Z` with
 top-level `FAIL`, admission `ADMISSIBLE_READ_ONLY` and posture `COHERENT_RUNNING`. It observed active
 revision `8da280b78a9d1475c7bd79063e72c5af77121e8d`, all five services healthy, worker and Caddy
@@ -82,9 +82,41 @@ was closed and unchanged, live was disabled, and the financial snapshots were st
 quiescent. Evidence is
 `sandbox-evidence.local/aws/host-postflight-20260808T123717Z-f7a9e869c50a.local.json`, SHA-256
 `8a49edb18858ef207e2ad5f8c3c3c412100d24ef8788d087cfd710d301ce9ca5`. It expired at
-`2026-08-08T12:52:17Z`; retain it as the authoritative point-in-time failure, not proof of later
-host state. Perform no repair, release, ingress reopening or financial proof without separate
-authorization. The historical e4 release passed with five healthy services, closed journals,
+`2026-08-08T12:52:17Z`; retain it as historical point-in-time failure evidence, not proof of later
+host state.
+
+Exact candidate `442955960d326bd0c1c6f7424e4b842566c75f92` was then published to the configured
+`main` and `release/sandbox-edge-2026-08-03` refs. Exact CI run `31267023532` and sandbox-bundle
+run `31267027925` passed. GitHub fallback artifact `9024495857`, named
+`refunddesk-sandbox-442955960d32`, has ZIP SHA-256
+`2c29c4d8d8a7ae3dcca8ea06fd6c981c5aa104a09a3620d568b0936fb833a32`; attestation `39596414`
+covered two subjects with Rekor entry `2386077969`. A fresh admissible preflight retained the same
+`FAIL`/`COHERENT_RUNNING` posture, closed and unchanged AWS firewall, disabled live mode and exact
+six diagnostics. Evidence is
+`sandbox-evidence.local/aws/host-postflight-20260808T163955Z-df841d8f0701.local.json`, SHA-256
+`d43a93a8455f9653d883b01dd77c1664de6fed5f022b25a968c6e5e45ad7580d`.
+
+The single exact-442 reconciliation invocation then failed closed with exit `20`, result `FAIL`,
+code `CORE_RUNTIME_INVALID` and operation `retention`. The successor marker remained absent, the
+quiescence journal remained present, `resumed` was false and every current and cumulative mutation
+counter was zero. Evidence is
+`sandbox-evidence.local/aws/containment-reconciliation-20260808T164110Z-d5f78e9e3501.local.json`,
+SHA-256 `921f0b5906d558d62e4cb7f322e66b59dc9418dee9b35c96b406f96f91a2ba5c`. The immediate
+read-only control postflight returned exit `20` with the same `FAIL`/`COHERENT_RUNNING` state and
+six diagnostics, proving the observed host posture unchanged. Evidence is
+`sandbox-evidence.local/aws/host-postflight-20260808T164238Z-37c7a198f47f.local.json`, SHA-256
+`9b5862e88c5bf0a66a83027296328116ff6e8dab21dc891cda2846ccfac372c0`.
+
+A local real-Docker reproduction identified the implementation defect: canonical `docker create`
+inspection has `Config.AttachStdout=true` and `Config.AttachStderr=true`, while the exact-442
+predicate incorrectly required both fields to be false. The disposable container was never
+started, had networking disabled, was removed with its volumes and left zero residue. Do not rerun
+the exact-442 reconciliation. A corrected successor must be committed and published, pass its own
+exact CI and sandbox-bundle gates, use a new fresh preflight and produce a final independent
+contained postflight. Until then the one-shot remains unconsumed and the sandbox remains
+`BLOCKED_RECONCILIATION`. Perform no release, ingress reopening, service restart or financial proof.
+
+The historical e4 release passed with five healthy services, closed journals,
 active timers and live disabled. The release performed one
 bounded PostgreSQL container recreation because the canonical Compose project path changed, while
 preserving the PostgreSQL system identifier and every financial/audit count. A later scheduled
@@ -127,15 +159,18 @@ worker, backup and retention timers and Lightsail ports 80/443 stopped, with liv
 admissible 8 August postflight proved that the captured host service posture violated those
 requirements while the AWS edge, live interlocks and financial state remained closed/quiescent.
 ADR 0029 records a later bounded public window, but ADR 0031 classifies its generic CloudFront
-allowlist as non-authenticating and the window as unadmitted hosted evidence. Do not restore or
-change any surface without a new tracked successor where required and a separate decision.
+allowlist as non-authenticating and the window as unadmitted hosted evidence. The exact-442
+reconciliation failure and its control postflight prove no improvement: the observed service
+posture remained divergent. Do not restore or change any surface without the corrected tracked
+successor where required and a separate decision.
 
 Later on 1 August 2026, the operator pasted one managed-sandbox restricted read key, one
 managed-sandbox restricted effect key and one full-access test secret into the conversation. Treat
 all three secret API credentials as compromised. The publishable test key shown with them is not a
 secret, but must not be mistaken for a server credential. The worker was stopped immediately and
-remains required to be stopped; the admissible 8 August postflight observed it running, so do not
-report that requirement as currently satisfied. Redacted evidence is
+remains required to be stopped; both the first admissible 8 August postflight and the later
+exact-442 control postflight observed it running, so do not report that requirement as currently
+satisfied. Redacted evidence is
 `sandbox-evidence.local/aws/stripe-api-key-chat-exposure-2026-08-01.local.json`. Do not use, test,
 copy into tooling or redeploy any exposed value. ADR 0024 records a `PASS_CONTAINED` outcome under
 the ADR 0019 admission contract, which required Dashboard revocation/activity review and real
@@ -143,7 +178,8 @@ least-privilege proof of the replacement managed-sandbox read/effect bindings. T
 cleaned by design, and ADR 0034's independent review ended `NO_GO_REOPENING`, so ADR 0024 is not
 standalone retained evidence of those details. The 1 August JSON remains an initial
 `IN_PROGRESS_CONTAINED` record. Worker, Caddy, timers and public financial proofs are required to
-stay stopped; the postflight `FAIL` does not relax that requirement or authorize remediation.
+stay stopped; neither postflight `FAIL` nor the exact-442 pre-effect reconciliation failure relaxes
+that requirement or authorizes a restart.
 
 An unintended `stripe apps list` later launched Stripe CLI authentication against the pinned
 platform test account and created one platform-test and one platform-live CLI key. Local logout
