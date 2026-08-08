@@ -4,6 +4,34 @@ const workflow = await readFile(
   new URL("../.github/workflows/sandbox-images.yml", import.meta.url),
   "utf8",
 );
+const ciWorkflow = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+
+function namedStep(source, name) {
+  const lines = source.split(/\r?\n/u);
+  const header = `      - name: ${name}`;
+  const starts = lines.flatMap((line, index) => (line === header ? [index] : []));
+  if (starts.length !== 1) {
+    throw new Error(`WORKFLOW_STEP_CARDINALITY_INVALID:${name}`);
+  }
+
+  const start = starts[0];
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (lines[index]?.startsWith("      - ") === true) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function requireStepFragments(step, fragments, contract) {
+  for (const fragment of fragments) {
+    if (!step.includes(fragment)) {
+      throw new Error(`${contract}:${fragment}`);
+    }
+  }
+}
 
 const requiredFragments = [
   "workflow_dispatch:",
@@ -44,6 +72,10 @@ const requiredFragments = [
   "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
   "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3",
   "actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4",
+  "- name: Attest bundle provenance",
+  "- name: Require provenance success",
+  "GitHub build provenance is required before bundle delivery or promotion.",
+  "exit 1",
   "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4",
   "REFUNDDESK_SANDBOX_ARTIFACT_BUCKET",
   "REFUNDDESK_SANDBOX_ARTIFACT_ACCESS_KEY_ID",
@@ -68,6 +100,115 @@ for (const fragment of requiredFragments) {
     throw new Error(`SANDBOX_IMAGE_WORKFLOW_CONTRACT_MISSING:${fragment}`);
   }
 }
+
+const sandboxCheckoutStep = namedStep(workflow, "Check out the exact event revision");
+requireStepFragments(
+  sandboxCheckoutStep,
+  [
+    "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+    "with:",
+    "ref: ${{ github.sha }}",
+    "fetch-depth: 1",
+    "persist-credentials: false",
+  ],
+  "SANDBOX_EXACT_CHECKOUT_STEP_INVALID",
+);
+
+const provenanceStep = namedStep(workflow, "Attest bundle provenance");
+requireStepFragments(
+  provenanceStep,
+  [
+    "id: provenance",
+    "uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4",
+    "with:",
+    "subject-path: dist/sandbox-images/*.tar.zst",
+  ],
+  "SANDBOX_PROVENANCE_STEP_INVALID",
+);
+if (provenanceStep.includes("continue-on-error:")) {
+  throw new Error("SANDBOX_PROVENANCE_STEP_MUST_FAIL_CLOSED");
+}
+
+const provenanceGateStep = namedStep(workflow, "Require provenance success");
+requireStepFragments(
+  provenanceGateStep,
+  [
+    "if: ${{ always() && !cancelled() }}",
+    "PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}",
+    'if [[ "$PROVENANCE_OUTCOME" = "success" ]]; then',
+    "GitHub build provenance is required before bundle delivery or promotion.",
+    "exit 1",
+  ],
+  "SANDBOX_PROVENANCE_GATE_STEP_INVALID",
+);
+
+const provenanceStepIndex = workflow.indexOf("      - name: Attest bundle provenance");
+const provenanceGateIndex = workflow.indexOf("      - name: Require provenance success");
+const bundleCreationStepIndex = workflow.indexOf(
+  "      - name: Create one checksummed image bundle",
+);
+if (bundleCreationStepIndex < 0 || bundleCreationStepIndex >= provenanceStepIndex) {
+  throw new Error("SANDBOX_PROVENANCE_PRECEDES_VERIFIED_BUNDLE");
+}
+if (provenanceStepIndex >= provenanceGateIndex) {
+  throw new Error("SANDBOX_PROVENANCE_GATE_PRECEDES_ATTESTATION");
+}
+for (const deliveryStepName of [
+  "Deliver verified bundle to the private sandbox bucket",
+  "Upload one-day sandbox bundle to GitHub",
+]) {
+  if (workflow.indexOf(`      - name: ${deliveryStepName}`) <= provenanceGateIndex) {
+    throw new Error(`SANDBOX_DELIVERY_PRECEDES_PROVENANCE_GATE:${deliveryStepName}`);
+  }
+}
+
+const requiredCiFragments = [
+  "workflow_dispatch:",
+  "- name: Check out the exact event revision",
+  "ref: ${{ github.sha }}",
+  "fetch-depth: 1",
+  "persist-credentials: false",
+  "- name: Verify the exact event revision",
+  "EXPECTED_REVISION: ${{ github.sha }}",
+  'actual_revision="$(git rev-parse HEAD)"',
+  'test "$actual_revision" = "$EXPECTED_REVISION"',
+  "postflight-windows:",
+  "runs-on: windows-2025",
+  "- name: Check out the exact Windows event revision",
+  "- name: Validate Windows postflight transport contracts",
+  "node --test scripts/validate-lightsail-postflight.test.mjs",
+  "scripts/invoke-lightsail-postflight.contract.Tests.ps1",
+];
+
+for (const fragment of requiredCiFragments) {
+  if (!ciWorkflow.includes(fragment)) {
+    throw new Error(`CI_WORKFLOW_EXACT_REVISION_CONTRACT_MISSING:${fragment}`);
+  }
+}
+
+const ciCheckoutStep = namedStep(ciWorkflow, "Check out the exact event revision");
+requireStepFragments(
+  ciCheckoutStep,
+  [
+    "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+    "with:",
+    "ref: ${{ github.sha }}",
+    "fetch-depth: 1",
+    "persist-credentials: false",
+  ],
+  "CI_EXACT_CHECKOUT_STEP_INVALID",
+);
+
+const ciRevisionStep = namedStep(ciWorkflow, "Verify the exact event revision");
+requireStepFragments(
+  ciRevisionStep,
+  [
+    "EXPECTED_REVISION: ${{ github.sha }}",
+    'actual_revision="$(git rev-parse HEAD)"',
+    'test "$actual_revision" = "$EXPECTED_REVISION"',
+  ],
+  "CI_EXACT_REVISION_STEP_INVALID",
+);
 
 if (
   !workflow.includes('for image in "$WEB_IMAGE" "$WORKER_IMAGE" "$MIGRATE_IMAGE"') ||
@@ -123,6 +264,7 @@ const forbiddenPatterns = [
   { name: "registry_login", pattern: /docker\/login-action|docker\s+login/iu },
   { name: "registry_push", pattern: /docker\s+(?:image\s+)?push|push-to-registry:\s*true/iu },
   { name: "ghcr_reference", pattern: /ghcr\.io/iu },
+  { name: "soft_provenance_gate", pattern: /continue-on-error:\s*true/u },
 ];
 
 for (const { name, pattern } of forbiddenPatterns) {

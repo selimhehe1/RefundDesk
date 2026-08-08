@@ -337,7 +337,7 @@ model ApprovalDecision {
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   request             RefundRequest        @relation(fields: [requestId, tenantId], references: [id, tenantId], onDelete: Restrict)
   approver            TenantUser           @relation("DecisionApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
-  approvalAttestation ApprovalAttestation? @relation("DecisionAttestation", fields: [approvalAttestationId, tenantId, requestId, approverUserId], references: [id, tenantId, requestId, approverUserId], onDelete: Restrict)
+  approvalAttestation ApprovalAttestation? @relation("DecisionAttestation", fields: [approvalAttestationId, tenantId, requestId, approverUserId], references: [id, tenantId, requestId, approverUserId], onDelete: Restrict, map: "approval_decisions_attestation_binding_fkey")
 
   @@unique([requestId, approverUserId], map: "approval_decisions_request_approver_key")
   @@unique([approvalAttestationId, tenantId, requestId, approverUserId], map: "approval_decisions_attestation_binding_key")
@@ -366,9 +366,9 @@ model ApprovalAttestation {
   createdAt                 DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
 
   tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  installation StripeInstallation @relation(fields: [installationId, tenantId, stripeAccountId, environment], references: [id, tenantId, stripeAccountId, environment], onDelete: Restrict)
-  request      RefundRequest      @relation(fields: [requestId, tenantId, installationId, environment], references: [id, tenantId, installationId, environment], onDelete: Cascade)
-  approver     TenantUser         @relation("AttestationApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  installation StripeInstallation @relation(fields: [installationId, tenantId, stripeAccountId, environment], references: [id, tenantId, stripeAccountId, environment], onDelete: Restrict, map: "approval_attestations_installation_binding_fkey")
+  request      RefundRequest      @relation(fields: [requestId, tenantId, installationId, environment], references: [id, tenantId, installationId, environment], onDelete: Cascade, map: "approval_attestations_request_binding_fkey")
+  approver     TenantUser         @relation("AttestationApprover", fields: [approverUserId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "approval_attestations_approver_binding_fkey")
   decision     ApprovalDecision?  @relation("DecisionAttestation")
 
   @@unique([tenantId, requestNonce], map: "approval_attestations_tenant_nonce_key")
@@ -537,9 +537,9 @@ model ReconciliationCheckpoint {
 }
 
 model SignedRequestRateLimitBucket {
-  scopeKey                 Bytes    @id @map("scope_key") @db.ByteA
-  theoreticalArrivalAt     DateTime @map("theoretical_arrival_at") @db.Timestamptz(6)
-  lastSeenAt               DateTime @map("last_seen_at") @db.Timestamptz(6)
+  scopeKey             Bytes    @id @map("scope_key") @db.ByteA
+  theoreticalArrivalAt DateTime @map("theoretical_arrival_at") @db.Timestamptz(6)
+  lastSeenAt           DateTime @map("last_seen_at") @db.Timestamptz(6)
 
   @@index([lastSeenAt], map: "signed_request_rate_limit_buckets_last_seen_idx")
   @@map("signed_request_rate_limit_buckets")

@@ -23,7 +23,7 @@
     "retention:run": "node scripts/run-retention-purge.mjs",
     "typecheck": "prisma generate && tsc -p tsconfig.json --noEmit",
     "test": "prisma generate && vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "node --throw-deprecation node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.9.0",

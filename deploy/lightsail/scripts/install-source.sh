@@ -438,6 +438,7 @@ for required_path in \
   deploy/lightsail/scripts/release-launcher.sh \
   deploy/lightsail/scripts/release-fence.sh \
   deploy/lightsail/scripts/release.sh \
+  deploy/lightsail/scripts/observe-host-postflight.sh \
   deploy/lightsail/scripts/release-transition-journal.py \
   deploy/lightsail/scripts/prepare-postgres-root-mount.sh \
   deploy/lightsail/scripts/quiesce-recovery-launcher.sh \

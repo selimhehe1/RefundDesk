@@ -1,0 +1,6 @@
+*.sh text eol=lf
+*.mjs text eol=lf
+*.ps1 text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+docs/schemas/*.json text eol=lf

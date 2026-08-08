@@ -294,7 +294,7 @@ describe("tenant transaction safety", () => {
 
 describe("migration hardening", () => {
   it("requires independently persisted approval evidence at the database boundary", async () => {
-    const [sql, runtimeRoles] = await Promise.all([
+    const [sql, runtimeRoles, schema] = await Promise.all([
       readFile(
         new URL(
           "../prisma/migrations/20260727230000_approval_attestation_boundary/migration.sql",
@@ -303,6 +303,7 @@ describe("migration hardening", () => {
         "utf8",
       ),
       readFile(new URL("../prisma/runtime-roles.sql", import.meta.url), "utf8"),
+      readFile(new URL("../prisma/schema.prisma", import.meta.url), "utf8"),
     ]);
 
     expect(sql).toContain('CREATE TABLE "approval_attestations"');
@@ -315,6 +316,10 @@ describe("migration hardening", () => {
     expect(sql).toContain('"refunddesk_count_purged_approval_attestation"');
     expect(sql).toContain("'approval_attestations'");
     expect(sql).toContain("NEW.\"process_version\" := 'db-purge-v2'");
+    expect(schema).toContain('map: "approval_decisions_attestation_binding_fkey"');
+    expect(schema).toContain('map: "approval_attestations_installation_binding_fkey"');
+    expect(schema).toContain('map: "approval_attestations_request_binding_fkey"');
+    expect(schema).toContain('map: "approval_attestations_approver_binding_fkey"');
     expect(runtimeRoles).toContain(
       "GRANT SELECT, INSERT ON approval_attestations\n  TO refunddesk_attestation_writer",
     );

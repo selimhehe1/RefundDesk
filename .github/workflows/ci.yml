@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -40,9 +41,20 @@ jobs:
       REFUNDDESK_ACTIVE_PROOF_KEY_VERSION: v1
       REFUNDDESK_PROOF_KEY_ROTATION_STATE: legacy
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check out the exact event revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
           persist-credentials: false
+      - name: Verify the exact event revision
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_revision="$(git rev-parse HEAD)"
+          [[ "$EXPECTED_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          test "$actual_revision" = "$EXPECTED_REVISION"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.17.0
@@ -766,3 +778,32 @@ jobs:
           corepack pnpm@10.30.3 --ignore-workspace run build
           corepack pnpm@10.30.3 --ignore-workspace run test
           corepack pnpm@10.30.3 --ignore-workspace audit --prod --audit-level high
+
+  postflight-windows:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact Windows event revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify the exact Windows event revision
+        shell: powershell
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((git rev-parse HEAD) -cne $env:EXPECTED_REVISION) {
+            throw "The checkout does not match github.sha."
+          }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+      - name: Validate Windows postflight transport contracts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          node --test scripts/validate-lightsail-postflight.test.mjs
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-postflight.contract.Tests.ps1

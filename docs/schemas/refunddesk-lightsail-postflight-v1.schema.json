@@ -1,0 +1,468 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.invalid/schemas/refunddesk-lightsail-postflight-v1.schema.json",
+  "title": "RefundDesk Lightsail read-only host postflight v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "nonce",
+    "startedAt",
+    "completedAt",
+    "exitCode",
+    "result",
+    "code",
+    "posture",
+    "diagnostics",
+    "captures",
+    "containment",
+    "availability",
+    "financial",
+    "redaction"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "refunddesk.lightsail.host-postflight" },
+    "nonce": { "$ref": "#/$defs/lowerHex64" },
+    "startedAt": { "$ref": "#/$defs/timestamp" },
+    "completedAt": { "$ref": "#/$defs/timestamp" },
+    "exitCode": { "enum": [0, 20, 21] },
+    "result": { "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+    "code": { "$ref": "#/$defs/resultCode" },
+    "posture": {
+      "enum": [
+        "COHERENT_CONTAINED",
+        "RECOVERABLE_RUNTIME_STOPPED",
+        "COHERENT_RUNNING",
+        "DIVERGENT",
+        "UNKNOWN"
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/diagnostic" }
+    },
+    "captures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b"],
+      "properties": {
+        "a": { "$ref": "#/$defs/capture" },
+        "b": { "$ref": "#/$defs/capture" }
+      }
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "liveDisabled",
+        "workerStopped",
+        "caddyStopped",
+        "maintenanceStopped",
+        "publicListenersClosed",
+        "journalsClosed",
+        "fenceClosed",
+        "sensitiveModesSafe"
+      ],
+      "properties": {
+        "liveDisabled": { "type": "boolean" },
+        "workerStopped": { "type": "boolean" },
+        "caddyStopped": { "type": "boolean" },
+        "maintenanceStopped": { "type": "boolean" },
+        "publicListenersClosed": { "type": "boolean" },
+        "journalsClosed": { "type": "boolean" },
+        "fenceClosed": { "type": "boolean" },
+        "sensitiveModesSafe": { "type": "boolean" }
+      }
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capturesStable",
+        "metadataCoherent",
+        "containersCoherent",
+        "coreHealthy",
+        "recoverableRuntimeStopped"
+      ],
+      "properties": {
+        "capturesStable": { "type": "boolean" },
+        "metadataCoherent": { "type": "boolean" },
+        "containersCoherent": { "type": "boolean" },
+        "coreHealthy": { "type": "boolean" },
+        "recoverableRuntimeStopped": { "type": "boolean" }
+      }
+    },
+    "financial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotAvailable", "stable", "quiescent"],
+      "properties": {
+        "snapshotAvailable": { "type": "boolean" },
+        "stable": { "type": "boolean" },
+        "quiescent": { "type": "boolean" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawSecretPresent",
+        "rawApiKeyPresent",
+        "rawSignaturePresent",
+        "rawPayloadPresent",
+        "customerDataPresent",
+        "arbitraryPathPresent",
+        "stderrPresent"
+      ],
+      "properties": {
+        "rawSecretPresent": { "const": false },
+        "rawApiKeyPresent": { "const": false },
+        "rawSignaturePresent": { "const": false },
+        "rawPayloadPresent": { "const": false },
+        "customerDataPresent": { "const": false },
+        "arbitraryPathPresent": { "const": false },
+        "stderrPresent": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "lowerHex40": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "lowerHex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "revisionOrNull": {
+      "oneOf": [{ "$ref": "#/$defs/lowerHex40" }, { "type": "null" }]
+    },
+    "hex64OrNull": {
+      "oneOf": [{ "$ref": "#/$defs/lowerHex64" }, { "type": "null" }]
+    },
+    "sha256OrNull": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "booleanOrNull": {
+      "oneOf": [{ "type": "boolean" }, { "type": "null" }]
+    },
+    "countOrNull": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        { "type": "null" }
+      ]
+    },
+    "diagnostic": {
+      "enum": [
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "ACTIVE_REVISION_UNREADABLE",
+        "CURRENT_SOURCE_UNREADABLE",
+        "SOURCE_MARKER_UNREADABLE",
+        "RELEASE_ENV_UNREADABLE",
+        "COMPOSE_SOURCE_UNREADABLE",
+        "MANIFEST_UNREADABLE",
+        "CONTAINER_INVENTORY_UNREADABLE",
+        "EXPECTED_IMAGE_UNREADABLE",
+        "SYSTEMD_INVENTORY_UNREADABLE",
+        "LISTENER_INVENTORY_UNREADABLE",
+        "LIVE_INTERLOCK_UNREADABLE",
+        "DATABASE_SNAPSHOT_UNREADABLE",
+        "METADATA_MISMATCH",
+        "CONTAINER_IDENTITY_MISMATCH",
+        "UNEXPECTED_RUNNING_CONTAINER",
+        "UNRESOLVED_JOURNAL",
+        "RELEASE_FENCE_ACTIVE",
+        "SENSITIVE_FILE_MODE_INVALID",
+        "TRANSITION_COMMIT_MARKER_INVALID",
+        "COMPLETION_MARKER_INVALID",
+        "LIVE_INTERLOCK_ENABLED",
+        "CORE_RUNTIME_INVALID",
+        "WORKER_RUNNING",
+        "CADDY_RUNNING",
+        "MAINTENANCE_ACTIVE",
+        "PUBLIC_LISTENER_ACTIVE",
+        "FINANCIAL_WORK_ACTIVE",
+        "CAPTURE_CHANGED"
+      ]
+    },
+    "resultCode": {
+      "enum": [
+        "PASS_CONTAINED",
+        "PASS_RECOVERABLE_RUNTIME_STOPPED",
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "ACTIVE_REVISION_UNREADABLE",
+        "CURRENT_SOURCE_UNREADABLE",
+        "SOURCE_MARKER_UNREADABLE",
+        "RELEASE_ENV_UNREADABLE",
+        "COMPOSE_SOURCE_UNREADABLE",
+        "MANIFEST_UNREADABLE",
+        "CONTAINER_INVENTORY_UNREADABLE",
+        "EXPECTED_IMAGE_UNREADABLE",
+        "SYSTEMD_INVENTORY_UNREADABLE",
+        "LISTENER_INVENTORY_UNREADABLE",
+        "LIVE_INTERLOCK_UNREADABLE",
+        "DATABASE_SNAPSHOT_UNREADABLE",
+        "METADATA_MISMATCH",
+        "CONTAINER_IDENTITY_MISMATCH",
+        "UNEXPECTED_RUNNING_CONTAINER",
+        "UNRESOLVED_JOURNAL",
+        "RELEASE_FENCE_ACTIVE",
+        "SENSITIVE_FILE_MODE_INVALID",
+        "TRANSITION_COMMIT_MARKER_INVALID",
+        "COMPLETION_MARKER_INVALID",
+        "LIVE_INTERLOCK_ENABLED",
+        "CORE_RUNTIME_INVALID",
+        "WORKER_RUNNING",
+        "CADDY_RUNNING",
+        "MAINTENANCE_ACTIVE",
+        "PUBLIC_LISTENER_ACTIVE",
+        "FINANCIAL_WORK_ACTIVE",
+        "CAPTURE_CHANGED"
+      ]
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "service",
+        "presentCount",
+        "containerId",
+        "imageId",
+        "expectedImageId",
+        "imageReferenceMatches",
+        "noPublishedPorts",
+        "effectiveGlobalLiveDisabled",
+        "effectiveLiveWebhookDisabled",
+        "status",
+        "health",
+        "projectLabelMatches",
+        "serviceLabelMatches",
+        "revisionLabel"
+      ],
+      "properties": {
+        "service": { "enum": ["postgres", "verifier", "worker", "web", "caddy"] },
+        "presentCount": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "containerId": { "$ref": "#/$defs/hex64OrNull" },
+        "imageId": { "$ref": "#/$defs/sha256OrNull" },
+        "expectedImageId": { "$ref": "#/$defs/sha256OrNull" },
+        "imageReferenceMatches": { "type": "boolean" },
+        "noPublishedPorts": { "type": "boolean" },
+        "effectiveGlobalLiveDisabled": { "$ref": "#/$defs/booleanOrNull" },
+        "effectiveLiveWebhookDisabled": { "$ref": "#/$defs/booleanOrNull" },
+        "status": {
+          "enum": [
+            "MISSING",
+            "CREATED",
+            "RUNNING",
+            "RESTARTING",
+            "REMOVING",
+            "PAUSED",
+            "EXITED",
+            "DEAD",
+            "UNKNOWN"
+          ]
+        },
+        "health": { "enum": ["MISSING", "NONE", "STARTING", "HEALTHY", "UNHEALTHY", "UNKNOWN"] },
+        "projectLabelMatches": { "type": "boolean" },
+        "serviceLabelMatches": { "type": "boolean" },
+        "revisionLabel": { "$ref": "#/$defs/revisionOrNull" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeRevision",
+        "currentRevision",
+        "sourceRevision",
+        "releaseEnvironmentRevision",
+        "manifestRevision",
+        "composeSha256",
+        "installedManifestSha256",
+        "manifestSchemaValid"
+      ],
+      "properties": {
+        "activeRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "currentRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "sourceRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "releaseEnvironmentRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "manifestRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "composeSha256": { "$ref": "#/$defs/hex64OrNull" },
+        "installedManifestSha256": { "$ref": "#/$defs/hex64OrNull" },
+        "manifestSchemaValid": { "type": "boolean" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operatorLockShared",
+        "transitionJournalPresent",
+        "transitionCommitMarkerValid",
+        "runtimeQuiesceJournalPresent",
+        "backupJournalPresent",
+        "legacyAppIdJournalPresent",
+        "managedTransitionInFlightPresent",
+        "managedTransitionCompletion",
+        "activeReleaseUnitCount",
+        "activeFenceUnitCount",
+        "releaseRuntimeMarkerCount",
+        "dockerInventoryAvailable",
+        "expectedImagesAvailable",
+        "sensitiveModesSafe"
+      ],
+      "properties": {
+        "operatorLockShared": { "type": "boolean" },
+        "transitionJournalPresent": { "type": "boolean" },
+        "transitionCommitMarkerValid": { "type": "boolean" },
+        "runtimeQuiesceJournalPresent": { "type": "boolean" },
+        "backupJournalPresent": { "type": "boolean" },
+        "legacyAppIdJournalPresent": { "type": "boolean" },
+        "managedTransitionInFlightPresent": { "type": "boolean" },
+        "managedTransitionCompletion": { "enum": ["ABSENT", "VALID_PASS_CONTAINED", "INVALID"] },
+        "activeReleaseUnitCount": { "$ref": "#/$defs/countOrNull" },
+        "activeFenceUnitCount": { "$ref": "#/$defs/countOrNull" },
+        "releaseRuntimeMarkerCount": { "$ref": "#/$defs/countOrNull" },
+        "dockerInventoryAvailable": { "type": "boolean" },
+        "expectedImagesAvailable": { "type": "boolean" },
+        "sensitiveModesSafe": { "type": "boolean" }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platformLiveDisabled",
+        "workerLiveDisabled",
+        "liveWebhookDisabled",
+        "backupTimerActive",
+        "retentionTimerActive",
+        "backupServiceActive",
+        "retentionServiceActive",
+        "quiesceRecoveryActive",
+        "tcp80Listening",
+        "tcp443Listening",
+        "udp80Listening",
+        "udp443Listening",
+        "systemdInventoryAvailable",
+        "listenerInventoryAvailable",
+        "liveInterlocksAvailable",
+        "runtimeLiveInterlocksAvailable",
+        "unexpectedRunningContainerCount"
+      ],
+      "properties": {
+        "platformLiveDisabled": { "type": "boolean" },
+        "workerLiveDisabled": { "type": "boolean" },
+        "liveWebhookDisabled": { "type": "boolean" },
+        "backupTimerActive": { "type": "boolean" },
+        "retentionTimerActive": { "type": "boolean" },
+        "backupServiceActive": { "type": "boolean" },
+        "retentionServiceActive": { "type": "boolean" },
+        "quiesceRecoveryActive": { "type": "boolean" },
+        "tcp80Listening": { "type": "boolean" },
+        "tcp443Listening": { "type": "boolean" },
+        "udp80Listening": { "type": "boolean" },
+        "udp443Listening": { "type": "boolean" },
+        "systemdInventoryAvailable": { "type": "boolean" },
+        "listenerInventoryAvailable": { "type": "boolean" },
+        "liveInterlocksAvailable": { "type": "boolean" },
+        "runtimeLiveInterlocksAvailable": { "type": "boolean" },
+        "unexpectedRunningContainerCount": { "$ref": "#/$defs/countOrNull" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotAvailable",
+        "systemIdentifier",
+        "activeWorkflows",
+        "unreleasedPaymentGuards",
+        "activeFinancialJobs",
+        "liveTenants",
+        "liveInstallations",
+        "preparedTransactions",
+        "refundRequests",
+        "auditEvents"
+      ],
+      "properties": {
+        "snapshotAvailable": { "type": "boolean" },
+        "systemIdentifier": {
+          "oneOf": [{ "type": "string", "pattern": "^[1-9][0-9]{17,19}$" }, { "type": "null" }]
+        },
+        "activeWorkflows": { "$ref": "#/$defs/countOrNull" },
+        "unreleasedPaymentGuards": { "$ref": "#/$defs/countOrNull" },
+        "activeFinancialJobs": { "$ref": "#/$defs/countOrNull" },
+        "liveTenants": { "$ref": "#/$defs/countOrNull" },
+        "liveInstallations": { "$ref": "#/$defs/countOrNull" },
+        "preparedTransactions": { "$ref": "#/$defs/countOrNull" },
+        "refundRequests": { "$ref": "#/$defs/countOrNull" },
+        "auditEvents": { "$ref": "#/$defs/countOrNull" }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capturedAt", "identity", "containers", "control", "surface", "database"],
+      "properties": {
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "containers": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "postgres" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "verifier" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "worker" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "web" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/container" },
+                { "properties": { "service": { "const": "caddy" } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "control": { "$ref": "#/$defs/control" },
+        "surface": { "$ref": "#/$defs/surface" },
+        "database": { "$ref": "#/$defs/database" }
+      }
+    }
+  }
+}

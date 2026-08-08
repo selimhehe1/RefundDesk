@@ -1325,7 +1325,8 @@ test("same-revision releases recreate every fenced stateless runtime", async () 
   assert.ok(runtimeAdmission > autosaveCleanup);
   assert.ok(runtimeAdmission > candidateProof);
   assert.ok(candidateStart > runtimeAdmission);
-  assert.equal((release.match(/--force-recreate/gu) ?? []).length, 1);
+  assert.equal(release.split(candidateCommand).length - 1, 1);
+  assert.equal((release.match(/--force-recreate/gu) ?? []).length, 2);
   assert.equal(candidateBlock, `${candidateCommand}\n`);
   assert.doesNotMatch(candidateBlock, /postgres|--volumes/u);
   const autosaveContract = shellFunction(release, "remove_caddy_autosave_residue");
@@ -2141,6 +2142,24 @@ test("release rollback preserves the recoverable metadata lattice", async () => 
   assert.match(rollback, /PREVIOUS_RETENTION_WANTS_TARGET/u);
   assert.match(rollback, /PREVIOUS_BACKUP_WANTS_TARGET/u);
   assert.match(rollback, /preserving root-only recovery artifact after incomplete rollback/u);
+  const journalRetirementGuard = [
+    '  if [[ "${TRANSITION_COMMITTED}" != "true" &&',
+    '    "${metadata_rollback_ok}" == "true" &&',
+    '    "${candidate_runtime_stopped}" == "true" ]] &&',
+    '    [[ -e "${TRANSITION_JOURNAL_FILE}" || -L "${TRANSITION_JOURNAL_FILE}" ]]; then',
+    '    if python3 "${TRANSITION_HELPER}" durable-unlink \\',
+    '      --target "${TRANSITION_JOURNAL_FILE}" >/dev/null; then',
+  ].join("\n");
+  assert.equal(rollback.split(journalRetirementGuard).length - 1, 1);
+  assert.match(
+    rollback,
+    /after diagnosis, recreate the runtime at \$\{ACTIVE_REVISION_FOR_ROTATION\}:[^\n]+--force-recreate verifier worker web caddy/u,
+  );
+  assert.match(
+    rollback,
+    /then rerun only the exact authorized release command; the rollback leaves the runtime stopped/u,
+  );
+  assert.doesNotMatch(rollback, /refunddesk_compose up/u);
   assert.match(
     rollback,
     /if \[\[ "\$\{TRANSITION_COMMITTED\}" == "true" \]\]; then[\s\S]+rm -f -- "\$\{PREVIOUS_RELEASE_ENV_BACKUP\}"/u,

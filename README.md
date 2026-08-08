@@ -9,11 +9,19 @@ notifications are deliberately disabled. An AWS sandbox deployment is authorized
 
 ## Current pilot status
 
-As of 28 July 2026, RefundDesk is a hosted test/sandbox pilot ready for controlled evaluation. It
-is not commercially ready: live mode, Stripe review submission and Marketplace publication remain
-disabled and unapproved. A coordinated rotation of the current Stripe-facing sandbox credentials
-remains the final operator handoff; the broader versioned application-key drill remains an open
-hardening gate. Evidence artifacts named below are redacted and retained locally under the ignored
+As of 8 August 2026, RefundDesk remains a test/sandbox engineering pilot and is not available for
+commercial evaluation. Live mode, customer data, Stripe review submission and Marketplace
+publication remain disabled and unapproved. ADR 0024 records that the exposed exact-e4
+managed-sandbox read/effect and App-signing bindings completed their replacement-only transition
+with `PASS_CONTAINED` on 3 August. ADR 0034 records that two independent reviews of its nine
+execution-time corrections ended `NO_GO_REOPENING`; this does not relabel the historical outcome,
+but the consumed chain cannot admit it or support a reopening. Two read-only pre-commit diagnostics
+on 8 August observed revision `8da280b7...`, public Caddy, the worker and both maintenance timers
+active, internal TCP listeners on ports 80/443 and a runtime quiescence journal. They also observed
+the AWS 80/443 firewall closed and unchanged, live disabled and the financial state quiescent. The
+diagnostics used pre-final tooling and are not an admissible ADR 0032 postflight; a committed,
+HEAD-bound capture remains pending. Evidence artifacts named below are redacted and retained
+locally under the ignored
 `sandbox-evidence.local/` directory; they are not committed to the repository.
 
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
@@ -75,21 +83,26 @@ PostgreSQL integration suites, build, secret scanning and dependency audits pass
 
 The current local hardening revision also replaces a Prisma sibling-relation load at the financial
 execution boundary with explicit sequential reads on the transaction client. Its full suite now
-passes 423 workspace tests and 21 PostgreSQL 18 integration tests; the latter cover the real
+passes 716 workspace tests and 29 PostgreSQL 18 integration tests; the latter cover the real
 adapter-pg boundary and the isolated queue capability, so neither an overlapping
 `pg.Client.query()` warning nor a worker-capable pg-boss login can be silently accepted. The exact
-standalone Stripe App graph separately passes 69 tests under its pinned pnpm 10.30.3 lockfile.
+standalone Stripe App graph separately passes 115 tests under its pinned pnpm 10.30.3 lockfile.
 Formatting, lint, typecheck, build, secret scanning and production dependency audits also pass.
 The PostgreSQL gate now creates and removes exact allowlisted ephemeral databases, applies
 transaction-owning migrations before opening its rollback-only fixture transaction, and fails
-closed instead of reporting skipped tests when its PostgreSQL URL is absent. The full 21-case gate
-passed twice consecutively with no generated database or probe role left behind.
+closed instead of reporting skipped tests when its PostgreSQL URL is absent. The current 29-case
+gate passed with no generated database or probe role left behind.
 
-The hosted sandbox runs immutable backend commit
-`42a1e4e65cf6e9144261a077c6956e77b368fffc` on one hardened AWS Lightsail instance. Its five
-isolated PostgreSQL, verifier, worker, web and Caddy containers are healthy, PostgreSQL 18 is in
-use, the HTTPS origin is stable and live mode remains false. Public health returns `200`, while
-public readiness, the private verifier and the live webhook route remain absent from ingress.
+Exact-e4 (`e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`) is the last revision with admitted
+canonical deployment evidence on the approved AWS Lightsail instance. ADR 0030 records later
+release attempts involving `8da280b7...`; the active state remains
+`HOST_STATE_INDETERMINATE_POSTFLIGHT_REQUIRED` pending a final redacted ADR 0032 host postflight
+captured from committed source. The preliminary diagnostics above are strong evidence of a
+containment divergence but cannot be promoted into an admitted host-state record. Do not infer
+public health or complete release/Compose correctness from them. The implemented postflight is a
+point-in-time containment observer only; it cannot authorize release, recovery, ingress reopening,
+worker or maintenance restart, or a financial proof. Those operations also require the applicable
+tracked successor, exact CI and attested bundle where relevant, and a separate decision.
 
 Web, worker and migration have separate configuration and database authority. Four distinct
 restricted Stripe test/sandbox credentials are split between web reads and worker effects, and the
@@ -100,8 +113,9 @@ exact financial and identity snapshot. A provider-neutral multi-target Dockerfil
 minimal Next.js server, a portable worker and a one-shot migrator. Web and worker have independent
 readiness probes for their exact database, queue, schedule and scanner responsibilities.
 
-The direct-account webhook gate is `passed_real` on that hosted revision in both Stripe test mode
-and a managed sandbox. In each environment, a real signed `refund.created` delivery was persisted
+The direct-account webhook gate is `passed_real` on the earlier hosted revision
+`42a1e4e65cf6e9144261a077c6956e77b368fffc` in both Stripe test mode and a managed sandbox. In each
+environment, a real signed `refund.created` delivery was persisted
 and processed once into one external-refund alert. A Stripe Workbench manual replay received a
 second `2xx` response while the durable receipt and alert snapshot remained unchanged. No live or
 Connect request was used. The obsolete test endpoint targeting a blocked legacy connected route
@@ -111,7 +125,8 @@ was then deleted; both direct endpoints remained enabled and unchanged. Redacted
 legacy-cleanup artifact has SHA-256
 `5c33976bae39318417a5282542a09c2f546c9eacc838952cb620bce4943f8952`.
 
-The active revision also passed a real encrypted backup and restore drill. Its canonical scheduled
+That earlier `42a1e4e...` revision also passed a real encrypted backup and restore drill. Its
+canonical scheduled
 backup produced an `age`-encrypted archive stored with AES-256 server-side encryption in the
 private versioned bucket. The archive hash, PostgreSQL checksums, migrations and separated runtime
 roles were verified on a disposable PostgreSQL 18 verifier with the restore container isolated
@@ -122,9 +137,23 @@ and live-disabled. The redacted evidence file
 `9221974966fc2a62bbfa19ca883354b9d2098cdb19392f29a6f19ef18a77d939`. This is a
 test/sandbox recovery proof, not a production disaster-recovery or RPO/RTO claim.
 
+Historical exact-e4 revision `e4cec060...` separately passed its canonical release, natural retention and
+scheduled encrypted cold backup. Its first exact disposable restore attempt failed closed before
+decryption because a Windows PowerShell native-pipeline carriage return made the final SHA-256
+argument 65 bytes. No container or PostgreSQL process started, no retry was made, and remote plus
+independent AWS cleanup found zero residue. Redacted historical
+failure evidence is `restore-e4cec060-failed-pre-effect-2026-07-31.local.json`, SHA-256
+`ab6233b44cba2fc8d1970c54ea25171da8ee765f0cbd76a2dd1efe54366782db`; that artifact is not
+recoverability evidence. The corrected path then restored the exact e4 archive successfully on
+1 August 2026 and removed every disposable resource. Redacted success evidence is
+`restore-e4cec060-2026-08-01.local.json`, SHA-256
+`951505c6b61ce77a4bc04645837e595e33c2b0a13543088913af4c153fc3acf3`, with top-level result
+`PASS`. This is revision-bound sandbox recovery evidence, not a production DR, RPO or RTO claim;
+the paid verifier exercise must not be repeated without new authorization.
+
 Unpublished Stripe App `0.1.3` binds the UI to the stable hosted sandbox origin and was uploaded in
 test mode from clean commit `c241a097fc5f4b8e8eaa2f057f9c7db40d9dffa3`. The backend trees are
-unchanged from deployed commit `42a1e4e65cf6e9144261a077c6956e77b368fffc`. Stripe CLI reports
+unchanged from then-deployed commit `42a1e4e65cf6e9144261a077c6956e77b368fffc`. Stripe CLI reports
 `UPLOAD_COMPLETED`; neither `--live` nor `--force` was used, and no review or publication was
 requested. The reproducible Git source archive has SHA-256
 `f8b792876ce8d1fe969a5d24e8ab3c5a37d13eb89755ed223caa3f7a61471611`, the committed manifest

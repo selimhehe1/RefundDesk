@@ -3,7 +3,8 @@
 > Version : 1.1
 > Date de décision : 25 juillet 2026
 > Statut : phase 0 `PASS` — 34/34 cas Stripe réels `passed_real`
-> Livraison : pilote test/sandbox uniquement ; phase 1 complète localement
+> Livraison : pilote test/sandbox uniquement ; backend hébergé et App non publiée vérifiés avec
+> limites explicites
 > Langue produit : anglais
 > Langue de référence : français, identifiants techniques en anglais
 
@@ -82,6 +83,19 @@ Il interdit sans nouvelle autorisation explicite :
 - toute publication Marketplace.
 
 Les secrets sont saisis localement dans un fichier ignoré par Git ou un gestionnaire de secrets. Ils ne sont ni collés dans un ticket ou une conversation, ni journalisés, ni inclus dans un rapport.
+
+### 2.1 Extension d’autorisation du 28 juillet 2026
+
+Une autorisation ultérieure et limitée couvre :
+
+- le dépôt GitHub RefundDesk configuré et ses Actions nécessaires aux artefacts test/sandbox ;
+- un unique hébergement AWS test/sandbox, sauvegardes et vérificateurs jetables compris, dans une
+  enveloppe totale de 10 EUR par mois ;
+- les versions Stripe App non publiées nécessaires à la preuve du pilote sur objets synthétiques.
+
+Cette extension ne couvre ni un autre dépôt, ni des données client, ni le live, ni un déploiement de
+production, ni une soumission Stripe, ni une publication Marketplace. L’alerte budgétaire AWS ne
+constitue pas un hard cap : l’opérateur vérifie le coût et supprime toute ressource jetable.
 
 ## 3. Décisions techniques verrouillées
 
@@ -383,7 +397,7 @@ Après liaison :
 
 ## 9. Webhooks, remboursements externes et scans
 
-Les endpoints connected sont séparés pour :
+Le pilote fixe deux endpoints Stripe de compte direct, séparés pour :
 
 - test ;
 - managed sandbox ;
@@ -391,13 +405,44 @@ Les endpoints connected sont séparés pour :
 
 Chaque endpoint :
 
-- vérifie la signature sur le corps brut ;
-- refuse un compte ou environnement inattendu ;
-- déduplique l’Event par identifiant ;
+- vérifie la signature sur le corps brut avant toute interprétation ;
+- exige `2026-06-24.dahlia` pour `refund.created`, `refund.updated` et `refund.failed` ;
+- pour `account.application.authorized` et `account.application.deauthorized`, accepte seulement
+  `2026-06-24.dahlia` ou l'exception lifecycle explicitement observée
+  `2026-02-25.clover` ;
+- refuse avant persistance une version absente, arbitraire, seulement préfixée ou tout autre couple
+  type/version ;
+- refuse `livemode=true` et tout Event portant `Event.account`, réservé aux livraisons Connect ;
+- dérive le compte uniquement de la configuration immuable de la route et refuse un environnement
+  inattendu ;
+- déduplique l’Event par `(stripe_account_id, stripe_event_id)` ;
 - persiste un receipt minimal ;
 - acquitte rapidement puis délègue le traitement.
 
+Les routes publiques sont `/api/webhooks/stripe-account/test` et
+`/api/webhooks/stripe-account/sandbox`. La route live reste bloquée. Les anciennes routes
+`/api/webhooks/stripe-connected/*` sont absentes et bloquées ; leurs receipts historiques
+`connected_test` et `connected_sandbox` restent récupérables sans être relabellisés.
+
+Les credentials Stripe du pilote sont des credentials de compte direct, liés chacun à un compte
+attendu. Aucun appel ne transmet `Stripe-Account`. Une divergence installation/compte est refusée
+avant tout appel réseau.
+
+La destination reste configurée avec `2026-06-24.dahlia`, qui est l'unique contrat accepté pour les
+objets Refund. Ce réglage ne permet toutefois pas d'inférer `Event.api_version` pour tous les types :
+une livraison réelle `account.application.authorized` de l'App `0.1.4` en managed sandbox a porté
+`2026-02-25.clover`. L'exception Clover est donc strictement limitée aux deux types lifecycle et à
+la lecture de leur App ID attendu ; elle ne s'applique jamais à un Refund et ne constitue pas une
+compatibilité générale avec d'anciennes versions.
+
 Le système traite au minimum les événements Refund nécessaires à la création et aux changements d’état.
+
+Les événements `account.application.authorized` et `account.application.deauthorized` restent des
+signaux lifecycle candidats filtrés par l'App ID et ce contrat type/version exact. Une livraison
+`authorized` observée puis rejetée ne prouve pas son traitement. Même un `authorized` traité avec
+succès dans un seul environnement ne prouve ni `deauthorized`, ni l'autre environnement, ni la
+sûreté de désinstallation. Jusqu'à la preuve complète, `context/sync` signé Administrator reste
+l'autorité de provisioning et ne prouve jamais une désinstallation.
 
 ### 9.1 Classification
 
@@ -458,7 +503,7 @@ Routes signées :
 
 Routes système :
 
-- webhooks connected `test`, `sandbox`, `live` ;
+- webhooks compte direct `test`, `sandbox` et route `live` désactivée ;
 - `health` pour la vie du processus ;
 - `ready` pour les dépendances indispensables.
 
@@ -479,6 +524,38 @@ de route, de binding ou d’accès — ainsi que les commandes illisibles avant 
 restent hors du périmètre d’idempotence et ne peuvent jamais servir à rejouer une réponse d’un
 autre contexte.
 
+### 10.2 Limitation durable des requêtes signées
+
+Après vérification de la signature Stripe sur les octets bruts et validation syntaxique du compte
+et de l'environnement test/sandbox signés, mais avant toute résolution tenant, lecture de receipt ou
+exécution métier, le web consomme une capacité GCRA globale et durable dans PostgreSQL.
+
+Le scope associe `stripe_account_id` et `environment` signés à la classe de la route serveur,
+`request_class`, qui vaut exclusivement `mutation` ou `read`. La table ne conserve que
+`SHA-256(account_id || ":" || environment || ":" || request_class)`, jamais les valeurs lisibles du
+scope. Les paramètres sont :
+
+| Classe     | Burst | Débit soutenu | Intervalle |
+| ---------- | ----: | ------------: | ---------: |
+| `mutation` |    30 | 0,5 requête/s |        2 s |
+| `read`     |    60 |   1 requête/s |        1 s |
+
+L'horloge et l'état sont partagés par PostgreSQL afin que la limite survive aux redémarrages et
+reste commune à plusieurs processus web. La consommation verrouille atomiquement la ligne du scope.
+La création d'un nouveau scope sérialise le contrôle de cardinalité, supprime les buckets inactifs
+depuis dix minutes sans dette GCRA, puis refuse au-delà de 256 buckets actifs.
+
+Une unique fonction `SECURITY DEFINER` expose la capacité. Parmi les rôles runtime, seul le web peut
+l'exécuter ; aucun runtime n'accède directement à la table, et les rôles worker, queue et maintenance
+sont refusés. Un refus de capacité valide renvoie `429` avec `Retry-After`. Toute erreur PostgreSQL,
+attente de verrou, saturation de cardinalité ou décision illisible renvoie un `503` générique et
+retryable ; aucun fallback mémoire ne permet la requête.
+
+Ce contrôle ne limite pas les signatures absentes ou invalides, rejetées avant sa consommation. La
+protection de la vérification cryptographique et de l'ingress public reste une frontière edge
+distincte. L'architecture et le code local ne constituent ni une preuve PostgreSQL réelle, ni un
+end-to-end, ni un déploiement ; ces statuts exigent les gates et preuves liés à la révision exacte.
+
 ## 11. Données minimales
 
 Tables conceptuelles :
@@ -491,6 +568,7 @@ Tables conceptuelles :
 - alertes externes ;
 - audit append-only ;
 - `api_mutation_receipts` ;
+- buckets globaux de limitation des requêtes signées, identifiés seulement par digest ;
 - checkpoints de réconciliation ;
 - jobs pg-boss dans son schéma dédié.
 
@@ -501,7 +579,8 @@ Contraintes attendues :
 - un guard financier actif par cible et demande ;
 - premier Refund ID immuable ;
 - montant strictement positif ;
-- unicité des receipts Event et mutation ;
+- unicité des receipts Event par compte Stripe et des receipts mutation ;
+- consommation atomique du limiteur par son unique fonction, sans accès direct runtime à sa table ;
 - audit non modifiable par les rôles runtime.
 
 ## 12. Isolation et cryptographie
@@ -531,6 +610,13 @@ Les preuves utilisent des clés HMAC séparées :
 Les liens d’export d’audit à courte durée de vie utilisent une troisième clé
 de signature indépendante. Cette clé n’est réutilisée ni pour le chiffrement
 des champs ni pour les preuves de remboursement.
+
+Dans le pilote, ce lien est un bearer rejouable jusqu’à son expiration de cinq minutes : son nonce
+sert à l’unicité et à la corrélation d’audit, pas à prouver une consommation unique. Chaque
+téléchargement revalide l’installation, l’environnement et les droits actuels de l’acteur, puis
+ajoute un événement `audit.export_downloaded`. Une future politique à usage unique exigerait une
+consommation PostgreSQL atomique et une décision d’architecture distincte ; un cache mémoire ne
+serait pas acceptable.
 
 ## 13. Journalisation et audit
 
@@ -597,6 +683,12 @@ La procédure détaillée est dans `docs/RETENTION.md`.
 - deux décisions concurrentes ;
 - un job unique ;
 - mutation receipt concurrent ;
+- burst, recharge et concurrence GCRA pour les classes `mutation` et `read` ;
+- persistance après redémarrage, séparation compte/environnement/classe, nettoyage après dix minutes
+  et plafond global de 256 scopes ;
+- exécution de la fonction de limitation par le seul rôle web, avec refus de table direct et refus
+  des rôles worker, queue et maintenance ;
+- `429` avec `Retry-After` sur refus valide et `503` fail-closed sur toute indisponibilité du limiteur ;
 - RLS tenant A/B et fail-closed sans contexte ;
 - refus du rôle web sur les exécutions, tentatives, candidats et transitions worker ;
 - décision durable, approbateur distinct actif et quorum imposés par la base ;
@@ -618,6 +710,10 @@ La procédure détaillée est dans `docs/RETENTION.md`.
 
 ### 15.4 Webhooks et scans
 
+- acceptation de `2026-02-25.clover` uniquement pour les deux types lifecycle et l'App ID attendu ;
+- acceptation de `2026-06-24.dahlia` pour le contrat normal de destination ;
+- rejet avant persistance d'un Refund Clover, d'une version lifecycle absente, arbitraire ou
+  seulement préfixée, et d'un App ID différent ;
 - doublons et événements hors ordre ;
 - webhook avant réponse API ;
 - idempotency key absente ;
@@ -698,6 +794,57 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
 - au moins vingt workflows cumulés ;
 - zéro double remboursement ;
 - zéro remboursement sur le mauvais compte ou environnement.
+
+### 18.1 État de preuve observé au 30 juillet 2026
+
+- Le backend AWS test/sandbox actif est la révision immuable
+  `4521b8c9e783d807813686476e4e01dfaf85e798`; les cinq services sont sains, les journaux de
+  transition sont fermés, les timers sont actifs et les deux interlocks live restent faux.
+- Les destinations direct-account test et managed sandbox ont chacune livré un vrai
+  `refund.created`. Le receipt a été traité une fois et le rejeu manuel Workbench a laissé l’état
+  durable inchangé. La destination connected historique identifiée a été supprimée, sans réécrire
+  les receipts historiques conservés. Cette preuve webhook reste liée à `42a1e4e...`.
+- Des sauvegardes froides PostgreSQL 18 liées à `42a1e4e...`, `71bbd98...` puis à l’actuelle
+  `4521b8c9...`, chiffrées côté
+  client avec `age` et côté bucket avec AES-256, ont chacune été restaurées sur un PostgreSQL 18.4
+  jetable. Les checksums physiques, migrations et rôles runtime ont passé, puis toutes les
+  ressources temporaires ont été supprimées. Cette preuve reste liée à chaque archive exacte et
+  n’est jamais transférée à un futur changement de source.
+- La Stripe App non publiée `0.1.3`, issue du commit propre
+  `c241a097fc5f4b8e8eaa2f057f9c7db40d9dffa3`, a été téléversée, installée dans le sandbox de test
+  distinct et réautorisée pour l’origine hébergée.
+- La Stripe App non publiée `0.1.4`, issue du commit propre
+  `71bbd98fa1e5d9989f92fba9310c200e7cf63d4f`, a ensuite été fraîchement installée dans le managed
+  sandbox distinct via le parcours officiel external-test de Stripe.
+- Le code exact de l’App a généré de vrais octets et une vraie signature Stripe ; leur relais
+  inchangé vers l’API hébergée a reçu HTTP 200 avec un schéma valide. Le profil navigateur contrôlé
+  a bloqué l’envoi cross-origin avant observation d’une réponse normale : la livraison navigateur
+  directe reste `BLOCKED_TOOLING`, aucun end-to-end navigateur natif ni effet financier hébergé
+  n’est revendiqué par cette preuve. L’installation et le relais sont des observations opérateur :
+  la capture brute et le harness temporaire ont été détruits et ne sont pas reproductibles depuis
+  l’artefact expurgé seul.
+- La correction de release `8357d956...` force la recréation des quatre runtimes stateless lors
+  d’un changement de configuration à révision identique, après journal durable et fence. Une
+  transition réelle du seul App ID a recréé ces quatre conteneurs sans recréer PostgreSQL, sans
+  changer les empreintes des clés applicatives ni le token du vérificateur et sans activer le live.
+- Sur `8357d956...`, une livraison réelle managed-sandbox
+  `account.application.authorized` a reçu HTTP 200, créé un unique receipt traité et un unique audit
+  `installation.authorized` appliqué, sans effet financier. Le rejeu manuel Workbench suivant a
+  reçu HTTP 200 avec `duplicate=true`.
+- La correction `4521b8c9...` remplace le résultat PostgreSQL `void` incompatible par un sentinel
+  entier dans le même CTE matérialisé de verrouillage. Le rejeu exact d’un vrai
+  `account.application.deauthorized` managed-sandbox a reçu HTTP 200, créé un receipt et un audit,
+  placé le tenant en attente de suppression et n’a causé aucun effet financier ; le second rejeu a
+  été dédupliqué. Cela prouve le traitement de ce vrai Event, pas une livraison automatique
+  post-correction.
+- L’installation fraîche de l’App `0.1.4` a ensuite produit une livraison automatique
+  `account.application.authorized` reçue HTTP 200 et appliquée une fois ; le rejeu manuel a été
+  dédupliqué. Le compte test et une livraison automatique `deauthorized` post-correction restent
+  ouverts, tout comme le transport navigateur financier natif.
+- La preuve expurgée combinée est
+  `hosted-sandbox-4521b8c9-lifecycle-backup-restore-2026-07-30.json`, SHA-256
+  `f5b41ee5f192a5744fdeed762845747cfb82e3284cde6a346fc33a6b27322d5f`.
+- Les exercices complets de rotation et de compromission des clés restent ouverts.
 
 ## 19. Références officielles
 

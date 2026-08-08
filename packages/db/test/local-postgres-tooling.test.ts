@@ -114,6 +114,33 @@ describe("local PostgreSQL tooling", () => {
     );
   });
 
+  it("makes integration deprecations fatal before Vitest loads its configuration", async () => {
+    const [databasePackage, integrationConfig, integrationSetup] = await Promise.all([
+      readRepositoryFile("packages/db/package.json"),
+      readRepositoryFile("packages/db/vitest.integration.config.ts"),
+      readRepositoryFile("packages/db/test/throw-deprecations.integration-setup.ts"),
+    ]);
+    const packageJson = JSON.parse(databasePackage) as {
+      readonly scripts: Readonly<Record<string, string>>;
+    };
+
+    expect(packageJson.scripts["test:integration"]).toBe(
+      "node --throw-deprecation node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
+    );
+    expect(integrationConfig).toContain(
+      'setupFiles: ["./test/throw-deprecations.integration-setup.ts"]',
+    );
+    expect(integrationSetup.trim()).toBe("process.throwDeprecation = true;");
+
+    const probe = spawnSync(
+      process.execPath,
+      ["--throw-deprecation", "-e", 'process.emitWarning("probe", "DeprecationWarning")'],
+      { encoding: "utf8" },
+    );
+    expect(probe.status).toBe(1);
+    expect(probe.stderr).toContain("DeprecationWarning: probe");
+  });
+
   it("repairs and verifies every collective runtime role as non-privileged", async () => {
     const [roles, accessCheck, accessApply, attestationCheckpoint] = await Promise.all([
       readRepositoryFile("packages/db/prisma/runtime-roles.sql"),

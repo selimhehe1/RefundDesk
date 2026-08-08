@@ -615,11 +615,21 @@ databaseDescribe("PostgreSQL 18 concurrency matrix", () => {
 
     try {
       const startedAt = performance.now();
-      const decisions = await Promise.all(
-        Array.from({ length: 40 }, (_, index) =>
-          consumeDatabaseRateLimit(clients[index % clients.length] as Client, scope),
-        ),
-      );
+      const decisions = (
+        await Promise.all(
+          clients.map(async (client, clientIndex) => {
+            const clientDecisions: DatabaseRateLimitDecision[] = [];
+            for (
+              let requestIndex = clientIndex;
+              requestIndex < 40;
+              requestIndex += clients.length
+            ) {
+              clientDecisions.push(await consumeDatabaseRateLimit(client, scope));
+            }
+            return clientDecisions;
+          }),
+        )
+      ).flat();
       const elapsedMilliseconds = performance.now() - startedAt;
       const allowedCount = decisions.filter((decision) => decision.allowed).length;
       const maximumAllowedForElapsedWindow = 30 + Math.floor(elapsedMilliseconds / 2_000);

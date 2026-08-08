@@ -1647,7 +1647,8 @@ fail_closed() {
     "${metadata_rollback_ok}" == "true" &&
     "${candidate_runtime_stopped}" == "true" ]] &&
     [[ -e "${TRANSITION_JOURNAL_FILE}" || -L "${TRANSITION_JOURNAL_FILE}" ]]; then
-    if python3 "${TRANSITION_HELPER}" durable-unlink       --target "${TRANSITION_JOURNAL_FILE}" >/dev/null; then
+    if python3 "${TRANSITION_HELPER}" durable-unlink \
+      --target "${TRANSITION_JOURNAL_FILE}" >/dev/null; then
       log "rollback complete; transition journal retired so the fence can exit"
       # The candidates are stopped, not recreated: they still carry the candidate
       # revision label while the metadata names the active one, and the next release
@@ -1657,6 +1658,7 @@ fail_closed() {
       # operator needs. Name the command instead of performing it.
       log "candidate containers are stopped and still labelled ${REVISION}; their logs are intact"
       log "after diagnosis, recreate the runtime at ${ACTIVE_REVISION_FOR_ROTATION}: docker compose --project-name ${REFUNDDESK_COMPOSE_PROJECT} --env-file ${REFUNDDESK_RELEASE_ENV} --file ${REFUNDDESK_ROOT}/releases/${ACTIVE_REVISION_FOR_ROTATION}/source/deploy/lightsail/compose.yml up --no-start --no-deps --no-build --pull never --force-recreate verifier worker web caddy"
+      log "then rerun only the exact authorized release command; the rollback leaves the runtime stopped"
     else
       status=1
       log "rollback complete but the transition journal could not be retired"

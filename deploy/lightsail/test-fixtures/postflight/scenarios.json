@@ -1,0 +1,273 @@
+[
+  {
+    "name": "coherent-contained",
+    "expectedExit": 0,
+    "expectedResult": "PASS",
+    "expectedPosture": "COHERENT_CONTAINED",
+    "expectedCode": "PASS_CONTAINED"
+  },
+  {
+    "name": "recoverable-runtime-stopped",
+    "coreRuntimeStopped": true,
+    "expectedExit": 0,
+    "expectedResult": "PASS",
+    "expectedPosture": "RECOVERABLE_RUNTIME_STOPPED",
+    "expectedCode": "PASS_RECOVERABLE_RUNTIME_STOPPED"
+  },
+  {
+    "name": "worker-running",
+    "workerRunning": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "WORKER_RUNNING"
+  },
+  {
+    "name": "caddy-running",
+    "caddyRunning": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CADDY_RUNNING"
+  },
+  {
+    "name": "maintenance-active",
+    "maintenanceActive": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "MAINTENANCE_ACTIVE"
+  },
+  {
+    "name": "maintenance-deactivating",
+    "maintenanceDeactivating": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "MAINTENANCE_ACTIVE"
+  },
+  {
+    "name": "public-listener-active",
+    "listener80": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "PUBLIC_LISTENER_ACTIVE"
+  },
+  {
+    "name": "live-enabled",
+    "liveEnabled": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "LIVE_INTERLOCK_ENABLED"
+  },
+  {
+    "name": "runtime-live-enabled",
+    "runtimeLiveEnabled": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "LIVE_INTERLOCK_ENABLED"
+  },
+  {
+    "name": "runtime-webhook-enabled",
+    "runtimeWebhookEnabled": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "LIVE_INTERLOCK_ENABLED"
+  },
+  {
+    "name": "runtime-live-duplicate",
+    "runtimeLiveDuplicate": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "LIVE_INTERLOCK_ENABLED"
+  },
+  {
+    "name": "runtime-webhook-duplicate",
+    "runtimeWebhookDuplicate": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "LIVE_INTERLOCK_ENABLED"
+  },
+  {
+    "name": "metadata-mismatch",
+    "metadataMismatch": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "METADATA_MISMATCH"
+  },
+  {
+    "name": "sensitive-mode-invalid",
+    "sensitiveModeInvalid": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "SENSITIVE_FILE_MODE_INVALID"
+  },
+  {
+    "name": "commit-marker-invalid",
+    "commitMarkerInvalid": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "TRANSITION_COMMIT_MARKER_INVALID"
+  },
+  {
+    "name": "completion-marker-invalid",
+    "completionMarkerInvalid": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "COMPLETION_MARKER_INVALID"
+  },
+  {
+    "name": "release-runtime-marker-present",
+    "releaseRuntimeMarker": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "RELEASE_FENCE_ACTIVE"
+  },
+  {
+    "name": "release-fence-deactivating",
+    "releaseFenceDeactivating": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "RELEASE_FENCE_ACTIVE"
+  },
+  {
+    "name": "unexpected-running-container",
+    "unexpectedRunning": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "UNEXPECTED_RUNNING_CONTAINER"
+  },
+  {
+    "name": "runtime-container-missing",
+    "missingService": "web",
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CONTAINER_IDENTITY_MISMATCH"
+  },
+  {
+    "name": "unexpected-published-port",
+    "unexpectedPublishedPort": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CONTAINER_IDENTITY_MISMATCH"
+  },
+  {
+    "name": "image-reference-mismatch",
+    "imageReferenceMismatch": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CONTAINER_IDENTITY_MISMATCH"
+  },
+  {
+    "name": "expected-image-id-mismatch",
+    "expectedImageMismatch": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CONTAINER_IDENTITY_MISMATCH"
+  },
+  {
+    "name": "web-running-unhealthy",
+    "webRuntimeState": "running-unhealthy",
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CORE_RUNTIME_INVALID"
+  },
+  {
+    "name": "web-restarting",
+    "webRuntimeState": "restarting",
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CORE_RUNTIME_INVALID"
+  },
+  {
+    "name": "web-paused",
+    "webRuntimeState": "paused",
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CORE_RUNTIME_INVALID"
+  },
+  {
+    "name": "financial-work-active",
+    "financialActive": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "FINANCIAL_WORK_ACTIVE"
+  },
+  {
+    "name": "database-unavailable",
+    "databaseUnavailable": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "DATABASE_SNAPSHOT_UNREADABLE"
+  },
+  {
+    "name": "capture-changed",
+    "captureChanged": true,
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CAPTURE_CHANGED"
+  },
+  {
+    "name": "source-marker-crlf",
+    "sourceMarkerCrlf": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "SOURCE_MARKER_UNREADABLE"
+  },
+  {
+    "name": "compose-source-unreadable",
+    "composeSourceUnreadable": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "COMPOSE_SOURCE_UNREADABLE"
+  },
+  {
+    "name": "compose-source-owner-only-safe",
+    "composeSourceOwnerOnly": true,
+    "expectedExit": 0,
+    "expectedResult": "PASS",
+    "expectedPosture": "COHERENT_CONTAINED",
+    "expectedCode": "PASS_CONTAINED"
+  },
+  {
+    "name": "expected-image-unavailable",
+    "expectedImageUnavailable": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "EXPECTED_IMAGE_UNREADABLE"
+  },
+  {
+    "name": "manifest-bundle-revision-mismatch",
+    "manifestBundleMismatch": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "MANIFEST_UNREADABLE"
+  }
+]

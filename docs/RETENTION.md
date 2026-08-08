@@ -1,8 +1,8 @@
 # RefundDesk pilot retention and deletion policy
 
-> Version: 1.0 for the v1.1 pilot  
-> Effective: 2026-07-25  
-> Scope: local, Stripe test mode and managed sandbox  
+> Version: 1.1 for the v1.1 pilot
+> Effective: 2026-07-25; hosted-sandbox posture note updated 2026-08-08
+> Scope: local and approved AWS hosting, Stripe test mode and managed sandbox
 > Review trigger: production hosting, live mode, customer data, legal hold or changed regulation
 
 This is an engineering data-lifecycle policy, not legal advice. A production launch requires legal review of controller/processor roles, notices, data processing terms and applicable retention duties.
@@ -21,8 +21,10 @@ This is an engineering data-lifecycle policy, not legal advice. A production lau
 
 | Data class                 | Examples                                                                            |                                   Retention | Start of clock              | Disposition                                    |
 | -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------: | --------------------------- | ---------------------------------------------- |
+| Merchant staff identity    | Stripe user ID, Dashboard display name, signed Stripe roles, last-seen timestamp    |                          Until tenant purge | first RefundDesk visit      | Delete with the tenant                         |
 | Workflow records           | request state, amount, currency, payment/refund IDs                                 |                                    365 days | request creation            | Delete                                         |
 | Decisions                  | approver ID, decision, timestamps                                                   |                                    365 days | decision timestamp          | Delete                                         |
+| Approval attestations      | signed-body hash, identity/financial snapshot hash, HMAC and bounded timestamps     |                                    365 days | verification timestamp      | Delete with the associated request             |
 | Sensitive workflow text    | justification, rejection reason                                                     |                                    365 days | associated request creation | Cryptographically delete then remove row/field |
 | Audit events               | action, actor, transition, correlation                                              |                                    365 days | event timestamp             | Delete through maintenance procedure           |
 | Mutation receipts          | nonce, operation, actor, payload hash, response                                     |                                    365 days | receipt creation            | Delete                                         |
@@ -51,15 +53,25 @@ Do not persist:
 
 If prohibited data is discovered, treat it as an incident, stop further collection, restrict access and purge it after preserving only the minimum lawful incident evidence.
 
+The prohibition on names and e-mail addresses covers the merchant's **customers**. The
+Dashboard display name of a member of the merchant's own staff is a separate, narrower class:
+Stripe supplies it in the extension context, RefundDesk stores it only so an Administrator can
+recognise the people they authorise as approvers instead of matching raw `usr_…` identifiers,
+and it is deleted with the tenant. Staff e-mail addresses remain out of scope: reading them
+would require the `user_email_read` permission, which the manifest must not declare.
+
 ## 4. Encryption lifecycle
 
-Sensitive text is AES-256-GCM encrypted with a versioned external key and AAD bound to tenant, row and field. Proof metadata uses a separate versioned HMAC key.
+Sensitive text is AES-256-GCM encrypted with a versioned external key and AAD bound to tenant, row
+and field. Refund proof metadata and approval attestations use two separate versioned HMAC keys.
 
 Rotation:
 
 - new writes use the active version;
 - previous field keys remain decrypt-only while retained ciphertext depends on them;
 - previous proof keys remain verify-only while a retained Refund proof can appear;
+- previous approval-attestation keys remain verify-only while any retained guarded request can
+  execute or reconcile;
 - old key deletion occurs only after dependency counts reach zero and any retained backups have expired;
 - compromise can require immediate revocation and makes affected data/evidence subject to incident review.
 
@@ -81,6 +93,19 @@ Procedure:
 8. alert on overdue oldest records.
 
 Routine expiry must not run as a table owner from the web or worker. It uses a limited maintenance function/role that can execute only approved retention operations.
+
+The admitted hosted maintenance contract schedules the reviewed retention service hourly. A run is
+successful only when the primary unit exits zero, emits a completed structured result, recovers the
+exact active revision, leaves all five runtime services healthy and clears every
+transition/quiescence journal. Successful `OnFailure` recovery after a primary error is
+`FAIL_RECOVERED`, not retention evidence. See ADR 0015 and the operations runbook.
+
+Two read-only pre-final postflight diagnostics on 8 August observed both retention and backup
+timers active while a runtime quiescence journal was present. The same diagnostics observed no
+active financial workflow or guard, but they are not a final committed-source ADR 0032 capture and
+do not prove a successful timer invocation, retention execution or recoverable maintenance state.
+Do not start another maintenance operation or interpret current timer state as evidence until the
+final postflight is reviewed and a separate operational decision is made.
 
 ## 6. Uninstallation lifecycle
 
@@ -111,7 +136,7 @@ A reviewed purge transaction or sequence should remove:
 3. webhook receipts and reconciliation history;
 4. external alerts;
 5. execution attempts and executions after ambiguity checks;
-6. decisions;
+6. approval attestations and decisions;
 7. encrypted sensitive text and requests;
 8. audit events under the maintenance policy;
 9. users, policies and installation records;
@@ -149,14 +174,75 @@ Application users cannot create an indefinite hold through a free-text field. Le
 
 ## 10. Backups and local copies
 
-The first-cycle plan does not authorize a managed production backup service. If local backups are created for recovery testing:
+The authorized AWS test/sandbox contract uses a private versioned bucket and a daily cold-backup
+timer. Current execution state remains subject to the ADR 0032 postflight above. This is not a
+managed production backup service and it carries synthetic pilot data only.
 
-- encrypt them;
-- store them outside the repository;
-- document creation and expiry;
-- restrict access;
-- use a maximum retention no longer than the underlying data class;
-- include them in key-retirement and tenant-deletion checks.
+Hosted backup rules:
+
+- quiesce all five services before copying PostgreSQL 18 PGDATA;
+- encrypt every archive client-side to an offline public `age` recipient and require bucket
+  SSE-S3 AES-256;
+- keep the private `age` identity off the application host and bucket;
+- store only generated backup objects below the dedicated sandbox prefix;
+- prove versioned writes before quiescence through a unique revision-bound put/head/exact-delete
+  probe, and require zero probe residue;
+- retain at most the configured seven successful versions and keep total versioned bucket storage
+  below 4 GiB;
+- reject static AWS credentials, incomplete multipart uploads, missing revision metadata or remote
+  size/SHA/encryption mismatch;
+- remove the local encrypted archive after a verified upload;
+- include every retained backup in field-key retirement, tenant deletion and incident checks.
+
+On 28 July 2026, a cold backup of active revision
+`42a1e4e65cf6e9144261a077c6956e77b368fffc` was restored on a disposable PostgreSQL 18.4 verifier.
+Physical checksums, migrations and restricted runtime roles passed. The copied private identity and
+archive were removed before termination, and zero verifier instance, volume, security group, key
+pair, network interface, snapshot, image or public IPv4 remained.
+
+On 30 July 2026, immutable revision
+`71bbd98fa1e5d9989f92fba9310c200e7cf63d4f` produced a new cold archive after a clean stop of all
+five services. Its unique object version, encrypted archive SHA-256, byte length, revision metadata
+and SSE-S3 AES-256 state were verified. Exact-revision recovery passed, and no multipart upload,
+probe residue, local archive or unfinished upload/quiescence journal remained. The exact object
+then passed a disposable PostgreSQL 18.4 restore, including out-of-band checksum, decryption,
+physical checksums, startup, migrations and restricted runtime-role checks. The copied identity
+and archive were removed before termination, and no temporary verifier resource remained.
+
+Later that day, then-current revision `4521b8c9e783d807813686476e4e01dfaf85e798` independently
+produced one exact versioned archive with SHA-256
+`f0196155190a5e46a792b463b771959a81e244458f108cabe8464b5dd001503c`, length `8327820`,
+revision metadata and SSE-S3 AES-256. Exact runtime recovery passed. The selected version then
+passed the same offline PostgreSQL 18.4 physical-checksum, migration and restricted-role restore
+checks on a no-IAM disposable verifier after egress had been removed. All copied and temporary
+material and every billable verifier resource were removed; the successful object version remains
+subject to the normal seven-version/four-GiB retention boundary.
+
+On 31 July 2026, current revision `e4cec06068d71afb5c2ac9fc04175bfdfd6756c2`
+independently passed its natural hourly retention and scheduled daily cold backup. The retention
+selected and purged zero rows and preserved its captured pre-invocation PostgreSQL container,
+creation/start timestamps, cluster identity and database safety counts. The backup restarted that
+same PostgreSQL container and verified one 8,992,512-byte encrypted object version with SHA-256
+`5e4b91c06efd11932b4f5c4ee5392f56d63ac7a60d1a3bb335c8c7a36ed758fd`,
+revision metadata and SSE-S3 AES-256. Both operations recovered five healthy services with live
+disabled and left no local archive, probe, multipart upload or unfinished journal.
+
+Its first disposable restore attempt on 31 July failed closed before decryption: a Windows
+PowerShell native-pipeline carriage return made the final SHA-256 argument 65 bytes, and
+`restore-verify.sh` rejected it during input validation. No container, PostgreSQL process,
+migration or role check started and no retry was attempted. The copied identity/archive and all
+temporary AWS resources were removed; cleanup and an independent audit both reported zero residue.
+This result is `FAIL_PRE_EFFECT_CLEANED`, not recoverability evidence.
+
+A separately authorized second verifier restored the exact e4 archive on 1 August 2026. Egress was
+removed before transferring the private identity, and the corrected LF-only wrapper was invoked
+exactly once. Archive decryption/decompression, physical checksums, offline PostgreSQL 18 startup,
+migrations and restricted runtime-role checks passed. The copied identity/archive, local ephemeral
+runtime files and every AWS verifier resource were removed; independent cleanup found zero residue.
+
+The four restores prove recoverability only for their respective `42a1e4e...`, `71bbd98...`,
+`4521b8c9...` and `e4cec060...` archives and exact procedures. No proof permits longer retention,
+customer data, production backup claims or deletion of a key still needed by any retained version.
 
 Do not copy the database to personal cloud storage, chat, tickets or source control.
 
@@ -184,19 +270,34 @@ Required tests:
 - legal hold exclusion;
 - unresolved effect exclusion and alert;
 - foreign-key completeness;
+- approval-attestation count in the purge certificate;
 - encryption-key dependency count;
 - logs expire at 30 days;
 - webhook receipts expire at 90 days;
 - uninstall purge completes within 30 days;
 - purge certificate contains no Stripe identifier or PII.
 
-Quarterly in a future persistent pilot, and before any production launch, rehearse:
+Quarterly in the persistent test/sandbox pilot, and before any production launch, rehearse:
 
 - uninstallation-to-purge;
 - field-key rotation;
 - proof-key rotation;
+- approval-attestation-key rotation;
 - backup expiry and restore;
 - prohibited-data discovery.
+
+Real revision-bound backup/restore rehearsals passed for `42a1e4e...` on 28 July 2026 and for
+`71bbd98...` and `4521b8c9...` on 30 July 2026. A manual retention run and the distinct
+persistent-timer catch-up passed on `71bbd98...` with zero selected/purged rows and no unfinished
+journal. Historical exact-e4 revision `e4cec060...` separately passed one natural retention and one scheduled encrypted
+backup. Its first exact-e4 verifier attempt failed during input validation before any decryption or
+restore effect and cleaned to zero. The separately authorized corrected restore then passed on
+1 August 2026 and cleaned every disposable resource; the exact evidence SHA-256 is
+`951505c6b61ce77a4bc04645837e595e33c2b0a13543088913af4c153fc3acf3`. Field-encryption,
+Refund-proof HMAC and approval-attestation HMAC activation, rollback and reactivation, plus the
+verifier-token transition, passed earlier on `71bbd98...`, but old-version retirement and a new
+financial write under the active versions remain separate gates. Export-signing and remaining
+Stripe-owned credential rotation/compromise drills remain open.
 
 ## 13. Ownership
 
