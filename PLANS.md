@@ -365,7 +365,11 @@ operational drills remain deferred.
       same SHA, capture a fresh ADR 0034 postflight with at least 720 seconds remaining, run or
       safely resume the single contained reconciliation, and capture the final independent
       `PASS/COHERENT_CONTAINED/PASS_CONTAINED` postflight. Until every step passes, the hosted
-      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed.
+      sandbox remains `BLOCKED_RECONCILIATION` and the one-shot remains unconsumed. Published
+      candidate `fcc67d95...` produced a successful exact-SHA sandbox bundle with provenance, but
+      its Windows CI contract failed before any AWS or SSH call because a generated Git-fixture
+      path exceeded the hosted runner's filename limit. That candidate is not admissible; the
+      fixture path is now explicitly bounded and requires a new complete CI plus bundle pair.
 - [ ] Pending and failed Refund scenarios in a real Stripe sandbox. Exact-e4 ignored runners are
       statically ready and pinned: API runner `d836b3a5...c5b7`, DB watcher
       `ca706ec8...85f9`, proof composer `2a9a3764...500f` and PowerShell orchestrator

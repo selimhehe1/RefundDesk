@@ -731,7 +731,9 @@ function New-GitProvenanceFixture {
         [Parameter(Mandatory = $true)][string] $Name
     )
 
-    $fixtureRepository = Join-Path $TemporaryRoot ("git-provenance-{0}-{1}" -f $Name, [Guid]::NewGuid().ToString("N"))
+    $fixtureRepository = Join-Path $TemporaryRoot ("git-{0}" -f [Guid]::NewGuid().ToString("N").Substring(0, 8))
+    $longestFixturePath = Join-Path $fixtureRepository "docs/schemas/refunddesk-lightsail-containment-reconciliation-v1.schema.json"
+    Assert-Contract -Condition ($longestFixturePath.Length -lt 200) -Code ("git-fixture-path-bound-{0}" -f $Name)
     [IO.Directory]::CreateDirectory($fixtureRepository) | Out-Null
     Set-RestrictedAcl -Path $fixtureRepository -Directory $true
     $relativePaths = @(
@@ -757,6 +759,7 @@ function New-GitProvenanceFixture {
         @("user.email", "refunddesk-contract@example.invalid"),
         @("core.autocrlf", "false"),
         @("core.filemode", "false"),
+        @("core.longpaths", "true"),
         @("core.hooksPath", "NUL"),
         @("commit.gpgsign", "false")
     )) {
@@ -788,7 +791,7 @@ $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $wrapperPath = Join-Path $repository "scripts/invoke-lightsail-containment-reconciliation.ps1"
 $powerShellExecutable = (Get-Command powershell.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $gitExecutable = (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
-$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("refunddesk-containment-reconciliation-contract-{0}" -f [Guid]::NewGuid().ToString("N"))
+$temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) ("refunddesk-cr-contract-{0}" -f [Guid]::NewGuid().ToString("N"))
 $toolDirectory = Join-Path $temporaryRoot "tools"
 $evidenceDirectory = Join-Path $temporaryRoot "evidence"
 $templatePath = Join-Path $temporaryRoot "remote-template.json"
@@ -1318,7 +1321,7 @@ finally {
     $fullSystemTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
     if (
         $fullTemporaryRoot.StartsWith($fullSystemTemp, [StringComparison]::OrdinalIgnoreCase) -and
-        [IO.Path]::GetFileName($fullTemporaryRoot).StartsWith("refunddesk-containment-reconciliation-contract-", [StringComparison]::Ordinal)
+        [IO.Path]::GetFileName($fullTemporaryRoot).StartsWith("refunddesk-cr-contract-", [StringComparison]::Ordinal)
     ) {
         foreach ($temporaryFile in [IO.Directory]::EnumerateFiles($fullTemporaryRoot, "*", [IO.SearchOption]::AllDirectories)) {
             try { [IO.File]::SetAttributes($temporaryFile, [IO.FileAttributes]::Normal) }
