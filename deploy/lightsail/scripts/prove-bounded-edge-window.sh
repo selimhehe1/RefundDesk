@@ -8634,7 +8634,22 @@ if [[ -e "${RUN_MARKER}" ]]; then
     # deadline from the still-valid control bytes. Existing nonterminal work is
     # cleanup-only. Already-terminal embedded 0/20/21 bytes remain immutable
     # replay authority and create no new effect or deadline.
+    #
+    # Provenance is still true here, unlike the source-drift branch below: only
+    # the clock is unusable. What the caller is owed depends on why it asked.
+    #
+    # A `run` resume that finds a spent or rolled-back grant must contain and
+    # say nothing: it was asking to continue, the answer is no, and emitting a
+    # terminal document would dignify a refused resume with a result.
+    #
+    # A `cleanup` invocation is an operator explicitly asking the runner to
+    # converge, so it is owed the INCOMPLETE document through the canonical
+    # terminal routine. Exiting silently there left the operator a bare 21,
+    # indistinguishable from a runner that died before containing anything.
     FUNCTIONAL_GATE_PASSED=false
+    if [[ "${MODE}" == "cleanup" ]]; then
+      abort_run CONTROL_UNAVAILABLE "${EXIT_INCOMPLETE}"
+    fi
     normalize_failure CONTROL_UNAVAILABLE "${EXIT_INCOMPLETE}"
     cleanup_surfaces || true
     exit "${EXIT_INCOMPLETE}"
