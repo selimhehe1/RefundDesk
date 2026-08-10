@@ -330,9 +330,10 @@ measurement **on Linux, as an unprivileged user**. They assert file modes, owner
 refusals, and `root` traverses those refusals, so a privileged run reports failures that do not
 exist. On 10 August 2026 the same bytes of the edge contract returned 39 of 229 as root and 160 as
 an unprivileged user; the incident-admission contract returned 6 of 65 as root and 64 of 65 with one
-skip unprivileged. On Windows they measure nothing: `linuxContractAvailable` is false, 216 of 229
-edge scenarios skip and the suite still exits `0`, so `pnpm container:check` passes in full while an
-implementation is broken. Always record the platform, the user and the skip count beside any count —
+skip unprivileged. On Windows they measure almost nothing: `linuxContractAvailable` is false and a
+full `pnpm container:check` reported 248 passing, 0 failing and **239 of 487 scenarios skipped**,
+exiting `0`. Roughly half the operator suite does not run there, which is how a broken
+implementation passed the only gate wired to it. Always record the platform, the user and the skip count beside any count —
 a bare number is not evidence. A local Linux container is sufficient:
 
 ```bash
