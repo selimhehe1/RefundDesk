@@ -188,6 +188,57 @@ ADR 0018 adds a separate pre-body process-local boundary and splits verification
 Its repository tests do not prove the CloudFront custom header, a real Stripe source or the exact
 hosted revision; those remain independent deployment evidence gates.
 
+### ADR 0036 local incident-admission boundary
+
+The new current-binding admission path addresses stale, mixed or over-privileged credential
+evidence and an over-broad one-shot worker. ADR 0036 binds exact contained promotion, fresh
+post-promotion and final ADR 0034 captures, a strict human Dashboard projection, least-privilege
+fingerprints, the promoted PostgreSQL system identifier and five runtime IDs, and an exact
+eight-counter post-incident baseline. Its `incident_admission` worker disables scheduling,
+supervision, LISTEN/NOTIFY, startup recovery, signed routes and every queue except refund execution;
+one deterministic Stripe idempotency key and a monotone crash-safe marker govern every resume.
+
+The local fake-host matrix rejects wrong, broad, legacy and cross-scope bindings; inventory,
+environment and source drift; foreign jobs; two workflows or Refunds; a changed idempotency key;
+ambiguous crash windows; cleanup/output failures; and final-postflight, baseline or candidate
+substitution. The PowerShell contract also binds exits `0/20/21` to create-new local evidence.
+These controls have not been exercised against Dashboard, AWS, SSH or Stripe. Those control planes
+and the human Dashboard observation remain trusted boundaries, and no real
+`PASS_INCIDENT_ADMITTED_CONTAINED` exists. Local success therefore authorizes no incident closure,
+release, ingress, restart, live mode or reopening.
+
+### ADR 0037 local edge-admission boundary
+
+ADR 0037 separates four authorities that cannot substitute for one another: exact contained
+promotion, fresh real ADR 0036 incident admission, the final ADR 0034 bytes embedded by that
+admission and a single-use human authorization for the exact AWS/CloudFront/SSH topology. The
+post-incident baseline and promoted database/container identities are joined before the host lease;
+generic `CLOUDFRONT_ORIGIN_FACING` prefixes remain defense in depth and never identify the intended
+distribution by themselves.
+
+The network-enabled Linux operator is non-root and commit-bound. Its caller supplies exactly five
+attested artifact files and individually mounted read-only credential/SSH files; the caller
+repository, ignored evidence, local secrets and Docker socket are absent. A sealed root-owned input
+volume and a separate UID-`10001` state volume prevent post-admission replacement while allowing
+same-nonce recovery. The host-held lease excludes release/recovery, and the independent one-second
+watchdog contains Caddy before other surfaces if the workstation, Docker client or runner dies.
+CloudFront restoration, exact AWS closure, transient-token removal, stable counts and a fresh
+official postflight precede terminal validation and interlock consumption.
+
+One absolute deadline, `operationStartedAt + 2100 seconds`, caps every new effect, external-call
+timeout and PASS transition. The watchdog independently chooses the earliest authorization,
+operation or armed-window deadline. Cleanup can outlive that boundary only to restore containment
+and return `INCOMPLETE/21`; neither a resumed process nor delayed provider response receives a new
+effect budget.
+
+The remaining trust is explicit: GitHub Actions/attestation, AWS APIs, the Lightsail host, Docker
+Desktop, pinned local tools and the separately authorized human observation can still invalidate
+the boundary if compromised. Provider ambiguity or unattributed state remains `INCOMPLETE/21` with
+the exact recovery volumes retained; a failure label or fresh nonce cannot make it safe. All current
+ADR 0037 observations are offline fixtures and validators. No AWS, SSH, CloudFront, Workbench,
+Stripe or public traversal was exercised, no real `PASS_EDGE_WINDOW_RECONTAINED` exists and local
+success authorizes no release, ingress, restart, live mode or reopening.
+
 ## 7. Authorization matrix
 
 | Action                        |                                        Requester |                                      Approver |                   Administrator |                  Worker |                                  Maintenance |

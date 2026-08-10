@@ -60,6 +60,31 @@ ingress reopening, Stripe action, live mode or financial proof is authorized. Ev
 named below are redacted and retained locally under the ignored `sandbox-evidence.local/`
 directory; they are not committed to the repository.
 
+ADR 0036 now provides a new tracked implementation for admitting the three current replacement
+Stripe bindings without reusing the consumed exact-e4 proof. It pins an exact contained promotion,
+fresh pre- and post-admission ADR 0034 evidence, a redacted human Dashboard projection, a minimal
+synthetic `1 eur` workflow, deterministic same-key resume and a worker mode restricted to the
+refund-execution queue. Its final local capture joins the post-incident financial baseline and the
+promoted database/container identities. Local fake-host, validator and PowerShell contracts pass,
+but no Dashboard handoff, AWS/SSH transport or Stripe call was performed and no real
+`PASS_INCIDENT_ADMITTED_CONTAINED` exists. This implementation changes no current authorization:
+the exact command and operator prerequisites are documented in the operations runbook, and any
+later reopening decision still requires separate fresh evidence and authorization.
+
+ADR 0037 now implements the next edge boundary locally. It admits only an exact contained candidate
+with a real fresh ADR 0036 pass and separate human authorization, runs a commit-pinned non-root
+operator image without mounting the caller repository, authenticates the authorized CloudFront
+origin with a transient Caddy header, and requires AWS-close-first cleanup, a host watchdog and a
+new official contained postflight before terminal evidence. The workflow supplies five exact
+operator inputs (archive, SHA-256 sidecar, manifest, attestation and provenance), all independently
+hash-pinned by the wrapper. A fixed 35-minute deadline from the first durable start caps every new
+effect, external timeout and PASS; the independent watchdog uses the earliest authorization,
+operation or armed-window deadline, and later cleanup can only contain with `INCOMPLETE/21`. This
+path has not been executed against AWS, SSH, CloudFront, Stripe or the public endpoint, and no
+`PASS_EDGE_WINDOW_RECONTAINED` evidence exists. ADR 0037 therefore changes neither the current
+contained posture nor any release, restart, ingress, live or reopening authorization; the complete
+preparatory interface is in the operations runbook.
+
 Phase 0 is `PASS`: all 34 required Stripe cases are recorded as `passed_real`. RefundDesk proved the
 real test-account and managed-sandbox boundaries, signed-request rejection matrix, role gap,
 backend Refund permission, Stripe idempotency, historical connected-webhook deduplication and

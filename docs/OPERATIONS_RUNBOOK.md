@@ -199,6 +199,254 @@ corrected isolated HOME propagation; captured HEAD `74b6da5...` corrected only t
 environment (`HOME`, `USERPROFILE`, `PROGRAMDATA` plus guards). Source provenance had already been
 hardened. The relevant contracts, 38 Linux observer cases and `shellcheck` passed.
 
+### ADR 0036 current-binding admission — implemented locally, not executed
+
+ADR 0036 replaces the consumed exact-e4 credential proof as the only tracked way to admit the
+current managed-sandbox read key, managed-sandbox effect key and Stripe App signing secret. The
+implementation is complete and locally verified, but **no production wrapper invocation, AWS/SSH
+transport, Dashboard handoff or Stripe request has been made**. There is no
+`PASS_INCIDENT_ADMITTED_CONTAINED` artifact, so this section authorizes neither incident closure nor
+reopening.
+
+Do not run the production command until a separately authorized operator has prepared all four
+ignored, access-restricted inputs and approved the exact candidate. From a clean committed `HEAD`,
+the only production entry point is:
+
+```powershell
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\invoke-lightsail-incident-admission.ps1 `
+  -PromotionEvidencePath <contained-promotion-capture.local.json> `
+  -PreflightEvidencePath <fresh-post-promotion-adr0034-postflight.local.json> `
+  -DashboardAttestationPath <fresh-redacted-dashboard-attestation.local.json> `
+  -FixtureInputPath <root-or-operator-only-synthetic-fixture.local.json> `
+  -ExpectedSshCidr "<current-operator-public-ipv4>/32"
+```
+
+The operator must obtain the Dashboard facts manually. The attestation is canonical redacted JSON,
+is at most 15 minutes old, no more than two minutes in the future and has at least 720 seconds
+remaining. It must prove revocation/expiry of the four exposed credentials, deletion of the two
+unintended CLI keys, reviewed activity, the exact restricted permission projections, disabled
+predecessor signing secret and distinct current fingerprints. Never put a raw secret, full Stripe
+object ID, signature or payload in the attestation. The synthetic fixture is also canonical and
+access-restricted; it fixes the only effect to `amountMinor="1"`, `currency="eur"`, a known fully
+refunded denial target, one fresh refundable target and two distinct test users.
+
+The promotion input must be a canonical `PASS_CONTAINED_CANDIDATE_PROMOTED` capture for the exact
+revision, source, manifest, bundle and provenance. The ADR 0034 input must be captured after that
+promotion, bind the same revision and `incident_admission` worker mode, report
+`PASS/COHERENT_CONTAINED/PASS_CONTAINED`, retain at least 720 seconds and show the AWS firewall
+closed and unchanged. Inputs, sources, tools, Git objects and their open handles are pinned and
+revalidated; do not replace this command with ad-hoc SCP, SSH or a copied remote stage.
+
+During a real authorized invocation, only the exact promoted worker may start, privately, after a
+durable watchdog is armed. `REFUNDDESK_WORKER_RUNTIME_MODE=incident_admission` disables schedules,
+supervision, LISTEN/NOTIFY, startup scanning/recovery, every queue except
+`refunddesk_refund_execute`, and the signed authority/routes. Caddy, maintenance timers, ports
+80/443 and live mode remain off. The worker is stopped and fenced before any terminal document. A
+future standard release must recreate it in `normal` mode; incident mode is never a steady-state
+runtime.
+
+Interpret the local process status and create-new capture together:
+
+- `0`: exact `PASS/PASS_INCIDENT_ADMITTED_CONTAINED`; the remote marker is `complete`, exactly one
+  workflow and one Refund are durably accounted for, and a new independent final ADR 0034
+  postflight remains fresh and contained;
+- `20`: complete fail-closed observation, including `NEW_ROTATION_REQUIRED`; do not resume it as a
+  credential repair and never restore an exposed predecessor;
+- `21`: incomplete or ambiguous; preserve every input and durable marker, then resume only the same
+  operation and deterministic Stripe idempotency key with fresh time-bounded evidence;
+- `1` locally or `64` remotely: usage, provenance, transport or artifact failure; no admissible
+  incident evidence exists.
+
+A late replay of `proof_observed`, `contained_verified` or `complete` must not start the worker or
+call Stripe. It revalidates the persisted proof and containment only. Mutation counters are the
+cumulative history of the operation, so a successful complete-marker replay still reports the
+original one worker start, one workflow and one Refund without repeating them.
+
+The local capture is usable only while its Dashboard and final-postflight window remains valid. It
+binds the exact final ADR 0034 bytes and times, the post-incident eight-counter financial baseline,
+and `finalPostflight.candidateBinding`: SHA-256 digests of the promotion's PostgreSQL system
+identifier and five runtime container IDs. A later consumer must independently validate those
+exact final-postflight bytes and equality with the outer and remote baselines; the pre-incident
+postflight and promotion snapshot are historical provenance, not reopening input. Even an exact
+exit-`0` capture closes only this three-binding incident for its revision. It does not by itself
+admit a release or authorize ingress, worker/timer restart, live mode, App publication or any later
+reopening decision.
+
+### ADR 0037 bounded CloudFront origin window — incomplete, do not execute
+
+> **The ADR 0037 implementation is incomplete and its offline contracts do not pass.** Measured on
+> 10 August 2026 as an unprivileged user on a native Linux filesystem, the edge contract returns
+> 160 passing and 69 failing of 229 scenarios. The production-path PowerShell contract does not
+> terminate on the Windows workstation. No hash is frozen. **Do not follow the procedure below**;
+> it describes a wrapper whose own contracts are failing, and running it would consume operator
+> inputs and a bounded window against unproven code.
+>
+> Three traps make this easy to miss. Running the edge contract on Windows is not a check —
+> `linuxContractAvailable` is false there, 216 of 229 scenarios skip and the suite exits `0`, so
+> `pnpm container:check` passes in full while the implementation is broken. Running it as `root` is
+> not a check either — these contracts assert access refusals that root traverses, and the same
+> bytes return 39 of 229 privileged against 160 unprivileged. And they have never run in continuous
+> integration: their `container:check` entries are additions in an uncommitted `package.json`, so no
+> Linux runner has ever seen them.
+
+ADR 0037 defines the only tracked successor to ADR 0029 for a future, separately authorized edge
+window. It orders an exact contained promotion, a real exit-`0` ADR 0036 incident admission and a
+new human authorization before a maximum 300-second CloudFront-to-Caddy observation. The
+implementation exists locally, but **no ADR 0037 production wrapper, AWS,
+SSH, CloudFront, Stripe or public request was run while building it**. No real
+`PASS_EDGE_WINDOW_RECONTAINED` artifact exists, and this section is preparation rather than
+execution authority or a reopening decision.
+
+The operator image is a separate exact-revision artifact produced by the successful
+`sandbox-images` workflow. Acquire the following **exact five files** from that one workflow run,
+either from its one-day GitHub fallback artifact or from the approved private bucket prefix
+`refunddesk-sandbox/edge-operator/<revision>/`:
+
+1. `refunddesk-edge-operator-<revision>.docker.tar.zst`;
+2. `refunddesk-edge-operator-<revision>.docker.tar.zst.sha256`;
+3. `refunddesk-edge-operator-<revision>.manifest.json`;
+4. `refunddesk-edge-operator-<revision>.attestation.jsonl`;
+5. `refunddesk-edge-operator-<revision>.provenance.json`.
+
+Stage exactly those five regular files in an ignored, access-restricted local directory. Preserve
+the attested archive basename byte-for-byte: do not rename, recompress, normalize or regenerate any
+member. If the GitHub fallback ZIP is used, extract its `edge-operator` members; the ZIP itself is
+not the operator archive. Reject an extra, missing or duplicate member. Record an independently
+computed SHA-256 for each file. The sidecar has its own SHA-256 and its exact UTF-8 bytes must be
+`<archive-sha256><two spaces><archive-basename><LF>`. Protect the staging directory and every other
+input from inherited access; only the current operator, local Administrators and `SYSTEM` may have
+full control. The wrapper reopens each regular file with that protected ACL, retains its handle and
+compares all five out-of-band hashes before loading the image.
+
+There is no tracked authorization generator. A separately authorized human must prepare the
+authorization as UTF-8 without BOM: one compact, recursively key-sorted JSON object followed by
+one LF, with exactly these keys and JSON types:
+
+```text
+{"awsAccountId":"633229204288","awsRegion":"eu-west-3","code":"PASS_EDGE_WINDOW_AUTHORIZED","distributionId":"<exact-distribution-id>","eventFingerprintSha256":"<64-lowercase-hex>","expectedRevision":"<40-lowercase-hex>","expectedSshCidr":"<operator-ipv4>/32","instanceName":"refunddesk-sandbox-paris","kind":"refunddesk.edge-window.authorization","maxWindowSeconds":300,"originId":"<exact-origin-id>","publicBaseUrl":"https://<authorized-host>","result":"PASS","schemaVersion":1,"sourceRef":"refs/heads/main","sshHost":"<exact-lightsail-host>","validFrom":"<UTC-second>","validUntil":"<UTC-second>"}
+```
+
+`schemaVersion` and `maxWindowSeconds` are integers. `sourceRef` may instead be the exact permitted
+`refs/heads/release/sandbox-edge-YYYY-MM-DD`. The authorization interval is at most two hours,
+begins no later than the first durable operation start and covers both the armed public deadline
+and the full 35-minute orchestration bound. Its exact SSH `/32`, revision, event fingerprint,
+account, region, instance, distribution, origin, public URL and maximum window are independent
+human assertions; do not derive them from configuration or a prior proof. Store the document under
+the same restricted ACL and compute its SHA-256 out of band.
+
+At the initial durable edge `operationStartedAt`, both the real ADR 0036 incident capture and the
+exact final ADR 0034 postflight embedded by that capture must have between 720 and 900 seconds
+remaining, inclusive. Their ordering is
+`postflightCapturedAt <= incidentCapturedAt <= operationStartedAt`. These two 15-minute documents
+admit only that point-in-time boundary; they need not remain fresh through later waits. The human
+authorization, in contrast, must cover the armed deadline and the independent 35-minute limit
+measured from that same durable `operationStartedAt`. Never replace an expired admission document
+with a different one inside an existing attempt.
+
+The absolute operation deadline is `operationStartedAt + 2100 seconds`. The runner rechecks the
+current time before origin binding, watchdog arm, Caddy start, firewall open and every PASS-capable
+transition; each external call timeout is capped to the remaining budget. The watchdog deadline is
+the earliest of authorization expiry, that absolute operation deadline and the effective armed
+public deadline (`armedAt + WindowSeconds`). No new effect and no PASS may occur at or after the
+applicable deadline. Cleanup may continue after it only to close AWS, restore origin/host state and
+retain a truthful `INCOMPLETE/21`; elapsed time never grants a new window or permits backdating.
+
+Only after a new explicit execution authorization and all preceding real gates exist, invoke the
+production wrapper from the exact clean committed revision with every parameter below. The hash
+next to the sidecar is the SHA-256 of the **sidecar file**, not a repeat of the archive hash.
+The production boundary also requires Docker Desktop's Linux/amd64 engine at version `29.x`, the
+pinned Node/Git/Docker/GitHub CLI/PowerShell/taskkill tools, a protected GitHub token file, the exact
+default AWS credential path and the pinned SSH identity/known-hosts files. The output directory and
+checkpoint parent must already exist with the strict ACL above, and the checkpoint itself must be
+absent.
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+  .\scripts\invoke-lightsail-edge-window.ps1 `
+  -ExpectedRevision <40-lowercase-hex> `
+  -IncidentEvidencePath <real-exit-0-adr0036-capture.local.json> `
+  -ExpectedIncidentEvidenceSha256 <sha256> `
+  -PreflightEvidencePath <exact-adr0036-final-adr0034-postflight.local.json> `
+  -ExpectedPreflightEvidenceSha256 <sha256> `
+  -PromotionEvidencePath <contained-promotion-capture.local.json> `
+  -ExpectedPromotionEvidenceSha256 <sha256> `
+  -PromotionNonce <64-lowercase-hex> `
+  -ExpectedBundleSha256 <promotion-bundle-sha256> `
+  -ExpectedManifestSha256 <promotion-manifest-sha256> `
+  -ExpectedPromotionProvenanceSha256 <promotion-provenance-sha256> `
+  -ExpectedSourceSha256 <promotion-source-sha256> `
+  -AuthorizationPath <canonical-human-edge-authorization.local.json> `
+  -ExpectedAuthorizationSha256 <sha256> `
+  -OperatorArchivePath <refunddesk-edge-operator-revision.docker.tar.zst> `
+  -ExpectedOperatorArchiveSha256 <archive-sha256> `
+  -OperatorArchiveSidecarPath <refunddesk-edge-operator-revision.docker.tar.zst.sha256> `
+  -ExpectedOperatorArchiveSidecarSha256 <sidecar-file-sha256> `
+  -OperatorManifestPath <refunddesk-edge-operator-revision.manifest.json> `
+  -ExpectedOperatorManifestSha256 <manifest-file-sha256> `
+  -OperatorAttestationBundlePath <refunddesk-edge-operator-revision.attestation.jsonl> `
+  -ExpectedOperatorAttestationBundleSha256 <attestation-file-sha256> `
+  -OperatorProvenancePath <refunddesk-edge-operator-revision.provenance.json> `
+  -ExpectedOperatorProvenanceSha256 <provenance-file-sha256> `
+  -GitHubTokenPath <restricted-read-only-github-token-file> `
+  -AwsCredentialsPath <absolute-user-profile\.aws\credentials> `
+  -AwsProfile default `
+  -SshIdentityPath .\sandbox-evidence.local\aws\refunddesk-sandbox-lightsail-rsa `
+  -SshKnownHostsPath .\sandbox-evidence.local\aws\known_hosts.refunddesk-sandbox `
+  -ExpectedSshCidr <authorized-operator-ipv4/32> `
+  -WorkbenchCheckpointPath <restricted-create-new-checkpoint.local.json> `
+  -OutputDirectory <restricted-existing-output-directory> `
+  -WindowSeconds 300
+```
+
+The wrapper emits a create-new
+`edge-window-workbench-request-<revision>-<nonce12>.local.json` in the output directory after the
+remote watchdog, origin binding and bounded ingress are active. The human performs the one exact
+synthetic Workbench replay named by the authorization, observes HTTP `200` with `duplicate=true`,
+and then uses a second PowerShell process to create the checkpoint; never hand-edit or pre-create
+it:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+  .\scripts\submit-lightsail-edge-window-checkpoint.ps1 `
+  -RequestPath <edge-window-workbench-request-revision-nonce12.local.json> `
+  -CheckpointPath <the-exact-WorkbenchCheckpointPath-passed-above> `
+  -HttpStatus 200 `
+  -Duplicate $true
+```
+
+Interpret the process exit and its create-new evidence together:
+
+- `0` is only canonical `PASS/PASS_EDGE_WINDOW_RECONTAINED` after exact AWS closure, origin
+  restoration, token removal, watchdog disarm, contained host, unchanged financial counts, a new
+  official ADR 0034 postflight and durable completion/release of the held interlocks;
+- `20` is a complete fail-closed observation. It never authorizes another window;
+- `21` is incomplete or recovery-bearing. Preserve the local attempt marker, exact input files,
+  container/image where retained, and both Docker volumes
+  `refunddesk-edge-window-<nonce12>` (state) and `refunddesk-edge-input-<nonce12>` (immutable
+  inputs); do not remove, rename, copy, mutate or substitute them;
+- runner status `64` is usage or pre-effect input rejection and creates no admissible edge
+  evidence. The production wrapper accepts terminal evidence only for `0`, `20` or `21`; it maps a
+  runner `64` or its own provenance/transport failure to a local non-admissible wrapper error
+  (normally status `1`), never to PASS.
+
+Resume only by re-running the **identical full command** with the same paths, hashes, revision,
+authorization, `WindowSeconds` and checkpoint path. The attempt binding selects the same nonce and
+retained volumes; it must converge cleanup or replay the embedded terminal bytes without another
+origin bind, firewall open, Workbench replay or public window. A complete nonce is consumed, never
+reopened. Admission-proof remaining time is always derived against the stored
+`operationStartedAt`, not the resume wall clock; authorization covers the same fixed 35-minute
+deadline rather than granting another 35 minutes. Once a remote journal exists, a late recovery is
+cleanup-only and cannot reopen. If exact attribution, provider restoration or containment cannot
+be proven, keep the recovery set and escalate; neither deletion nor a fresh nonce is a recovery
+procedure.
+
+Offline fake-AWS/SSH/host/Workbench contracts and validators cannot establish the current AWS or
+host state, CloudFront origin identity, public traversal, Stripe delivery or financial behavior.
+Even a future real exit-`0` artifact is revision-, nonce- and interval-bound and does not authorize
+production, live mode, customer data, worker/timer restart, Stripe review, Marketplace publication
+or a subsequent reopening.
+
 ### Read-only ADR 0032 postflight
 
 Run the production capture only from the committed revision that contains the final observer,

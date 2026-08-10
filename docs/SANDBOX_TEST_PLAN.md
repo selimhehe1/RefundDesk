@@ -592,6 +592,52 @@ The initial preflight, reconciliation and final-postflight evidence are
 never be executed or resumed. The final postflight expired; it proves only the observed bounded
 repair, not later host state or another pilot gate.
 
+### 7.14 ADR 0036 current-binding admission — local verification only
+
+| Gate                          | Local observation                                                                                                                     | Result                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Canonical input/output        | Dashboard, fixture, promotion, remote and local validators reject unknown keys, non-canonical framing and stale evidence              | `passed_local`             |
+| Exact candidate binding       | Promotion revision/source/bundle/provenance, five runtime IDs, PostgreSQL system identifier and incident worker mode are joined       | `passed_local`             |
+| Least privilege               | Broad, legacy, predecessor and cross-scope Stripe bindings are rejected before marker or worker activity                              | `passed_local`             |
+| Bounded financial semantics   | Fake host permits one synthetic `amountMinor="1"`/`eur` workflow and Refund with one deterministic idempotency key                    | `passed_fixture_only`      |
+| Crash and ambiguity           | Same-operation resume converges before call, after Stripe effect, after DB link and after terminal state without a second Refund      | `passed_fixture_only`      |
+| Restricted worker             | `incident_admission` disables scheduling, supervision, startup recovery, signed routes and all non-refund queues                      | `passed_local`             |
+| Final independent evidence    | Outer/remote eight-counter baseline, final ADR 0034 bytes and six redacted candidate-binding digests must join exactly                | `passed_local`             |
+| Exit/evidence mapping         | Wrapper contract proves create-new captures and exact `0/PASS`, `20/FAIL`, `21/INCOMPLETE`; local/usage failures create no false PASS | `passed_local`             |
+| Real Dashboard/AWS/SSH/Stripe | No human Dashboard handoff, production wrapper, AWS/SSH transport or Stripe request was performed                                     | `not_run_not_authorized`   |
+| Reopening prerequisite        | A later decision requires a fresh exact-revision real exit-`0` capture; local fixtures and historical preflight evidence do not count | `open_human_and_real_gate` |
+
+The final fake-host contract passed `62/62` executable cases with three Windows-only signal/SIGKILL
+cases skipped; the validator passed `38/38`, and the PowerShell wrapper contract passed its
+`0/20/21`, create-new, timeout, cleanup and postflight-substitution cases. These are implementation
+tests only. They used no AWS, SSH or Stripe network path, do not establish a current Dashboard
+state and must never be reported as `PASS_INCIDENT_ADMITTED_CONTAINED` or reopening evidence.
+
+### 7.15 ADR 0037 bounded origin window — local verification only
+
+| Gate                             | Local contract                                                                                                                                  | Result                     |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Four-part admission              | Exact promotion, real ADR 0036 capture, embedded final ADR 0034 bytes and separate human authorization must join one revision and topology      | `implemented_local`        |
+| Admission and operation clocks   | At durable `operationStartedAt`, postflight/incident remaining time is `720..900` seconds; authorization alone covers its fixed 35-minute bound | `implemented_local`        |
+| Absolute deadline                | New effects, external timeouts and PASS stop at `operationStartedAt+2100s`; watchdog uses the earliest auth/operation/armed-window deadline     | `passed_fixture_only`      |
+| Operator artifact provenance     | Exact archive basename, sidecar bytes, manifest, attestation, workflow provenance, image config and baked source inventory are cross-checked    | `implemented_local`        |
+| Workstation isolation            | No caller-repository/WSL/Docker-socket mount; credentials and SSH files are individual read-only binds; input and state volumes are separate    | `implemented_local`        |
+| Origin and firewall identity     | Missing/wrong token rejects, exact token traverses and is stripped; only exact CloudFront-origin TCP 443 prefixes may open                      | `passed_fixture_only`      |
+| Provider and host races          | ETag races, third states, lost acknowledgements, stale prefixes, rule drift, service drift, lock contention and reboots fail closed             | `passed_fixture_only`      |
+| Independent containment          | Host lease and one-second same-boot watchdog recontain Caddy first and block release/recovery through the official final postflight             | `passed_fixture_only`      |
+| Crash/replay and immutable input | Mutation-boundary crashes retain one nonce and exact volumes; terminal bytes replay without a second origin bind, firewall open or checkpoint   | `passed_fixture_only`      |
+| Exit/evidence mapping            | Canonical output binds exact `0/PASS`, `20/FAIL`, `21/INCOMPLETE` and `64/usage`; ambiguity cannot produce PASS                                 | `implemented_local`        |
+| Final frozen local suite         | Production-path PowerShell and Linux edge contracts must be rerun together on the final bytes, then full repository gates reconfirmed           | `pending_final_local_gel`  |
+| Real AWS/SSH/CloudFront/Stripe   | No production wrapper, public request, Workbench replay or Stripe delivery was performed                                                        | `not_run_not_authorized`   |
+| Reopening claim                  | Only a future real exact-revision exit-`0` redacted artifact can close its one bounded edge gate; it cannot authorize a later reopening         | `open_human_and_real_gate` |
+
+The offline suite may use fake AWS, SSH, host and Workbench behavior and network-disabled Docker
+containers. Those cases verify implementation semantics only. Do not enter a `passed_real` result
+for this section until a separately authorized execution has the exact successful workflow
+artifacts, real fresh ADR 0036/0034 inputs, strict human authorization, one canonical redacted
+terminal artifact and independent cleanup review. No current local result is public traversal,
+CloudFront-origin, Stripe-delivery or financial-effect evidence.
+
 ## 8. Verdict procedure
 
 All Phase 0 gates must have at least one `passed_real` case and no unresolved `failed_real`.

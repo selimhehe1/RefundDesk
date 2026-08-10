@@ -39,3 +39,5 @@ ADRs are immutable after acceptance. Supersede an ADR with a new file instead of
 | [0033](0033-bounded-transaction-retry-and-lifecycle-terminology.md)          | Bounded transaction retry and lifecycle terminology          | Accepted                   |
 | [0034](0034-exact-e4-independent-review-and-read-only-host-postflight.md)    | Independent exact-e4 review and read-only host postflight    | Accepted                   |
 | [0035](0035-exact-8da-contained-quiescence-reconciliation.md)                | Exact-8da contained quiescence reconciliation                | Accepted                   |
+| [0036](0036-current-stripe-binding-incident-admission.md)                    | Current Stripe binding incident admission                    | Accepted                   |
+| [0037](0037-bounded-cloudfront-origin-window.md)                             | Contained promotion and bounded CloudFront origin window     | Accepted                   |

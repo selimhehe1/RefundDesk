@@ -147,6 +147,51 @@ marker and never remove it. This closes only the exact-8da containment repair. E
 last admitted canonical release, and no release, ingress reopening, service restart, Stripe action,
 live mode or financial proof is authorized.
 
+ADR 0036 now defines and implements locally the only new admission path for the current replacement
+managed-sandbox read/effect bindings and Stripe App signing secret. Its production wrapper requires
+an exact contained-candidate promotion, a fresh post-promotion ADR 0034 postflight, a fresh strict
+human Dashboard attestation and an access-restricted synthetic fixture. The contained worker mode
+serves only `refunddesk_refund_execute`, with schedules, supervision, startup recovery and signed
+routes disabled, and must finish stopped/fenced. The local fake-host and wrapper contracts pass,
+including deterministic same-idempotency-key resume and exact final post-incident/candidate joins.
+No human Dashboard handoff, AWS/SSH transport or Stripe call was performed, however, and no real
+`PASS_INCIDENT_ADMITTED_CONTAINED` artifact exists. Do not invoke the production path without new
+explicit authorization and operator inputs. Local fixtures do not close the incident or authorize
+release, ingress, restart, live mode or any later reopening decision; consult ADR 0036 and the
+operations runbook before touching this boundary.
+
+ADR 0037 locally implements the only future successor to ADR 0029's unadmitted edge window. It
+requires one exact contained promotion, a real fresh exit-`0` ADR 0036 capture with its exact final
+ADR 0034 bytes, and a separate canonical human authorization. Its exact-revision non-root operator
+image is supplied as five independently hashed workflow artifacts and never mounts the caller
+repository or Docker socket. The state machine binds the authorized CloudFront origin to a
+transient Caddy token, opens only bounded CloudFront-origin TCP 443 ingress, uses a host-held lease
+and same-boot watchdog, then requires AWS closure, origin restoration, token removal and a new
+official contained postflight. An absolute 35-minute deadline from durable `operationStartedAt`
+caps every new effect, call timeout and PASS; the watchdog uses the earliest authorization,
+operation or armed-window deadline, and cleanup after a deadline can only contain and return `21`.
+Only statuses `0`, `20`, `21` and `64` have defined meanings; an ambiguous attempt retains its exact
+immutable-input and writable-state volumes for same-nonce cleanup and never authorizes another
+window.
+
+That implementation is incomplete and its local contracts do not pass. On 10 August 2026 the Linux
+edge contract returned 160 passing and 69 failing of 229 scenarios, measured as an unprivileged user
+on a native Linux filesystem, and the production-path PowerShell contract did not terminate on the
+Windows workstation. A boot-time clock layer —
+`operatorControlCalculatedMonotonicMilliseconds`, `runnerBootIdentifierSha256`,
+`runnerStartedBoottimeMilliseconds` and `runnerDeadlineBoottimeMilliseconds` — had reached the
+canonical schema and the Linux state machine but not the validator, its test, the edge contract or
+ADR 0037. The validator, its test, the contract control document and ADR 0037 were completed on the
+same date; the remaining edge-contract failures are unresolved. Running that contract on Windows is
+not a check: it skips 216 of 229 scenarios and still exits `0`. No hash is frozen for ADR 0037 and
+`PENDING_FINAL_LOCAL_GEL` is not satisfied.
+
+This implementation has not run against AWS, SSH, CloudFront, Stripe, Workbench or a public
+endpoint. No real `PASS_EDGE_WINDOW_RECONTAINED` exists; do not invoke it without new explicit
+authority and all exact operator inputs. Local contracts authorize no release, restart, ingress,
+live mode or reopening decision. Consult ADR 0037 and the operations runbook before touching this
+boundary.
+
 The historical e4 release passed with five healthy services, closed journals,
 active timers and live disabled. The release performed one
 bounded PostgreSQL container recreation because the canonical Compose project path changed, while
@@ -278,6 +323,24 @@ pnpm test:integration
 pnpm build
 pnpm secrets:check
 pnpm audit:prod
+```
+
+The Lightsail operator contracts under `deploy/lightsail/*-contract.test.mjs` only yield a valid
+measurement **on Linux, as an unprivileged user**. They assert file modes, ownership and access
+refusals, and `root` traverses those refusals, so a privileged run reports failures that do not
+exist. On 10 August 2026 the same bytes of the edge contract returned 39 of 229 as root and 160 as
+an unprivileged user; the incident-admission contract returned 6 of 65 as root and 64 of 65 with one
+skip unprivileged. On Windows they measure nothing: `linuxContractAvailable` is false, 216 of 229
+edge scenarios skip and the suite still exits `0`, so `pnpm container:check` passes in full while an
+implementation is broken. Always record the platform, the user and the skip count beside any count —
+a bare number is not evidence. A local Linux container is sufficient:
+
+```bash
+docker run --rm -v "$PWD:/mnt/src:ro" node:24.18.0-bookworm bash -c \
+  'apt-get update -qq && apt-get install -y -qq jq python3 >/dev/null \
+   && mkdir /work && tar -C /mnt/src --exclude=node_modules --exclude=.git -cf - . | tar -C /work -xf - \
+   && chown -R node:node /work \
+   && su node -s /bin/bash -c "cd /work && node --test deploy/lightsail/edge-window-contract.test.mjs"'
 ```
 
 `pnpm test:integration` is fail-closed without `REFUNDDESK_TEST_DATABASE_URL`. The URL must target a

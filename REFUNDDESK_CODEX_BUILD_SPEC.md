@@ -846,6 +846,91 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
   `f5b41ee5f192a5744fdeed762845747cfb82e3284cde6a346fc33a6b27322d5f`.
 - Les exercices complets de rotation et de compromission des clés restent ouverts.
 
+### 18.2 Admission locale ADR 0036 au 9 août 2026
+
+- Le successeur suivi ADR 0036 implémente localement l'admission des trois bindings Stripe actuels
+  (lecture managed sandbox, effet managed sandbox et signature Stripe App) sans réutiliser les
+  preuves exact-e4 consommées et sans relire une valeur exposée.
+- L'entrée est fermée sur quatre documents ignorés et restreints : promotion contenue exacte,
+  postflight ADR 0034 frais post-promotion, attestation Dashboard humaine expurgée et fixture
+  synthétique imposant un seul effet de `1` unité mineure en `eur` avec deux utilisateurs distincts.
+- Le mode worker `incident_admission` désactive planification, supervision, LISTEN/NOTIFY,
+  récupération au démarrage, routes signées et toutes les queues sauf `refunddesk_refund_execute`.
+  Le worker reste privé, sous watchdog, puis est arrêté et clôturé avant toute preuve terminale.
+- La reprise conserve l'opération et la clé d'idempotence Stripe déterministes. La preuve terminale
+  lie exactement un workflow et un Refund, un nouveau postflight ADR 0034 indépendant, les huit
+  compteurs financiers post-incident et les empreintes expurgées de l'identifiant système
+  PostgreSQL et des cinq conteneurs promus.
+- Les contrats locaux passent : matrice fake-host `62/62` (trois scénarios signal/SIGKILL ignorés
+  sous Windows), validateur `38/38` et wrapper PowerShell pour les sorties `0`, `20`, `21`, la
+  création exclusive, les timeouts, le nettoyage et les substitutions de preuve. Ils n'ont lancé
+  aucun appel AWS, SSH ou Stripe.
+- Aucun opérateur n'a fourni l'attestation Dashboard et aucune exécution réelle n'a produit
+  `PASS_INCIDENT_ADMITTED_CONTAINED`. L'implémentation locale ne ferme donc pas l'incident, n'admet
+  aucune release et n'autorise ni ingress, ni redémarrage, ni live, ni décision de réouverture.
+
+### 18.3 Fenêtre d'origine bornée ADR 0037 au 10 août 2026
+
+- ADR 0037 implémente localement le successeur suivi de la fenêtre ADR 0029 non admise. L'admission
+  exige une promotion contenue exacte, une preuve ADR 0036 réelle de sortie `0` avec son postflight
+  ADR 0034 final exact et une autorisation humaine distincte, canonique et bornée dans le temps.
+- L'image opérateur Linux non-root est liée au commit et livrée par le même run `sandbox-images`
+  sous cinq fichiers distincts : archive Docker zstd, sidecar SHA-256 au basename attesté,
+  manifeste canonique, bundle d'attestation GitHub/Sigstore et provenance canonique. Le dépôt local
+  de l'appelant et le socket Docker ne sont jamais montés dans le conteneur réseau.
+- À l'instant durable initial `operationStartedAt`, les preuves ADR 0034/0036 de quinze minutes
+  conservent chacune entre `720` et `900` secondes. Elles constituent une admission ponctuelle ;
+  l'autorisation humaine couvre séparément la deadline publique et la borne fixe d'orchestration de
+  35 minutes mesurée depuis cet instant.
+- La deadline absolue vaut `operationStartedAt + 2100` secondes. Chaque nouvel effet, timeout
+  externe et PASS est borné par le temps restant ; le watchdog retient le minimum entre cette
+  deadline, l'expiration de l'autorisation et `armedAt + WindowSeconds`. Après cette borne, seul le
+  nettoyage vers un état contenu avec `INCOMPLETE/21` peut continuer.
+- L'identité d'origine combine l'origin CloudFront exact avec un token Caddy transitoire ; les
+  préfixes `CLOUDFRONT_ORIGIN_FACING` restent une défense réseau et non une identité. Un lease hôte,
+  un watchdog indépendant, la fermeture AWS en premier, la restauration CloudFront/Caddy et un
+  nouveau postflight ADR 0034 officiel précèdent toute preuve terminale.
+- Une reprise conserve le même nonce, les mêmes entrées immuables et les mêmes volumes d'état. Les
+  sorties définies sont `0/PASS`, `20/FAIL`, `21/INCOMPLETE` et `64/usage`; aucune ambiguïté ne
+  permet une seconde fenêtre.
+- Aucun appel AWS, SSH, CloudFront ou Stripe, aucune requête Workbench et aucun accès public n'a été
+  effectué pour cette implémentation. Aucune preuve réelle `PASS_EDGE_WINDOW_RECONTAINED` n'existe.
+  ADR 0037 n'autorise donc ni release, ni ingress, ni redémarrage, ni live, ni décision de
+  réouverture.
+
+### 18.4 Constat du 10 août 2026 sur l'état local d'ADR 0037
+
+- L'implémentation est **incomplète**, contrairement à ce que laissait entendre le § 18.3. Le contrat
+  edge Linux rend `160/229` réussis et `69` échoués, mesuré sous Node 24.18.0 en conteneur Linux, en
+  utilisateur non privilégié sur un système de fichiers natif. Aucun hash n'est figé.
+- **Ces contrats n'ont de sens qu'exécutés sous Linux en utilisateur non privilégié.** Ils vérifient
+  des modes de fichiers, des propriétés et des refus d'accès, or `root` traverse ces refus : un
+  passage privilégié rapporte des échecs qui n'existent pas. Sur les mêmes octets, le contrat edge
+  rend `39/229` en root contre `160/229` en non-root, et le contrat `incident-admission` rend `6/65`
+  en root contre `64/65` avec un ignoré en non-root. Toute mesure doit être consignée avec sa
+  plateforme, son utilisateur et son nombre de scénarios ignorés.
+- Une couche d'horloge boot-time — `operatorControlCalculatedMonotonicMilliseconds`,
+  `runnerBootIdentifierSha256`, `runnerStartedBoottimeMilliseconds` et
+  `runnerDeadlineBoottimeMilliseconds` — n'existait que dans le schéma canonique et la machine à
+  états. Le validateur, son test, le control document du contrat et l'ADR n'en portaient aucune
+  occurrence. Les quatre artefacts aval ont été alignés : le validateur redérive désormais le grant
+  opérateur et l'intervalle boot-time du runner de façon indépendante, avec la même division entière
+  tronquée que la machine à états pour qu'aucune des deux bornes ne soit plus permissive.
+- **Exécuter le contrat edge sous Windows n'est pas un contrôle** : `linuxContractAvailable` y est
+  faux, 216 scénarios sur 229 sont ignorés et la suite sort en `0`. `pnpm container:check` passe donc
+  intégralement alors que l'implémentation est cassée. C'est le seul gate câblé sur ce contrat, et il
+  ne détecte pas la panne.
+- Les contrats ADR 0036 et ADR 0037 n'ont **jamais tourné en intégration continue** : leurs entrées
+  sont des ajouts à `container:check` dans un `package.json` non committé, donc absentes des runs
+  antérieurs.
+- Le contrat PowerShell chemin production ne termine pas sur le poste Windows et n'y consomme aucun
+  CPU. Des processus laissés par la session du 10 août ont été observés dans le même état après neuf
+  à seize heures, ce qui rend le blocage reproductible et antérieur à cette mesure.
+- Les huit gates full-worktree — `format:check`, `lint`, `typecheck`, `test`, `build`,
+  `container:check`, `secrets:check`, `audit:prod` — rendent `0`, sous la réserve ci-dessus.
+  `pnpm test:integration` redevient exécutable puisque Docker est disponible localement, mais il
+  n'a pas été lancé et reste sans résultat.
+
 ## 19. Références officielles
 
 - [Stripe Apps — backend et requêtes signées](https://docs.stripe.com/stripe-apps/build-backend)

@@ -818,6 +818,117 @@ Evidence:
   `COHERENT_CONTAINED`, code `PASS_CONTAINED`, zero diagnostics; this expired point-in-time artifact
   closes only the exact-8da containment repair.
 
+## ADR 0036 current Stripe-binding admission
+
+Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED`.
+
+- [x] Add the tracked ADR 0036 schema, validator, host runner/helper, bounded proof client, fake-host
+      contract and PowerShell 5 wrapper. The frozen local interface consumes exact contained
+      promotion evidence, a fresh post-promotion ADR 0034 postflight, a fresh redacted human
+      Dashboard attestation and one access-restricted synthetic fixture.
+- [x] Add the contained worker runtime mode. `incident_admission` starts PgBoss with scheduling,
+      supervision and LISTEN/NOTIFY disabled, exposes no signed authority/routes and consumes only
+      `refunddesk_refund_execute`; normal release remains `normal`-only.
+- [x] Prove strict canonical JSON, source/index/HEAD/tool locks, exact promotion/runtime bindings,
+      closed inventories, deterministic same-key resume, exactly one workflow/Refund, durable
+      monotone markers, strict cleanup and a fresh independent final ADR 0034 postflight. The final
+      capture carries the exact eight-counter `postIncidentBaseline` and six redacted
+      `finalPostflight.candidateBinding` digests.
+- [x] Pass the final local gates without external access: fake-host contract `62/62` passing plus
+      three Windows-only signal/SIGKILL skips, validator `38/38`, wrapper contract including exits
+      `0/20/21` and create-new preservation, ShellCheck, Bash/PowerShell/Python syntax, Prettier and
+      targeted diff checks. Frozen SHA-256 values are schema
+      `8f654a1f00317a98906138b0de136edb7306a02518a90120aeac4beb9c7b6a16`, validator
+      `4a2f532b58a00f6c9be8160cb658cef07bf7c169897e040f4cecc4ee4be2fe6c`, runner
+      `a6fff59e921bd6a71cb9483c3e8fbd10fd6de3d4637d954c8faac5ce3136564b` and wrapper
+      `1a9cb530a5ded18e5631aed991a30ff4be3ab74ddc10e3308066d3399ff4bdc8`.
+- [ ] Obtain the required human Dashboard observations, exact ignored inputs, fresh promotion and
+      post-promotion postflight for one separately authorized candidate. No raw credential or full
+      Stripe object identifier may enter a tracked file, command line, log or evidence artifact.
+- [ ] Run the exact production wrapper only after separate authorization. No AWS, SSH, Stripe or
+      Dashboard operation was performed while implementing or validating ADR 0036, and no real
+      `PASS_INCIDENT_ADMITTED_CONTAINED` capture exists.
+- [ ] Require a real, fresh, exact-revision exit-`0` ADR 0036 capture as a prerequisite to any later
+      reopening decision. Local fixture success, exit `20`, exit `21`, an expired capture or the
+      pre-incident postflight cannot satisfy that prerequisite.
+- [x] Reconfirm the ADR 0036 local contracts on 10 August 2026 under Linux as an unprivileged user:
+      `incident-admission` `64/65` passing with one skip, `contained-promotion` `30/30`, validators
+      `incident-admission` `38/38` and `contained-promotion` `20/20`. Both contracts are green on the
+      current bytes; only ADR 0037's edge contract is failing. A Windows run of `contained-promotion`
+      is not a check — it skips 8 of 10 scenarios.
+
+## ADR 0037 contained promotion and bounded origin window
+
+Status: `INCOMPLETE_LOCAL / NOT_EXECUTED / EDGE_CONTRACT_FAILING`.
+
+The 9 August entry claiming a completed implementation awaiting only a freeze was wrong. On
+10 August 2026, run as an unprivileged user on a native Linux filesystem, the edge contract returned
+160 passing and 69 failing of 229 scenarios. Nothing is frozen and no hash is promoted.
+
+**These contracts only yield a valid measurement as an unprivileged user on Linux.** They assert
+file modes, ownership and access refusals, and `root` traverses the refusals, so a privileged run
+reports failures that do not exist. The same bytes returned 39 of 229 as root and 160 as an
+unprivileged user; the sibling ADR 0036 incident-admission contract returned 6 of 65 as root and
+64 of 65 with one skip unprivileged. A Windows run measures nothing at all: `linuxContractAvailable`
+is false, 216 of 229 scenarios skip and the suite exits `0`. Record the user and platform beside any
+count; a count without them is not evidence.
+
+- [x] Add the accepted ADR 0037 edge contract, canonical schema and validator, non-root
+      exact-revision operator image, Windows PowerShell orchestrator, Linux state machine, host
+      lease/watchdog, Caddy origin-token matcher, official final-postflight join and human
+      Workbench checkpoint receiver. The network-enabled operator container contains only its
+      commit-pinned source inventory; it never mounts the caller repository or Docker socket.
+- [x] Extend `sandbox-images` to produce exactly five separately hashed operator inputs: the zstd
+      Docker archive, its exact-basename SHA-256 sidecar, canonical image manifest, GitHub/Sigstore
+      attestation bundle and canonical workflow provenance. The wrapper verifies each out-of-band
+      hash, the completed exact-revision workflow, the attested archive subject and loaded image
+      configuration before `pull=never` execution.
+- [x] Bind edge admission to one real exit-`0` ADR 0036 capture, its exact final ADR 0034 bytes, the
+      contained promotion identities and post-incident eight-counter baseline, plus a separate
+      canonical human authorization. At durable `operationStartedAt`, both 15-minute admission
+      proofs must have `720..900` seconds remaining; only the authorization covers the armed
+      deadline and the fixed 35-minute orchestration bound from that timestamp.
+- [x] Implement crash-safe exact-nonce recovery with separate immutable-input and writable-state
+      Docker volumes, origin bind/unbind CAS, AWS-close-first cleanup, independent same-boot
+      watchdog, release/recovery interlocks, create-new evidence and terminal replay. Statuses are
+      exact `0/PASS`, `20/FAIL`, `21/INCOMPLETE` and `64/usage`; no ambiguous outcome permits a
+      second window. Every effect/PASS guard and external timeout is capped by the absolute
+      `operationStartedAt+2100s` budget; the watchdog uses the earliest authorization, operation or
+      armed-window deadline, while over-deadline cleanup can only contain and return `21`.
+- [x] Complete the boot-time clock layer across every artifact that carries it. On 10 August 2026
+      `operatorControlCalculatedMonotonicMilliseconds`, `runnerBootIdentifierSha256`,
+      `runnerStartedBoottimeMilliseconds` and `runnerDeadlineBoottimeMilliseconds` existed only in
+      the canonical schema and the Linux state machine; the validator, its test, the edge contract's
+      control document and ADR 0037 itself had no occurrence of any of them. The validator now
+      re-derives the operator grant and the runner boot-time span independently, using the same
+      truncating whole-second arithmetic as the state machine so neither bound is looser. The
+      validator suite returned `17/17` after the correction, from 14 failures before it.
+- [ ] Repair the remaining edge-contract failures. Measured on 10 August 2026 with Node 24.18.0
+      inside a Linux container, as an unprivileged user on a native filesystem: `160/229` passing,
+      `69` failing, `0` skipped, exit `1`. Supplying the missing control-document key recovered one
+      scenario before that; the residue has other causes and is not yet characterised, because the
+      earlier error distribution was collected under a privileged run and does not describe these 69.
+- [ ] Obtain a terminating production-path PowerShell contract. On this Windows workstation the
+      run did not finish and accumulated no CPU. Fourteen node processes left by the 10 August
+      session were found in the same state after nine to sixteen hours, so the stall is reproducible
+      and predates this measurement. The CI Windows job budgets 30 minutes for all eleven contracts.
+- [ ] Record the final frozen hashes only after both contracts are green on the same bytes. No hash
+      is frozen. Targeted validator, workflow, image and offline fake-host checks are not that gate.
+- [x] Reconfirm the full-worktree gates. On 10 August 2026 `format:check`, `lint`, `typecheck`,
+      `test`, `build`, `container:check`, `secrets:check` and `audit:prod` all returned `0`.
+      **`container:check` is not evidence for ADR 0037.** It runs the edge contract on Windows,
+      where `linuxContractAvailable` is false and 216 of 229 scenarios skip, so the suite exits `0`
+      while the implementation is broken. Reading that gate as a pass is the exact failure this
+      entry exists to prevent. `format:check` first required correcting a pre-existing formatting
+      defect in `deploy/lightsail/edge-window-contract.test.mjs`.
+- [ ] Obtain new explicit execution authority, the exact successful CI/operator artifact, a real
+      fresh contained promotion, a real fresh exit-`0` ADR 0036 incident admission and the strict
+      time-bounded human edge authorization. None exists from the local implementation work.
+- [ ] Run the production wrapper only in the approved test/sandbox boundary and retain one redacted
+      canonical artifact if it finishes. No AWS, SSH, CloudFront, Stripe, public ingress or
+      Workbench request was performed, so no real `PASS_EDGE_WINDOW_RECONTAINED`, public traversal
+      or reopening claim exists.
+
 ## Commercial, live and Marketplace verdict
 
 Status: `NO_GO`.
