@@ -174,10 +174,14 @@ Only statuses `0`, `20`, `21` and `64` have defined meanings; an ambiguous attem
 immutable-input and writable-state volumes for same-nonce cleanup and never authorizes another
 window.
 
-That implementation is incomplete and its local contracts do not pass. On 10 August 2026 the Linux
-edge contract returned 160 passing and 69 failing of 229 scenarios, measured as an unprivileged user
-on a native Linux filesystem, and the production-path PowerShell contract did not terminate on the
-Windows workstation. A boot-time clock layer —
+That implementation is incomplete. On 10 August 2026 the Linux edge contract returns 228 passing and
+1 failing of 229 scenarios, measured as an unprivileged user on a native Linux filesystem, up from
+160 before three defects were repaired; the production-path PowerShell contract does not terminate
+on the Windows workstation. The dominant defect was a deadline comparison written inside a jq pipe,
+where `.` is the number being tested, so `. >= .runnerStartedBoottimeMilliseconds` asked jq to index
+a number with a string; the resulting error failed the whole journal-restore predicate and made every
+replay return `INCOMPLETE`. Moving it to the top level recovered 68 scenarios at once, which is why
+the five apparent error clusters were one cause. A boot-time clock layer —
 `operatorControlCalculatedMonotonicMilliseconds`, `runnerBootIdentifierSha256`,
 `runnerStartedBoottimeMilliseconds` and `runnerDeadlineBoottimeMilliseconds` — had reached the
 canonical schema and the Linux state machine but not the validator, its test, the edge contract or

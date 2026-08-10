@@ -901,8 +901,26 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
 ### 18.4 Constat du 10 août 2026 sur l'état local d'ADR 0037
 
 - L'implémentation est **incomplète**, contrairement à ce que laissait entendre le § 18.3. Le contrat
-  edge Linux rend `160/229` réussis et `69` échoués, mesuré sous Node 24.18.0 en conteneur Linux, en
-  utilisateur non privilégié sur un système de fichiers natif. Aucun hash n'est figé.
+  edge Linux rend `228/229` réussis et `1` échoué, mesuré sous Node 24.18.0 en conteneur Linux, en
+  utilisateur non privilégié sur un système de fichiers natif, contre `160/229` avant réparation.
+  Aucun hash n'est figé.
+- Les 69 échecs initiaux avaient **une cause dominante unique**, et non les cinq que suggérait leur
+  distribution d'erreurs. Dans le prédicat de restauration du journal, la comparaison d'ordre était
+  écrite à l'intérieur d'un pipe jq, où `.` désigne le nombre testé : demander
+  `. >= .runnerStartedBoottimeMilliseconds` revient à indexer un nombre par une chaîne. jq lève
+  `Cannot index number with string`, le prédicat de trente clauses échoue en bloc, `restore_run_journal`
+  refuse tout marqueur et **tout rejeu converge vers `INCOMPLETE`**. Déplacer la comparaison au
+  niveau supérieur a récupéré 68 scénarios d'un coup. Une distribution de symptômes n'est pas une
+  distribution de causes.
+- Deux autres défauts réels sont corrigés, sans effet visible sur le compteur car situés **en aval**
+  du précédent : les deux jointures de rejeu comparaient le `provenance` de la preuve au `provenance`
+  brut du control, alors que l'assemblage l'augmente du handoff opérateur et de l'horloge boot-time.
+- Le runner dispose désormais d'un canal de diagnostic attribuable. Il redirige stdout et stderr vers
+  `/dev/null` pour toute sa vie et réserve le descripteur 3 à la preuve — correct pour un runner qui
+  manipule des credentials, et précisément ce qui rendait un refus indiscernable d'un autre.
+  `edge_test_diagnostic` inscrit un identifiant fixe à quatorze gardes, uniquement si le mode test est
+  actif **et** si l'appelant a nommé un fichier, et refuse tout ce qui sort de
+  `^[A-Z][A-Z0-9_]{2,63}$`. Il ne peut donc porter ni valeur, ni chemin, ni payload, ni secret.
 - **Ces contrats n'ont de sens qu'exécutés sous Linux en utilisateur non privilégié.** Ils vérifient
   des modes de fichiers, des propriétés et des refus d'accès, or `root` traverse ces refus : un
   passage privilégié rapporte des échecs qui n'existent pas. Sur les mêmes octets, le contrat edge

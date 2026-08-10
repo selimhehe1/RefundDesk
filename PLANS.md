@@ -859,11 +859,28 @@ Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED`.
 
 ## ADR 0037 contained promotion and bounded origin window
 
-Status: `INCOMPLETE_LOCAL / NOT_EXECUTED / EDGE_CONTRACT_FAILING`.
+Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED / ONE_EDGE_SCENARIO_FAILING`.
 
 The 9 August entry claiming a completed implementation awaiting only a freeze was wrong. On
-10 August 2026, run as an unprivileged user on a native Linux filesystem, the edge contract returned
-160 passing and 69 failing of 229 scenarios. Nothing is frozen and no hash is promoted.
+10 August 2026, run as an unprivileged user on a native Linux filesystem, the edge contract first
+returned 160 passing and 69 failing of 229 scenarios. Three defects were then repaired and the same
+contract returns **228 passing and 1 failing**. Nothing is frozen and no hash is promoted.
+
+The 69 failures had **one dominant root cause**, not the five suggested by their error distribution.
+In the journal-restore predicate, the deadline ordering was written inside a jq pipe:
+`(.runnerDeadlineBoottimeMilliseconds | ... and . >= .runnerStartedBoottimeMilliseconds ...)`. Inside
+that pipe `.` is the deadline **number**, so the comparison asked jq to index a number with a string.
+jq raises `Cannot index number with string`, which fails the whole thirty-clause predicate, so
+`restore_run_journal` refused every marker and every replay converged to `INCOMPLETE`. Moving the
+comparison to the top level recovered 68 scenarios at once. A distribution of symptoms is not a
+distribution of causes, and planning repair work per symptom cluster would have chased four causes
+that never existed.
+
+Two further defects were real and are fixed, though neither moved the counter on its own because
+both sit downstream of that predicate. The PASS and terminal-failure replay joins compared evidence
+`provenance` to the bare control `provenance`, while the assembly augments it with the operator
+handoff and runner boot-time clock; that comparison could never hold. Both joins now rebuild the
+same augmented object.
 
 **These contracts only yield a valid measurement as an unprivileged user on Linux.** They assert
 file modes, ownership and access refusals, and `root` traverses the refusals, so a privileged run
@@ -903,18 +920,27 @@ count; a count without them is not evidence.
       re-derives the operator grant and the runner boot-time span independently, using the same
       truncating whole-second arithmetic as the state machine so neither bound is looser. The
       validator suite returned `17/17` after the correction, from 14 failures before it.
-- [ ] Repair the remaining edge-contract failures. Measured on 10 August 2026 with Node 24.18.0
-      inside a Linux container, as an unprivileged user on a native filesystem: `160/229` passing,
-      `69` failing, `0` skipped, exit `1`, reproduced on a second independent run. The distribution
-      is 26 `DOCUMENT_SIZE_INVALID`, 17 strict-equality mismatches such as `20 !== 0`, 9
-      `null !== 'SIGKILL'`, 8 document divergences on the admission join and 9 single assertions. The
-      failing scenarios cluster on terminal-evidence replay (121-129, 139-141) and on recovery after
-      process death, not on the functional path.
-      `DOCUMENT_SIZE_INVALID` is a symptom, not a bound to raise. `decodeCanonicalJson` raises the
-      same identity for an empty buffer as for one past the 256 KiB maximum, and these documents are
-      far below that, so the runner is producing no terminal evidence rather than oversized evidence.
-      Raising the limit would make the validator accept an absent proof on the one path whose whole
-      purpose is to prove that a bounded public window really closed.
+- [x] Repair the journal-restore and replay defects. Measured on 10 August 2026 with Node 24.18.0
+      inside a Linux container, as an unprivileged user on a native filesystem: `228/229` passing,
+      `1` failing, `0` skipped, from `160/229` before. The edge-window validator returns `17/17`.
+      `DOCUMENT_SIZE_INVALID` was throughout a symptom and never a bound to raise:
+      `decodeCanonicalJson` raises the same identity for an empty buffer as for one past the 256 KiB
+      maximum, so it reported an absent proof, not an oversized one. Raising the limit would have
+      taught the validator to accept a missing proof on the one path whose purpose is to prove that a
+      bounded public window really closed.
+- [x] Give the runner an attributable failure channel. It sends stdout and stderr to `/dev/null` for
+      its whole life and reserves descriptor 3 for evidence, which is correct for a runner that
+      handles credentials and is why a thirty-clause predicate could refuse for months while looking
+      identical to every other refusal from outside. `edge_test_diagnostic` appends a fixed
+      identifier at fourteen guards. It emits only when the test mode is active **and** the caller
+      nominated a file, and refuses anything outside `^[A-Z][A-Z0-9_]{2,63}$`, so it cannot carry a
+      value, path, payload or secret. Production behaviour is unchanged. Locating the dominant defect
+      took one run with it, after three hypotheses from static reading were each falsified.
+- [ ] Repair `cleanup after a rebooted expired window converges to incomplete without a second open`,
+      the single remaining failure. The runner exits without emitting evidence and no instrumented
+      guard refuses, so the exit is on a path that neither `restore_run_journal` nor
+      `final_evidence_ready` covers. Extend the diagnostic identities to that path before proposing a
+      cause.
 - [ ] Obtain a terminating production-path PowerShell contract. On this Windows workstation the
       run did not finish and accumulated no CPU. Fourteen node processes left by the 10 August
       session were found in the same state after nine to sixteen hours, so the stall is reproducible
