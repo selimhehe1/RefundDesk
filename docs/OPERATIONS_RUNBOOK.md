@@ -275,13 +275,12 @@ reopening decision.
 
 ### ADR 0037 bounded CloudFront origin window — incomplete, do not execute
 
-> **The ADR 0037 implementation is incomplete.** Measured on 10 August 2026 as an unprivileged user
-> on a native Linux filesystem, the edge contract returns 228 passing and 1 failing of 229 scenarios,
-> up from 160 before three defects were repaired. The remaining failure is
-> `cleanup after a rebooted expired window`. The production-path PowerShell contract does not
-> terminate on the Windows workstation. No hash is frozen. **Do not follow the procedure below**;
-> it describes a wrapper whose own contract is not yet green, and running it would consume operator
-> inputs and a bounded window against unproven code.
+> **The ADR 0037 implementation is not frozen.** Measured on 10 August 2026 as an unprivileged user
+> on a native Linux filesystem, the edge contract returns 229 of 229 passing, zero skipped, up from
+> 160 before four defects were repaired. The production-path PowerShell contract still does not
+> terminate on the Windows workstation, so no hash is frozen. **Do not follow the procedure below**;
+> running it would consume operator inputs and a bounded public window against a wrapper whose own
+> Windows contract has never completed once.
 >
 > Three traps make this easy to miss. Running the edge contract on Windows is not a check —
 > `linuxContractAvailable` is false there, 216 of 229 scenarios skip and the suite exits `0`, so

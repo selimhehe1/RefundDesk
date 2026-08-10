@@ -174,10 +174,10 @@ Only statuses `0`, `20`, `21` and `64` have defined meanings; an ambiguous attem
 immutable-input and writable-state volumes for same-nonce cleanup and never authorizes another
 window.
 
-That implementation is incomplete. On 10 August 2026 the Linux edge contract returns 228 passing and
-1 failing of 229 scenarios, measured as an unprivileged user on a native Linux filesystem, up from
-160 before three defects were repaired; the production-path PowerShell contract does not terminate
-on the Windows workstation. The dominant defect was a deadline comparison written inside a jq pipe,
+That implementation is not yet frozen. On 10 August 2026 the Linux edge contract returns **229 of
+229 passing**, zero skipped, measured as an unprivileged user on a native Linux filesystem, up from
+160 before four defects were repaired. The production-path PowerShell contract still does not
+terminate on the Windows workstation, so the freeze remains blocked on that gate alone. The dominant defect was a deadline comparison written inside a jq pipe,
 where `.` is the number being tested, so `. >= .runnerStartedBoottimeMilliseconds` asked jq to index
 a number with a string; the resulting error failed the whole journal-restore predicate and made every
 replay return `INCOMPLETE`. Moving it to the top level recovered 68 scenarios at once, which is why

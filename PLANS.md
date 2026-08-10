@@ -859,12 +859,12 @@ Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED`.
 
 ## ADR 0037 contained promotion and bounded origin window
 
-Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED / ONE_EDGE_SCENARIO_FAILING`.
+Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED / EDGE_CONTRACT_GREEN`.
 
 The 9 August entry claiming a completed implementation awaiting only a freeze was wrong. On
 10 August 2026, run as an unprivileged user on a native Linux filesystem, the edge contract first
-returned 160 passing and 69 failing of 229 scenarios. Three defects were then repaired and the same
-contract returns **228 passing and 1 failing**. Nothing is frozen and no hash is promoted.
+returned 160 passing and 69 failing of 229 scenarios. Four defects were then repaired and the same
+contract returns **229 of 229 passing**, zero failing, zero skipped, exit `0`. Nothing is frozen and no hash is promoted.
 
 The 69 failures had **one dominant root cause**, not the five suggested by their error distribution.
 In the journal-restore predicate, the deadline ordering was written inside a jq pipe:
@@ -936,11 +936,15 @@ count; a count without them is not evidence.
       nominated a file, and refuses anything outside `^[A-Z][A-Z0-9_]{2,63}$`, so it cannot carry a
       value, path, payload or secret. Production behaviour is unchanged. Locating the dominant defect
       took one run with it, after three hypotheses from static reading were each falsified.
-- [ ] Repair `cleanup after a rebooted expired window converges to incomplete without a second open`,
-      the single remaining failure. The runner exits without emitting evidence and no instrumented
-      guard refuses, so the exit is on a path that neither `restore_run_journal` nor
-      `final_evidence_ready` covers. Extend the diagnostic identities to that path before proposing a
-      cause.
+- [x] Repair `cleanup after a rebooted expired window converges to incomplete without a second open`. The invalid-clock branch
+      hand-rolled a subset of `abort_run` and exited `21` without evidence, so an operator was
+      given a bare exit code that does not distinguish a contained host from a runner that died.
+      Routing it through `abort_run` unconditionally was equally wrong and the contract said so: it
+      moved the failure to the wall-rollback resume scenario, which requires empty stdout. The
+      branch is now mode-aware. A `run` resume that finds
+      a spent grant is refused in silence; a `cleanup` invocation is an operator asking for
+      convergence and is owed the `INCOMPLETE` document. The contract encoded a distinction the
+      implementation had lost.
 - [ ] Obtain a terminating production-path PowerShell contract. On this Windows workstation the
       run did not finish and accumulated no CPU. Fourteen node processes left by the 10 August
       session were found in the same state after nine to sixteen hours, so the stall is reproducible

@@ -901,9 +901,9 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
 ### 18.4 Constat du 10 août 2026 sur l'état local d'ADR 0037
 
 - L'implémentation est **incomplète**, contrairement à ce que laissait entendre le § 18.3. Le contrat
-  edge Linux rend `228/229` réussis et `1` échoué, mesuré sous Node 24.18.0 en conteneur Linux, en
+  edge Linux rend **`229/229`** réussis, zéro ignoré, mesuré sous Node 24.18.0 en conteneur Linux, en
   utilisateur non privilégié sur un système de fichiers natif, contre `160/229` avant réparation.
-  Aucun hash n'est figé.
+  Aucun hash n'est figé : le contrat PowerShell du chemin production ne termine toujours pas.
 - Les 69 échecs initiaux avaient **une cause dominante unique**, et non les cinq que suggérait leur
   distribution d'erreurs. Dans le prédicat de restauration du journal, la comparaison d'ordre était
   écrite à l'intérieur d'un pipe jq, où `.` désigne le nombre testé : demander
