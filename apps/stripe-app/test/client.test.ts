@@ -104,3 +104,42 @@ describe("refund decision client", () => {
     expect(input.command).not.toHaveProperty("expected_request_version");
   });
 });
+
+describe("settings response contract", () => {
+  beforeEach(() => signedApiRequestMock.mockReset());
+
+  const settings = {
+    approver_user_ids: ["usr_Approver"],
+    expiration_days: 7,
+    onboarding_completed: true,
+    observed_users: [
+      {
+        approver_enabled: true,
+        display_name: "Synthetic Approver",
+        last_seen_at: "2026-08-09T00:00:00.000Z",
+        stripe_user_id: "usr_Approver",
+      },
+    ],
+  } as const;
+
+  it("accepts the same closed projection for get and update", async () => {
+    signedApiRequestMock.mockResolvedValue(settings);
+    await expect(refundDeskApi.getSettings(context)).resolves.toEqual(settings);
+    await expect(
+      refundDeskApi.updateSettings(
+        context,
+        { approver_user_ids: ["usr_Approver"], expiration_days: 7, onboarding_completed: true },
+        requestNonce,
+      ),
+    ).resolves.toEqual(settings);
+  });
+
+  it.each([
+    { ...settings, observed_users: undefined },
+    { ...settings, observed_users: [{ ...settings.observed_users[0], approver_enabled: "yes" }] },
+    { ...settings, extra: true },
+  ])("fails closed for an absent, malformed or broad settings projection", async (value) => {
+    signedApiRequestMock.mockResolvedValue(value);
+    await expect(refundDeskApi.getSettings(context)).rejects.toThrow();
+  });
+});

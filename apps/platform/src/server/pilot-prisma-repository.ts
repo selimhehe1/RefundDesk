@@ -1031,10 +1031,17 @@ export class PilotPrismaRepository implements PilotRepository {
         "The Stripe installation was not found.",
       );
     }
+    const observed = await repositories.listObservedTenantUsers();
     return response({
       approver_user_ids: settings.approvers.map((approver) => approver.stripeUserId),
       expiration_days: 7,
       onboarding_completed: settings.installation.onboardingCompletedAt !== null,
+      observed_users: observed.map((user) => ({
+        approver_enabled: user.approverEnabled,
+        display_name: user.displayName,
+        last_seen_at: user.lastVerifiedAt.toISOString(),
+        stripe_user_id: user.stripeUserId,
+      })),
     });
   }
 

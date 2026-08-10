@@ -195,6 +195,20 @@ class FakePilotRepository implements PilotRepository {
             approver_user_ids: mutation.approverUserIds,
             expiration_days: 7,
             onboarding_completed: mutation.onboardingCompleted,
+            observed_users: [
+              {
+                approver_enabled: true,
+                display_name: "Ada Lovelace",
+                last_seen_at: "2026-07-26T17:00:00.000Z",
+                stripe_user_id: USER_ID,
+              },
+              {
+                approver_enabled: false,
+                display_name: null,
+                last_seen_at: "2026-07-25T09:30:00.000Z",
+                stripe_user_id: "usr_Colleague",
+              },
+            ],
           },
           status: 200,
         };
@@ -1235,6 +1249,32 @@ describe("signed pilot API boundary", () => {
     });
   });
 
+  it("returns the closed redacted settings authority used by incident admission", async () => {
+    const response = await invoke(PILOT_ROUTE_SPECS.settingsGet, {
+      nonce: "4d06c93b-1c3c-4e41-9b24-a2d4276c0d91",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      approver_user_ids: [USER_ID],
+      expiration_days: 7,
+      onboarding_completed: true,
+      observed_users: [
+        {
+          approver_enabled: true,
+          display_name: "Ada Lovelace",
+          last_seen_at: "2026-07-26T17:00:00.000Z",
+          stripe_user_id: USER_ID,
+        },
+        {
+          approver_enabled: false,
+          display_name: null,
+          last_seen_at: "2026-07-25T09:30:00.000Z",
+          stripe_user_id: "usr_Colleague",
+        },
+      ],
+    });
+  });
+
   it("requires the signed built-in Administrator role for settings changes", async () => {
     const command = {
       approver_user_ids: [USER_ID],
@@ -1266,6 +1306,25 @@ describe("signed pilot API boundary", () => {
       roles: [{ id: "super_admin", type: "builtIn", name: "Super Administrator" }],
     });
     expect(builtInAdministrator.status).toBe(200);
+    expect(await builtInAdministrator.json()).toEqual({
+      approver_user_ids: [USER_ID],
+      expiration_days: 7,
+      onboarding_completed: true,
+      observed_users: [
+        {
+          approver_enabled: true,
+          display_name: "Ada Lovelace",
+          last_seen_at: "2026-07-26T17:00:00.000Z",
+          stripe_user_id: USER_ID,
+        },
+        {
+          approver_enabled: false,
+          display_name: null,
+          last_seen_at: "2026-07-25T09:30:00.000Z",
+          stripe_user_id: "usr_Colleague",
+        },
+      ],
+    });
     expect(repository.executeCount).toBe(1);
   });
 

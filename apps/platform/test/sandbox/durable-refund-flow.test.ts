@@ -1396,6 +1396,7 @@ describe.sequential("durable real Stripe refund flow", () => {
       logLevel: "error",
       nodeEnv: "test",
       pgBossDatabaseUrl: queueDatabaseUrl,
+      runtimeMode: "normal",
       signedRequestVerifierToken: randomBytes(32).toString("base64"),
       stripe: {
         apiVersion: API_VERSION,

@@ -381,6 +381,12 @@ export class PilotService {
             approver_user_ids: settings.approver_user_ids,
             expiration_days: settings.expiration_days,
             onboarding_completed: settings.onboarding_completed,
+            observed_users: settings.observed_users.map((user) => ({
+              approver_enabled: user.approver_enabled,
+              display_name: user.display_name,
+              last_seen_at: user.last_seen_at,
+              stripe_user_id: user.stripe_user_id,
+            })),
           });
         }
 
