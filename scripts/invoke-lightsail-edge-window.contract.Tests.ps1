@@ -170,9 +170,17 @@ function Invoke-CheckpointSubmit([string] $ScriptPath, [string] $RequestPath, [s
     $process.StartInfo = $start
     try {
         if (-not $process.Start()) { throw "submit process start failed" }
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        # Both streams are redirected, so draining them one after the other
+        # deadlocks: while this blocks on stdout, a child that fills the stderr
+        # pipe buffer blocks writing, and neither side can proceed. Start both
+        # reads first, then wait. ReadToEndAsync returns Task[string], so
+        # .Result is a string rather than the VoidTaskResult that ADR 0023
+        # recorded for non-generic tasks under PowerShell 5.1.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
         [IO.File]::WriteAllText($ErrorPath, $stderr, [Text.UTF8Encoding]::new($false))
         return $process.ExitCode
     }
@@ -226,9 +234,14 @@ function Invoke-WrapperFixture(
     $process.StartInfo = $start
     try {
         if (-not $process.Start()) { throw "wrapper fixture process start failed" }
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        # Start both drains before waiting; see the note on the submit helper.
+        # The 60-second bound below never applied, because the deadlock happens
+        # in the sequential reads above it and never reaches the timed wait.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(60000)) { throw "wrapper fixture process timeout" }
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
         [IO.File]::WriteAllText($stdoutPath, $stdout, [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($stderrPath, $stderr, [Text.UTF8Encoding]::new($false))
         return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
@@ -295,7 +308,16 @@ function Start-ProductionWrapperFixture(
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $start
     if (-not $process.Start()) { $process.Dispose(); throw "production wrapper fixture process start failed" }
-    $running = [pscustomobject]@{ Prefix = $CapturePrefix; Process = $process }
+    # Drain both redirected streams from the moment the process exists. This
+    # fixture is waited on before being read, so a child that fills a pipe
+    # buffer would block, never exit, and burn the whole six-minute bound
+    # before failing as a timeout rather than as what it is.
+    $running = [pscustomobject]@{
+        Prefix     = $CapturePrefix
+        Process    = $process
+        StdoutTask = $process.StandardOutput.ReadToEndAsync()
+        StderrTask = $process.StandardError.ReadToEndAsync()
+    }
     $runningProductionFixtures.Add($running)
     return $running
 }
@@ -312,8 +334,8 @@ function Complete-ProductionWrapperFixture($Running, [int] $TimeoutMilliseconds 
             Stop-ProductionWrapperFixture $Running
             throw "production wrapper fixture process timeout"
         }
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
+        $stdout = $Running.StdoutTask.Result
+        $stderr = $Running.StderrTask.Result
         [IO.File]::WriteAllText("$($Running.Prefix).stdout", $stdout, [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText("$($Running.Prefix).stderr", $stderr, [Text.UTF8Encoding]::new($false))
         return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout; Stderr = $stderr }
