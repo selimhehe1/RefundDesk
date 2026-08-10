@@ -905,9 +905,16 @@ count; a count without them is not evidence.
       validator suite returned `17/17` after the correction, from 14 failures before it.
 - [ ] Repair the remaining edge-contract failures. Measured on 10 August 2026 with Node 24.18.0
       inside a Linux container, as an unprivileged user on a native filesystem: `160/229` passing,
-      `69` failing, `0` skipped, exit `1`. Supplying the missing control-document key recovered one
-      scenario before that; the residue has other causes and is not yet characterised, because the
-      earlier error distribution was collected under a privileged run and does not describe these 69.
+      `69` failing, `0` skipped, exit `1`, reproduced on a second independent run. The distribution
+      is 26 `DOCUMENT_SIZE_INVALID`, 17 strict-equality mismatches such as `20 !== 0`, 9
+      `null !== 'SIGKILL'`, 8 document divergences on the admission join and 9 single assertions. The
+      failing scenarios cluster on terminal-evidence replay (121-129, 139-141) and on recovery after
+      process death, not on the functional path.
+      `DOCUMENT_SIZE_INVALID` is a symptom, not a bound to raise. `decodeCanonicalJson` raises the
+      same identity for an empty buffer as for one past the 256 KiB maximum, and these documents are
+      far below that, so the runner is producing no terminal evidence rather than oversized evidence.
+      Raising the limit would make the validator accept an absent proof on the one path whose whole
+      purpose is to prove that a bounded public window really closed.
 - [ ] Obtain a terminating production-path PowerShell contract. On this Windows workstation the
       run did not finish and accumulated no CPU. Fourteen node processes left by the 10 August
       session were found in the same state after nine to sixteen hours, so the stall is reproducible
