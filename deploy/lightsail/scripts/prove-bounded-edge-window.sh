@@ -6776,9 +6776,12 @@ commit_facts() {
 
 restore_run_journal() {
   local actual_facts_sha temporary
-  controlled_file "${RUN_MARKER}" || return 1
-  (( $(wc --bytes <"${RUN_MARKER}") <= 393216 )) || return 1
-  [[ "$(jq --compact-output --sort-keys . "${RUN_MARKER}")" == "$(tr -d '\n' <"${RUN_MARKER}")" ]] || return 1
+  controlled_file "${RUN_MARKER}" ||
+    { edge_test_diagnostic RESTORE_MARKER_NOT_CONTROLLED; return 1; }
+  (( $(wc --bytes <"${RUN_MARKER}") <= 393216 )) ||
+    { edge_test_diagnostic RESTORE_MARKER_TOO_LARGE; return 1; }
+  [[ "$(jq --compact-output --sort-keys . "${RUN_MARKER}")" == "$(tr -d '\n' <"${RUN_MARKER}")" ]] ||
+    { edge_test_diagnostic RESTORE_MARKER_NOT_CANONICAL; return 1; }
   jq --exit-status --arg nonce "${NONCE}" --arg revision "${EXPECTED_REVISION}" \
     --arg operatorBootIdentifierSha256 "${CONTROL_OPERATOR_BOOT_IDENTIFIER_SHA256}" \
     --argjson operatorControlCalculatedMonotonicMilliseconds "${CONTROL_OPERATOR_CONTROL_CALCULATED_MONOTONIC_MILLISECONDS}" \
@@ -6807,14 +6810,23 @@ restore_run_journal() {
     and (.factsSha256 | type == "string" and test("^[0-9a-f]{64}$"))
     and (.runnerBootIdentifierSha256 | type == "string" and test("^[0-9a-f]{64}$"))
     and (.runnerStartedBoottimeMilliseconds | type == "number" and floor == . and . >= 0 and . <= 9007199254740991)
-    and (.runnerDeadlineBoottimeMilliseconds | type == "number" and floor == . and . >= .runnerStartedBoottimeMilliseconds and . <= 9007199254740991)
+    and (.runnerDeadlineBoottimeMilliseconds | type == "number" and floor == . and . >= 0 and . <= 9007199254740991)
+    # Inside the pipe above, "." is the deadline number, so comparing it to
+    # .runnerStartedBoottimeMilliseconds asked jq to index a number with a
+    # string.  That raises "Cannot index number with string", which fails the
+    # whole predicate and made every journal restore refuse, so every replay
+    # returned INCOMPLETE.  The ordering belongs at the top level.
+    and (.runnerDeadlineBoottimeMilliseconds >= .runnerStartedBoottimeMilliseconds)
     and (.runnerDeadlineBoottimeMilliseconds - .runnerStartedBoottimeMilliseconds <= $operationRemainingSecondsAtRunnerStart * 1000)
     and (.state | IN("prepared","origin_bound","watchdog_armed","ingress_open","functional_gate_passed","ingress_closed","contained_disarmed_pending_validation","contained_verified","complete","failed_closed"))
-  ' "${RUN_MARKER}" >/dev/null || return 1
+  ' "${RUN_MARKER}" >/dev/null ||
+    { edge_test_diagnostic RESTORE_MARKER_JOIN; return 1; }
   actual_facts_sha="$(jq --compact-output --sort-keys '.facts' "${RUN_MARKER}" | sha256sum | cut -d ' ' -f 1)" || return 1
-  [[ "${actual_facts_sha}" == "$(jq --raw-output '.factsSha256' "${RUN_MARKER}")" ]] || return 1
+  [[ "${actual_facts_sha}" == "$(jq --raw-output '.factsSha256' "${RUN_MARKER}")" ]] ||
+    { edge_test_diagnostic RESTORE_FACTS_DIGEST; return 1; }
   if [[ "$(jq --raw-output '.evidenceSha256 // empty' "${RUN_MARKER}")" != "" ]]; then
-    [[ "$(jq --compact-output --sort-keys '.evidence' "${RUN_MARKER}" | sha256sum | cut -d ' ' -f 1)" == "$(jq --raw-output '.evidenceSha256' "${RUN_MARKER}")" ]] || return 1
+    [[ "$(jq --compact-output --sort-keys '.evidence' "${RUN_MARKER}" | sha256sum | cut -d ' ' -f 1)" == "$(jq --raw-output '.evidenceSha256' "${RUN_MARKER}")" ]] ||
+      { edge_test_diagnostic RESTORE_EVIDENCE_DIGEST; return 1; }
     EVIDENCE_AUTHORITY_SHA="$(jq --raw-output '.evidenceSha256' "${RUN_MARKER}")" || return 1
     EVIDENCE_AUTHORITY_BYTES="$(jq --compact-output --sort-keys '.evidence' "${RUN_MARKER}")" || return 1
     [[ "$(printf '%s\n' "${EVIDENCE_AUTHORITY_BYTES}" | sha256sum | cut -d ' ' -f 1)" == "${EVIDENCE_AUTHORITY_SHA}" ]] || return 1
@@ -8144,16 +8156,32 @@ emit_evidence() {
   exit "${RESULT_EXIT}"
 }
 
+# The runner sends stdout and stderr to /dev/null for its whole life, so every
+# refused guard looks identical from the outside: a bare exit 21 with no output.
+# That is correct for production, where a chatty runner would leak, and useless
+# for a contract that has to say which guard refused.  This emits a fixed
+# identifier - never a value, path, payload or secret - to a caller-nominated
+# file, and only when the test mode has explicitly asked for one.
+edge_test_diagnostic() {
+  [[ "${REFUNDDESK_EDGE_WINDOW_TEST_MODE:-}" == "1" ]] || return 0
+  [[ -n "${REFUNDDESK_EDGE_WINDOW_TEST_DIAGNOSTIC_FILE:-}" ]] || return 0
+  [[ "$1" =~ ^[A-Z][A-Z0-9_]{2,63}$ ]] || return 0
+  printf '%s\n' "$1" >>"${REFUNDDESK_EDGE_WINDOW_TEST_DIAGNOSTIC_FILE}" 2>/dev/null || true
+  return 0
+}
+
 final_evidence_ready() {
   local evidence_path="${1:-${EVIDENCE_FILE}}" expected_sha="${2:-${EVIDENCE_AUTHORITY_SHA}}"
-  [[ "${expected_sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${expected_sha}" =~ ^[0-9a-f]{64}$ ]] ||
+    { edge_test_diagnostic FINAL_EVIDENCE_EXPECTED_SHA_SHAPE; return 1; }
   [[ "${EVIDENCE_AUTHORITY_SHA}" == "${expected_sha}" && -n "${EVIDENCE_AUTHORITY_BYTES}" ]] ||
-    return 1
+    { edge_test_diagnostic FINAL_EVIDENCE_AUTHORITY_MISSING; return 1; }
   [[ "$(printf '%s\n' "${EVIDENCE_AUTHORITY_BYTES}" | sha256sum | cut -d ' ' -f 1)" == "${expected_sha}" ]] ||
-    return 1
-  (( ${#EVIDENCE_AUTHORITY_BYTES} + 1 <= MAX_OUTPUT_BYTES )) || return 1
+    { edge_test_diagnostic FINAL_EVIDENCE_AUTHORITY_DIGEST; return 1; }
+  (( ${#EVIDENCE_AUTHORITY_BYTES} + 1 <= MAX_OUTPUT_BYTES )) ||
+    { edge_test_diagnostic FINAL_EVIDENCE_OUTPUT_SIZE; return 1; }
   [[ "$(jq --compact-output --sort-keys . <<<"${EVIDENCE_AUTHORITY_BYTES}")" == "${EVIDENCE_AUTHORITY_BYTES}" ]] ||
-    return 1
+    { edge_test_diagnostic FINAL_EVIDENCE_NOT_CANONICAL; return 1; }
   jq --exit-status \
     --slurpfile control "${CONTROL_FILE}" \
     --slurpfile facts "${FACTS_FILE}" \
@@ -8163,14 +8191,32 @@ final_evidence_ready() {
     --arg armedAt "${ARMED_AT}" \
     --arg deadlineAt "${DEADLINE_AT}" \
     --arg openedAt "${OPENED_AT}" \
-    --arg closedAt "${CLOSED_AT}" '
+    --arg closedAt "${CLOSED_AT}" \
+    --arg runnerBootIdentifierSha256 "${RUNNER_BOOT_IDENTIFIER_SHA256}" \
+    --argjson runnerDeadlineBoottimeMilliseconds "${RUNNER_DEADLINE_BOOTTIME_MILLISECONDS}" \
+    --argjson runnerStartedBoottimeMilliseconds "${RUNNER_STARTED_BOOTTIME_MILLISECONDS}" '
       ($control[0]) as $c | ($facts[0]) as $f |
       .schemaVersion == 1 and .kind == "refunddesk.lightsail.edge-window"
       and .nonce == $nonce and .expectedRevision == $revision
       and .operationStartedAt == $operationStartedAt
       and .result == "PASS" and .code == "PASS_EDGE_WINDOW_RECONTAINED" and .exitCode == 0
       and .diagnostics == []
-      and .admission == $c.admission and .provenance == $c.provenance
+      and .admission == $c.admission
+      # Evidence provenance is the control provenance augmented with the
+      # operator handoff and runner boot-time clock, exactly as assembled above.
+      # Comparing it to the bare control provenance can never hold and made
+      # every replay converge to INCOMPLETE.  Keep this object identical to the
+      # assembly site; it is the same authority read back.
+      and .provenance == ($c.provenance + {
+        operationRemainingSecondsAtRunnerStart:$c.operationRemainingSecondsAtRunnerStart,
+        operatorBootIdentifierSha256:$c.operatorBootIdentifierSha256,
+        operatorControlCalculatedMonotonicMilliseconds:$c.operatorControlCalculatedMonotonicMilliseconds,
+        operatorDeadlineMonotonicMilliseconds:$c.operatorDeadlineMonotonicMilliseconds,
+        operatorStartedMonotonicMilliseconds:$c.operatorStartedMonotonicMilliseconds,
+        runnerBootIdentifierSha256:$runnerBootIdentifierSha256,
+        runnerDeadlineBoottimeMilliseconds:$runnerDeadlineBoottimeMilliseconds,
+        runnerStartedBoottimeMilliseconds:$runnerStartedBoottimeMilliseconds
+      })
       and .containment == $f.containment and .counts == $f.counts and .database == $f.database
       and .firewall == $f.firewall and .mutations == $f.mutations
       and .origin == $f.origin and .prefixes == $f.prefixes and .probes == $f.probes
@@ -8189,8 +8235,10 @@ final_evidence_ready() {
       and (.startedAt | type == "string" and test("^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
       and (.completedAt | type == "string" and test("^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
       and ([.containment[]] | all) and .counts.before == .counts.during and .counts.before == .counts.after
-    ' <<<"${EVIDENCE_AUTHORITY_BYTES}" >/dev/null || return 1
-  validate_pass_evidence_official || return 1
+    ' <<<"${EVIDENCE_AUTHORITY_BYTES}" >/dev/null ||
+    { edge_test_diagnostic FINAL_EVIDENCE_PASS_JOIN; return 1; }
+  validate_pass_evidence_official ||
+    { edge_test_diagnostic FINAL_EVIDENCE_OFFICIAL_VALIDATOR; return 1; }
   if [[ "${REFUNDDESK_EDGE_WINDOW_TEST_MODE:-}" == "1" &&
     "${REFUNDDESK_EDGE_WINDOW_TEST_SUBSTITUTE_EVIDENCE_AFTER_VALIDATOR:-}" == "1" ]]; then
     "${COMMAND_ADAPTER}" evidence-substitute-after-validator "${evidence_path}" || return 1
@@ -8383,7 +8431,10 @@ terminal_failure_evidence_ready() {
     --arg revision "${EXPECTED_REVISION}" \
     --arg deadlineAt "${DEADLINE_AT}" \
     --arg openedAt "${OPENED_AT}" \
-    --arg closedAt "${CLOSED_AT}" '
+    --arg closedAt "${CLOSED_AT}" \
+    --arg runnerBootIdentifierSha256 "${RUNNER_BOOT_IDENTIFIER_SHA256}" \
+    --argjson runnerDeadlineBoottimeMilliseconds "${RUNNER_DEADLINE_BOOTTIME_MILLISECONDS}" \
+    --argjson runnerStartedBoottimeMilliseconds "${RUNNER_STARTED_BOOTTIME_MILLISECONDS}" '
       ($control[0]) as $c | ($facts[0]) as $f |
       .schemaVersion == 1 and .kind == "refunddesk.lightsail.edge-window"
       and .nonce == $nonce and .expectedRevision == $revision
@@ -8393,7 +8444,18 @@ terminal_failure_evidence_ready() {
       and .code != "PASS_EDGE_WINDOW_RECONTAINED"
       and (.code | type == "string" and test("^[A-Z][A-Z0-9_]{2,63}$"))
       and (.diagnostics == [.code])
-      and .admission == $c.admission and .provenance == $c.provenance
+      and .admission == $c.admission
+      # Same augmentation as the PASS replay join and the assembly site.
+      and .provenance == ($c.provenance + {
+        operationRemainingSecondsAtRunnerStart:$c.operationRemainingSecondsAtRunnerStart,
+        operatorBootIdentifierSha256:$c.operatorBootIdentifierSha256,
+        operatorControlCalculatedMonotonicMilliseconds:$c.operatorControlCalculatedMonotonicMilliseconds,
+        operatorDeadlineMonotonicMilliseconds:$c.operatorDeadlineMonotonicMilliseconds,
+        operatorStartedMonotonicMilliseconds:$c.operatorStartedMonotonicMilliseconds,
+        runnerBootIdentifierSha256:$runnerBootIdentifierSha256,
+        runnerDeadlineBoottimeMilliseconds:$runnerDeadlineBoottimeMilliseconds,
+        runnerStartedBoottimeMilliseconds:$runnerStartedBoottimeMilliseconds
+      })
       and .containment == $f.containment and .counts == $f.counts and .database == $f.database
       and .firewall == $f.firewall and .mutations == $f.mutations
       and .origin == $f.origin and .prefixes == $f.prefixes and .probes == $f.probes
