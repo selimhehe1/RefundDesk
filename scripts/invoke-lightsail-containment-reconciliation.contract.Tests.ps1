@@ -205,6 +205,7 @@ function New-PostflightContainer {
         noPublishedPorts = $Service -ne "caddy"
         effectiveGlobalLiveDisabled = if ($Service -in @("worker", "web")) { $true } else { $null }
         effectiveLiveWebhookDisabled = if ($Service -eq "web") { $true } else { $null }
+        effectiveWorkerRuntimeMode = if ($Service -eq "worker") { "LEGACY_NORMAL" } else { $null }
         status = $Status
         health = $Health
         projectLabelMatches = $true
@@ -285,6 +286,7 @@ function New-PostflightCaptureSnapshot {
             currentRevision = $ExpectedRevision
             sourceRevision = $ExpectedRevision
             releaseEnvironmentRevision = $ExpectedRevision
+            releaseEnvironmentWorkerRuntimeMode = "LEGACY_NORMAL"
             manifestRevision = $ExpectedRevision
             composeSha256 = $ExpectedComposeSha256
             installedManifestSha256 = $ExpectedManifestSha256
@@ -336,6 +338,10 @@ function New-PostflightCaptureSnapshot {
             liveInstallations = 0
             preparedTransactions = 0
             refundRequests = 6
+            refundExecutions = 3
+            refundExecutionAttempts = 4
+            webhookReceipts = 5
+            apiMutationReceipts = 6
             auditEvents = 2088
         }
     }

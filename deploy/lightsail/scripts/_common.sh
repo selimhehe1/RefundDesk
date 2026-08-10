@@ -76,6 +76,72 @@ assert_root_secret_file() {
   (( (8#${mode} & 077) == 0 )) || die "secret file must not grant group/world access: ${path}"
 }
 
+standard_release_environment_worker_mode() {
+  local compose_file="$1"
+  local release_environment_file="$2"
+  local revision="$3"
+  local declaration_count=0 line
+
+  [[ "${revision}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ -f "${compose_file}" && ! -L "${compose_file}" ]] || return 1
+  [[ -f "${release_environment_file}" && ! -L "${release_environment_file}" ]] || return 1
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == *REFUNDDESK_WORKER_RUNTIME_MODE:* ]]; then
+      [[ "${line}" == '      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}' ]] ||
+        return 1
+      declaration_count=$((declaration_count + 1))
+    fi
+  done <"${compose_file}"
+  (( declaration_count <= 1 )) || return 1
+
+  if cmp --silent \
+    <(printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\n' \
+      "${revision}" "${revision}") \
+    "${release_environment_file}"; then
+    (( declaration_count == 0 )) || return 1
+    printf 'LEGACY_NORMAL\n'
+    return 0
+  fi
+  if cmp --silent \
+    <(printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n' \
+      "${revision}" "${revision}") \
+    "${release_environment_file}"; then
+    (( declaration_count == 1 )) || return 1
+    printf 'NORMAL\n'
+    return 0
+  fi
+  return 1
+}
+
+assert_standard_worker_runtime_mode_from_inspection() {
+  local inspection="$1"
+  local release_mode="$2"
+
+  case "${release_mode}" in
+    LEGACY_NORMAL)
+      jq --exit-status '
+        length == 1
+        and ([.[0].Config.Env[]?
+          | select(startswith("REFUNDDESK_WORKER_RUNTIME_MODE="))] | length == 0)
+      ' <<<"${inspection}" >/dev/null ||
+        die "legacy standard worker unexpectedly carries a runtime-mode override"
+      ;;
+    NORMAL)
+      jq --exit-status '
+        length == 1
+        and ([.[0].Config.Env[]?
+          | select(startswith("REFUNDDESK_WORKER_RUNTIME_MODE="))]
+          == ["REFUNDDESK_WORKER_RUNTIME_MODE=normal"])
+      ' <<<"${inspection}" >/dev/null ||
+        die "standard worker does not carry the exact normal runtime mode"
+      ;;
+    *)
+      die "standard worker release mode is invalid"
+      ;;
+  esac
+}
+
 refunddesk_control_plane_mappings() {
   printf '%s\n' \
     "scripts/release-launcher.sh|/usr/local/sbin/refunddesk-release|0755" \
@@ -182,6 +248,24 @@ service_container_id() {
   refunddesk_compose ps --all --quiet "${service}" | head -n 1
 }
 
+exact_project_service_container_id() {
+  local ids_output service="$1"
+  local -a container_ids
+
+  ids_output="$(
+    docker container ls --all --no-trunc --quiet \
+      --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
+      --filter "label=com.docker.compose.service=${service}"
+  )" || return 1
+  container_ids=()
+  if [[ -n "${ids_output}" ]]; then
+    mapfile -t container_ids <<<"${ids_output}"
+  fi
+  (( ${#container_ids[@]} == 1 )) || return 1
+  [[ "${container_ids[0]}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "${container_ids[0]}"
+}
+
 service_is_running() {
   local container_id
   container_id="$(service_container_id "$1")"
@@ -221,7 +305,7 @@ assert_postgres_root_mount_contract() {
   [[ "${resolved_pgdata}" == "${REFUNDDESK_POSTGRES_HOST_PGDATA}" ]] ||
     die "host PostgreSQL data directory is not canonical"
   ids_output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
       --filter "label=com.docker.compose.service=postgres"
   )" || die "PostgreSQL container inventory is unavailable"
@@ -292,13 +376,51 @@ acquire_operator_lock() {
   flock --exclusive --timeout 30 9 || die "another RefundDesk operator action holds the lock"
 }
 
+adopt_inherited_operator_lock() {
+  local descriptor_device_inode lock_device_inode lock_directory lock_mode lock_owner
+
+  require_command flock
+  require_command readlink
+  require_command stat
+  (( EUID == 0 )) || die "the inherited operator lock requires root"
+  [[ -e /proc/self/fd/9 ]] || die "the inherited operator lock descriptor is absent"
+
+  lock_directory="$(dirname -- "${REFUNDDESK_OPERATOR_LOCK}")"
+  [[ "${lock_directory}" == /* && "${lock_directory}" != "/" ]] ||
+    die "operator lock directory is unsafe"
+  [[ -d "${lock_directory}" && ! -L "${lock_directory}" ]] ||
+    die "operator lock directory must be a non-symlink directory"
+  [[ "$(readlink --canonicalize-existing -- "${lock_directory}")" == "${lock_directory}" ]] ||
+    die "operator lock directory must be canonical"
+  lock_owner="$(stat --format='%u:%g' -- "${lock_directory}")"
+  lock_mode="$(stat --format='%a' -- "${lock_directory}")"
+  [[ "${lock_owner}" == "0:0" && "${lock_mode}" == "700" ]] ||
+    die "operator lock directory must be root-owned mode 0700"
+
+  [[ -f "${REFUNDDESK_OPERATOR_LOCK}" && ! -L "${REFUNDDESK_OPERATOR_LOCK}" ]] ||
+    die "operator lock must be a regular non-symlink file"
+  [[ "$(stat --format='%u:%g:%a' -- "${REFUNDDESK_OPERATOR_LOCK}")" == "0:0:600" ]] ||
+    die "operator lock file must be root-owned mode 0600"
+  [[ "$(readlink --canonicalize-existing -- /proc/self/fd/9)" == "${REFUNDDESK_OPERATOR_LOCK}" ]] ||
+    die "the inherited operator lock descriptor targets another path"
+  lock_device_inode="$(stat --format='%d:%i' -- "${REFUNDDESK_OPERATOR_LOCK}")"
+  descriptor_device_inode="$(stat --dereference --format='%d:%i' -- /proc/self/fd/9)"
+  [[ "${descriptor_device_inode}" == "${lock_device_inode}" ]] ||
+    die "the inherited operator lock descriptor changed during validation"
+
+  # flock locks the shared open-file description. If the parent already owns
+  # the lock this is idempotent; otherwise it atomically acquires it on the
+  # inherited descriptor, which the parent continues to hold between children.
+  flock --exclusive --nonblock 9 || die "another RefundDesk operator action holds the lock"
+}
+
 clear_database_owner_job_reservation() {
   local container_id ids_output inspection service
   local -a job_ids
 
   for service in bootstrap migrate maintenance database-owner-reservation; do
     ids_output="$(
-      docker container ls --all --quiet \
+      docker container ls --all --no-trunc --quiet \
         --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
         --filter "label=com.docker.compose.service=${service}"
     )" || die "database-owner job inventory is unavailable"
@@ -353,7 +475,7 @@ seal_database_owner_job_reservation() {
   local -a reservation_ids
 
   ids_output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "name=^/${REFUNDDESK_DATABASE_OWNER_JOB_NAME}$"
   )" || die "database-owner reservation inventory is unavailable"
   reservation_ids=()
@@ -398,7 +520,7 @@ create_database_owner_job_reservation() {
   [[ "${expected_revision}" =~ ^[0-9a-f]{40}$ ]] ||
     die "database-owner reservation revision is invalid"
   existing_ids="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "name=^/${REFUNDDESK_DATABASE_OWNER_JOB_NAME}$"
   )" || die "database-owner reservation inventory is unavailable"
   [[ -z "${existing_ids}" ]] ||
@@ -437,7 +559,7 @@ recover_retention_database_owner_job() {
   [[ "${expected_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] ||
     die "retention recovery image ID is invalid"
   ids_output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
       --filter "label=com.docker.compose.service=maintenance"
   )" || die "retention recovery job inventory is unavailable"
@@ -496,7 +618,7 @@ assert_database_owner_job_reservation() {
   local -a job_ids reservation_ids
 
   ids_output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "name=^/${REFUNDDESK_DATABASE_OWNER_JOB_NAME}$"
   )" || die "database-owner reservation inventory is unavailable"
   reservation_ids=()
@@ -534,7 +656,7 @@ assert_database_owner_job_reservation() {
 
   for service in bootstrap migrate maintenance database-owner-reservation; do
     ids_output="$(
-      docker container ls --all --quiet \
+      docker container ls --all --no-trunc --quiet \
         --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
         --filter "label=com.docker.compose.service=${service}"
     )" || die "database-owner job inventory is unavailable"

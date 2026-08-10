@@ -135,6 +135,108 @@ test("Docker running-state filter accepts false and rejects malformed inspection
   }
 });
 
+test("standard release and recovery reject incident worker mode before start", async (t) => {
+  const bashVersion = spawnSync("bash", ["--version"], { encoding: "utf8" });
+  if (bashVersion.error?.code === "ENOENT" || bashVersion.status !== 0) {
+    t.skip("a native Bash runtime is unavailable; the isolated Linux contract executes this test");
+    return;
+  }
+
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "refunddesk-worker-mode-contract-"));
+  const commonPath = resolve(directory, "scripts/_common.sh");
+  const revision = "1".repeat(40);
+  const composePath = join(temporaryDirectory, "compose.yml");
+  const releaseEnvironmentPath = join(temporaryDirectory, "release.env");
+  const inspectionPath = join(temporaryDirectory, "inspection.json");
+  const exactDeclaration =
+    "      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}";
+  const parseMode = () =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; standard_release_environment_worker_mode "$2" "$3" "$4"',
+        "refunddesk-worker-mode-test",
+        commonPath,
+        composePath,
+        releaseEnvironmentPath,
+        revision,
+      ],
+      { encoding: "utf8" },
+    );
+  const assertInspection = (mode) =>
+    spawnSync(
+      "bash",
+      [
+        "-c",
+        'source "$1"; inspection="$(<"$2")"; assert_standard_worker_runtime_mode_from_inspection "$inspection" "$3"',
+        "refunddesk-worker-mode-test",
+        commonPath,
+        inspectionPath,
+        mode,
+      ],
+      { encoding: "utf8" },
+    );
+
+  try {
+    await writeFile(composePath, "services:\n  worker:\n    image: legacy\n");
+    await writeFile(
+      releaseEnvironmentPath,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\n`,
+    );
+    let result = parseMode();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "LEGACY_NORMAL\n");
+
+    await writeFile(composePath, `services:\n  worker:\n${exactDeclaration}\n`);
+    await writeFile(
+      releaseEnvironmentPath,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n`,
+    );
+    result = parseMode();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "NORMAL\n");
+
+    for (const invalidEnvironment of [
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\nREFUNDDESK_WORKER_RUNTIME_MODE=incident_admission\n`,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\nREFUNDDESK_WORKER_RUNTIME_MODE=normal`,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n`,
+    ]) {
+      await writeFile(releaseEnvironmentPath, invalidEnvironment);
+      assert.notEqual(parseMode().status, 0);
+    }
+
+    await writeFile(
+      releaseEnvironmentPath,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\n`,
+    );
+    assert.notEqual(parseMode().status, 0, "legacy bytes require a legacy Compose source");
+    await writeFile(
+      releaseEnvironmentPath,
+      `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n`,
+    );
+    await writeFile(composePath, "services:\n  worker:\n    image: legacy\n");
+    assert.notEqual(parseMode().status, 0, "explicit bytes require the exact Compose declaration");
+
+    for (const [mode, environment, expectedStatus] of [
+      ["NORMAL", ["A=B", "REFUNDDESK_WORKER_RUNTIME_MODE=normal"], 0],
+      ["NORMAL", ["REFUNDDESK_WORKER_RUNTIME_MODE=incident_admission"], 1],
+      [
+        "NORMAL",
+        ["REFUNDDESK_WORKER_RUNTIME_MODE=normal", "REFUNDDESK_WORKER_RUNTIME_MODE=normal"],
+        1,
+      ],
+      ["LEGACY_NORMAL", ["A=B"], 0],
+      ["LEGACY_NORMAL", ["REFUNDDESK_WORKER_RUNTIME_MODE=normal"], 1],
+    ]) {
+      await writeFile(inspectionPath, `${JSON.stringify([{ Config: { Env: environment } }])}\n`);
+      assert.equal(assertInspection(mode).status, expectedStatus);
+    }
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
 test("PostgreSQL tree fingerprint propagates archive failures", async (t) => {
   const version = spawnSync("bash", ["--version"], { encoding: "utf8" });
   if (version.error?.code === "ENOENT" || version.status !== 0) {
@@ -1277,6 +1379,18 @@ test("release promotion requires revision-bound application key rotation history
   );
   assert.match(release, /prove_candidate_runtime_contract/u);
   assert.match(release, /REFUNDDESK_RUNTIME_RESTART_POLICY=no/u);
+  assert.match(
+    release,
+    /REFUNDDESK_RUNTIME_RESTART_POLICY=no\\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\\n/u,
+  );
+  assert.match(
+    release,
+    /prove_candidate_created_contract[\s\S]*assert_standard_worker_runtime_mode_from_inspection "\$\{inspection\}" NORMAL[\s\S]*refunddesk_compose start worker web verifier/u,
+  );
+  assert.match(
+    release,
+    /REFUNDDESK_IMAGE_TAG=sandbox-%s\\nREFUNDDESK_REVISION=%s\\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\\n/u,
+  );
   assert.match(release, /docker update --restart=unless-stopped/u);
   assert.match(release, /ACTIVE_REVISION_FOR_ROTATION/u);
   assert.match(release, /CURRENT_SOURCE_REVISION_FOR_ROTATION/u);
@@ -3194,6 +3308,24 @@ test("runtime quiescence is durable, exact-revision recovered and boot-wired", a
   assert.match(recoveryLauncher, /runtime control root must be root-owned mode 0700/u);
   assert.match(recovery, /assert-quiesce/u);
   assert.match(recovery, /recover_retention_database_owner_job/u);
+  const recoveryModeProof = recovery.indexOf("standard_release_environment_worker_mode");
+  const recoveryReservation = recovery.indexOf(
+    "refunddesk_compose up --no-start --no-deps --no-build --pull never verifier worker web",
+  );
+  const recoveryWorkerInspection = recovery.indexOf(
+    "assert_standard_worker_runtime_mode_from_inspection",
+    recoveryReservation,
+  );
+  const recoveryWorkerStart = recovery.indexOf(
+    "refunddesk_compose start verifier worker web",
+    recoveryWorkerInspection,
+  );
+  assert.ok(
+    recoveryModeProof >= 0 &&
+      recoveryReservation > recoveryModeProof &&
+      recoveryWorkerInspection > recoveryReservation &&
+      recoveryWorkerStart > recoveryWorkerInspection,
+  );
   assert.doesNotMatch(
     recovery,
     /refunddesk_compose up(?![^\n]*--pull never)/u,

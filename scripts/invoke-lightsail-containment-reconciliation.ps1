@@ -1422,7 +1422,8 @@ function Assert-PostflightCapture {
         ) -FailureCode $failureCode
         Assert-ExactProperties -Object $snapshot.identity -Properties @(
             "activeRevision", "currentRevision", "sourceRevision", "releaseEnvironmentRevision",
-            "manifestRevision", "composeSha256", "installedManifestSha256", "manifestSchemaValid"
+            "releaseEnvironmentWorkerRuntimeMode", "manifestRevision", "composeSha256",
+            "installedManifestSha256", "manifestSchemaValid"
         ) -FailureCode $failureCode
         foreach ($property in @(
             "activeRevision", "currentRevision", "sourceRevision", "releaseEnvironmentRevision", "manifestRevision"
@@ -1432,6 +1433,7 @@ function Assert-PostflightCapture {
         if (
             $snapshot.identity.composeSha256 -cne $ExpectedComposeSha256 -or
             $snapshot.identity.installedManifestSha256 -cne $ExpectedManifestSha256 -or
+            $snapshot.identity.releaseEnvironmentWorkerRuntimeMode -cne "LEGACY_NORMAL" -or
             $snapshot.identity.manifestSchemaValid -ne $true
         ) { Throw-SafeError $failureCode }
         $containers = @($snapshot.containers)
@@ -1441,8 +1443,8 @@ function Assert-PostflightCapture {
             Assert-ExactProperties -Object $container -Properties @(
                 "service", "presentCount", "containerId", "imageId", "expectedImageId",
                 "imageReferenceMatches", "noPublishedPorts", "effectiveGlobalLiveDisabled",
-                "effectiveLiveWebhookDisabled", "status", "health", "projectLabelMatches",
-                "serviceLabelMatches", "revisionLabel"
+                "effectiveLiveWebhookDisabled", "effectiveWorkerRuntimeMode", "status", "health",
+                "projectLabelMatches", "serviceLabelMatches", "revisionLabel"
             ) -FailureCode $failureCode
             if (
                 $container.presentCount -ne 1 -or
@@ -1498,8 +1500,10 @@ function Assert-PostflightCapture {
     }
 
     foreach ($field in @(
-        "systemIdentifier", "activeWorkflows", "unreleasedPaymentGuards", "activeFinancialJobs",
-        "liveTenants", "liveInstallations", "preparedTransactions", "refundRequests", "auditEvents"
+            "systemIdentifier", "activeWorkflows", "unreleasedPaymentGuards", "activeFinancialJobs",
+        "liveTenants", "liveInstallations", "preparedTransactions", "refundRequests",
+        "refundExecutions", "refundExecutionAttempts", "webhookReceipts", "apiMutationReceipts",
+        "auditEvents"
     )) {
         if ($remote.captures.a.database.$field -cne $remote.captures.b.database.$field) {
             Throw-SafeError $failureCode
@@ -1536,6 +1540,7 @@ function Assert-PostflightCapture {
     }
     if (
         $worker.effectiveGlobalLiveDisabled -ne $true -or
+        $worker.effectiveWorkerRuntimeMode -cne "LEGACY_NORMAL" -or
         $web.effectiveGlobalLiveDisabled -ne $true -or
         $web.effectiveLiveWebhookDisabled -ne $true
     ) { Throw-SafeError $failureCode }

@@ -78,6 +78,40 @@ readonly STABLE_RELEASE_FENCE="/usr/local/sbin/refunddesk-release-fence"
 readonly CADDY_CONFIG_DIRECTORY="/var/lib/refunddesk/caddy-public/config"
 readonly CADDY_AUTOSAVE_DIRECTORY="${CADDY_CONFIG_DIRECTORY}/caddy"
 readonly CADDY_AUTOSAVE_PATH="${CADDY_AUTOSAVE_DIRECTORY}/autosave.json"
+readonly EDGE_WINDOW_LEASE="${REFUNDDESK_CONTROL_ROOT}/edge-window-lease.json"
+
+edge_window_allows_runtime_start() {
+  if [[ ! -e "${EDGE_WINDOW_LEASE}" && ! -L "${EDGE_WINDOW_LEASE}" ]]; then
+    return 0
+  fi
+  [[ -f "${EDGE_WINDOW_LEASE}" && ! -L "${EDGE_WINDOW_LEASE}" ]] || return 1
+  [[ "$(stat --format='%u:%g:%a' -- "${EDGE_WINDOW_LEASE}")" == "0:0:600" ]] || return 1
+  python3 - "${EDGE_WINDOW_LEASE}" <<'PY' >/dev/null 2>&1
+import datetime, json, os, re, sys
+path = sys.argv[1]
+raw = open(path, "rb").read()
+if not raw or len(raw) > 2048 or b"\x00" in raw:
+    raise SystemExit(1)
+try:
+    document = json.loads(raw.decode("utf-8"))
+except (UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if raw != (json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode():
+    raise SystemExit(1)
+if set(document) != {"completedAt", "expectedRevision", "kind", "nonce", "schemaVersion", "state"}:
+    raise SystemExit(1)
+if document.get("schemaVersion") != 1 or document.get("kind") != "refunddesk.edge-window-host-lease" or document.get("state") != "complete":
+    raise SystemExit(1)
+if re.fullmatch(r"[0-9a-f]{40}", document.get("expectedRevision", "")) is None or re.fullmatch(r"[0-9a-f]{64}", document.get("nonce", "")) is None:
+    raise SystemExit(1)
+try:
+    parsed = datetime.datetime.strptime(document.get("completedAt", ""), "%Y-%m-%dT%H:%M:%SZ")
+except ValueError:
+    raise SystemExit(1)
+if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != document["completedAt"]:
+    raise SystemExit(1)
+PY
+}
 
 usage() {
   cat <<'EOF'
@@ -160,7 +194,11 @@ require_command sha256sum
 require_command systemctl
 require_command systemd-run
 require_command zstd
+edge_window_allows_runtime_start ||
+  die "release is blocked by an active or invalid edge-window interlock"
 acquire_operator_lock
+edge_window_allows_runtime_start ||
+  die "release is blocked by an edge-window interlock acquired during lock handoff"
 install -d -o root -g root -m 0700 "${REFUNDDESK_CONTROL_ROOT}"
 assert_root_secret_directory "${REFUNDDESK_CONTROL_ROOT}"
 QUIESCE_JOURNAL="${REFUNDDESK_CONTROL_ROOT}/runtime-quiesce-in-progress.json"
@@ -786,7 +824,7 @@ target_container_ids() {
   local output
 
   output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
       --filter "label=com.docker.compose.service=${service}" \
       --filter "label=com.refunddesk.revision=${REVISION}"
@@ -801,7 +839,7 @@ project_service_container_ids() {
   local output
 
   output="$(
-    docker container ls --all --quiet \
+    docker container ls --all --no-trunc --quiet \
       --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
       --filter "label=com.docker.compose.service=${service}"
   )" || return 1
@@ -1005,6 +1043,9 @@ prove_candidate_created_contract() {
         and .[0].State.Status == "created"
       ' <<<"${inspection}" >/dev/null ||
       die "candidate ${service} was not created as an inert name reservation"
+    if [[ "${service}" == "worker" ]]; then
+      assert_standard_worker_runtime_mode_from_inspection "${inspection}" NORMAL
+    fi
   done
 }
 
@@ -1132,7 +1173,7 @@ prove_candidate_runtime_contract() {
 
 commit_release_environment() {
   RELEASE_ENV_TMP="$(mktemp "${REFUNDDESK_CONFIG_ROOT}/.release.env.XXXXXX")"
-  printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\n' \
+  printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n' \
     "${REVISION}" "${REVISION}" >"${RELEASE_ENV_TMP}"
   chown root:root "${RELEASE_ENV_TMP}"
   chmod 0600 "${RELEASE_ENV_TMP}"
@@ -1617,7 +1658,7 @@ fail_closed() {
       status=1
     log "release validation failed; stopping public and effect-capable services"
     ids_output="$(
-      docker container ls --all --quiet \
+      docker container ls --all --no-trunc --quiet \
         --filter "label=com.docker.compose.project=${REFUNDDESK_COMPOSE_PROJECT}" \
         --filter "label=com.refunddesk.revision=${REVISION}"
     )" || ids_output=""
@@ -1707,7 +1748,7 @@ if [[ -e "${REFUNDDESK_RELEASE_ENV}" || -L "${REFUNDDESK_RELEASE_ENV}" ]]; then
 fi
 
 RELEASE_ENV_TMP="$(mktemp "${REFUNDDESK_CONFIG_ROOT}/.release.env.XXXXXX")"
-printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\nREFUNDDESK_RUNTIME_RESTART_POLICY=no\n' \
+printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\nREFUNDDESK_RUNTIME_RESTART_POLICY=no\nREFUNDDESK_WORKER_RUNTIME_MODE=normal\n' \
   "${REVISION}" "${REVISION}" >"${RELEASE_ENV_TMP}"
 RELEASE_ENV_CHANGED=true
 chown root:root "${RELEASE_ENV_TMP}"
@@ -1721,6 +1762,7 @@ RELEASE_ENV_TMP=""
 export REFUNDDESK_IMAGE_TAG="sandbox-${REVISION}"
 export REFUNDDESK_REVISION="${REVISION}"
 export REFUNDDESK_RUNTIME_RESTART_POLICY=no
+export REFUNDDESK_WORKER_RUNTIME_MODE=normal
 
 refunddesk_compose config --quiet
 assert_release_fence_armed
@@ -2010,6 +2052,7 @@ lock_transition_journal ||
   die "release transition coordination lock could not be reacquired for commit"
 restore_runtime_restart_policies
 unset REFUNDDESK_RUNTIME_RESTART_POLICY
+unset REFUNDDESK_WORKER_RUNTIME_MODE
 SYSTEMD_DAEMON_RELOAD_ATTEMPTED=true
 systemctl daemon-reload ||
   die "systemd could not reload the verified control-plane generation"

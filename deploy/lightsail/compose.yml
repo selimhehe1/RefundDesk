@@ -299,6 +299,7 @@ services:
     environment:
       NODE_EXTRA_CA_CERTS: /run/refunddesk/postgres-ca.crt
       NODE_OPTIONS: --max-old-space-size=144
+      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}
       WORKER_HEALTH_HOST: 0.0.0.0
       WORKER_HEALTH_PORT: "3101"
     user: "1000:1000"

@@ -7,6 +7,43 @@
     "expectedCode": "PASS_CONTAINED"
   },
   {
+    "name": "coherent-contained-explicit-normal-worker",
+    "releaseWorkerRuntimeMode": "normal",
+    "workerRuntimeMode": "normal",
+    "expectedExit": 0,
+    "expectedResult": "PASS",
+    "expectedPosture": "COHERENT_CONTAINED",
+    "expectedCode": "PASS_CONTAINED"
+  },
+  {
+    "name": "coherent-contained-incident-admission-worker",
+    "releaseWorkerRuntimeMode": "incident_admission",
+    "workerRuntimeMode": "incident_admission",
+    "expectedExit": 0,
+    "expectedResult": "PASS",
+    "expectedPosture": "COHERENT_CONTAINED",
+    "expectedCode": "PASS_CONTAINED"
+  },
+  {
+    "name": "worker-runtime-mode-mismatch",
+    "releaseWorkerRuntimeMode": "incident_admission",
+    "workerRuntimeMode": "normal",
+    "expectedExit": 20,
+    "expectedResult": "FAIL",
+    "expectedPosture": "DIVERGENT",
+    "expectedDiagnostic": "CONTAINER_IDENTITY_MISMATCH"
+  },
+  {
+    "name": "release-environment-missing-final-lf",
+    "releaseWorkerRuntimeMode": "incident_admission",
+    "workerRuntimeMode": "incident_admission",
+    "releaseEnvironmentMissingFinalLf": true,
+    "expectedExit": 21,
+    "expectedResult": "INCOMPLETE",
+    "expectedPosture": "UNKNOWN",
+    "expectedDiagnostic": "RELEASE_ENV_UNREADABLE"
+  },
+  {
     "name": "recoverable-runtime-stopped",
     "coreRuntimeStopped": true,
     "expectedExit": 0,

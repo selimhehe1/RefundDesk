@@ -9,3 +9,9 @@ scripts/invoke-lightsail-postflight.ps1
 scripts/invoke-lightsail-postflight.contract.Tests.ps1
 scripts/invoke-lightsail-containment-reconciliation.ps1
 scripts/invoke-lightsail-containment-reconciliation.contract.Tests.ps1
+scripts/invoke-lightsail-contained-promotion.ps1
+scripts/invoke-lightsail-contained-promotion.contract.Tests.ps1
+scripts/invoke-lightsail-incident-admission.ps1
+scripts/invoke-lightsail-incident-admission.contract.Tests.ps1
+scripts/invoke-lightsail-edge-window.ps1
+scripts/invoke-lightsail-edge-window.contract.Tests.ps1

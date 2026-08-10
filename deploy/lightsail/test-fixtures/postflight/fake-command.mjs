@@ -110,15 +110,25 @@ if (command === "docker") {
         : scenario.runtimeWebhookEnabled && service === "web"
           ? "webhook-other"
           : "";
+    const workerModeToken =
+      service === "worker"
+        ? scenario.workerRuntimeMode === "normal"
+          ? "worker-normal"
+          : scenario.workerRuntimeMode === "incident_admission"
+            ? "worker-incident"
+            : scenario.workerRuntimeMode
+              ? "worker-other"
+              : ""
+        : "";
     write(
-      `${id}|${imageIds[service]}|${scenario.imageReferenceMismatch && service === "web" ? "false" : "true"}|${service === "caddy" || (scenario.unexpectedPublishedPort && service === "web") ? "false" : "true"}|${state}|${health}|true|true|${revisionLabel}|${globalToken}|${webhookToken}`,
+      `${id}|${imageIds[service]}|${scenario.imageReferenceMismatch && service === "web" ? "false" : "true"}|${service === "caddy" || (scenario.unexpectedPublishedPort && service === "web") ? "false" : "true"}|${state}|${health}|true|true|${revisionLabel}|${globalToken}|${webhookToken}|${workerModeToken}`,
     );
     process.exit(0);
   }
   if (args[0] === "exec") {
     if (scenario.databaseUnavailable) process.exit(1);
     const active = scenario.financialActive ? 1 : 0;
-    write(`7612345678901234567|${active}|${active}|${active}|0|0|0|2|5`);
+    write(`7612345678901234567|${active}|${active}|${active}|0|0|0|2|3|4|5|6|9`);
     process.exit(0);
   }
   process.exit(1);

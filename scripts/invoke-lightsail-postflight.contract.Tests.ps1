@@ -124,7 +124,8 @@ function Invoke-WrapperFixture {
 function New-RemoteTemplate {
     param(
         [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{40}$")][string] $Revision,
-        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string] $ComposeSha256
+        [Parameter(Mandatory = $true)][ValidatePattern("^[0-9a-f]{64}$")][string] $ComposeSha256,
+        [Parameter(Mandatory = $true)][ValidateSet("LEGACY_NORMAL", "NORMAL")][string] $WorkerRuntimeMode
     )
 
     $revision = $Revision
@@ -145,6 +146,7 @@ function New-RemoteTemplate {
             noPublishedPorts = $true
             effectiveGlobalLiveDisabled = if ($service -in @("worker", "web")) { $true } else { $null }
             effectiveLiveWebhookDisabled = if ($service -ceq "web") { $true } else { $null }
+            effectiveWorkerRuntimeMode = if ($service -ceq "worker") { $WorkerRuntimeMode } else { $null }
             status = if ($running) { "RUNNING" } else { "EXITED" }
             health = if ($running) { "HEALTHY" } else { "NONE" }
             projectLabelMatches = $true
@@ -159,6 +161,7 @@ function New-RemoteTemplate {
             currentRevision = $revision
             sourceRevision = $revision
             releaseEnvironmentRevision = $revision
+            releaseEnvironmentWorkerRuntimeMode = $WorkerRuntimeMode
             manifestRevision = $revision
             composeSha256 = $digest
             installedManifestSha256 = $digest
@@ -210,6 +213,10 @@ function New-RemoteTemplate {
             liveInstallations = 0
             preparedTransactions = 0
             refundRequests = 2
+            refundExecutions = 3
+            refundExecutionAttempts = 4
+            webhookReceipts = 5
+            apiMutationReceipts = 6
             auditEvents = 9
         }
     }
@@ -491,6 +498,10 @@ public static class RefundDeskPostflightFake
                 .Replace("\"liveInstallations\":0", "\"liveInstallations\":null")
                 .Replace("\"preparedTransactions\":0", "\"preparedTransactions\":null")
                 .Replace("\"refundRequests\":2", "\"refundRequests\":null")
+                .Replace("\"refundExecutions\":3", "\"refundExecutions\":null")
+                .Replace("\"refundExecutionAttempts\":4", "\"refundExecutionAttempts\":null")
+                .Replace("\"webhookReceipts\":5", "\"webhookReceipts\":null")
+                .Replace("\"apiMutationReceipts\":6", "\"apiMutationReceipts\":null")
                 .Replace("\"auditEvents\":9", "\"auditEvents\":null")
                 .Replace("\"quiescent\":true", "\"quiescent\":false");
             remoteExit = 21;
@@ -524,8 +535,28 @@ public static class RefundDeskPostflightFake
     $gitExecutable = (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $revision = (& $gitExecutable --no-replace-objects -C $repository rev-parse --verify "HEAD^{commit}").Trim()
     Assert-Contract -Condition ($revision -match "^[0-9a-f]{40}$") -Code "fixture-revision"
-    $composeSha256 = (Get-FileHash -LiteralPath (Join-Path $repository "deploy/lightsail/compose.yml") -Algorithm SHA256).Hash.ToLowerInvariant()
-    [IO.File]::WriteAllText($templatePath, (New-RemoteTemplate -Revision $revision -ComposeSha256 $composeSha256), [Text.UTF8Encoding]::new($false))
+    $headComposePath = Join-Path $temporaryRoot "head-compose.yml"
+    $gitBlob = Start-Process -FilePath $gitExecutable -WindowStyle Hidden -Wait -PassThru `
+        -RedirectStandardOutput $headComposePath -ArgumentList @(
+            "--no-replace-objects", "-C", $repository, "cat-file", "blob",
+            ("{0}:deploy/lightsail/compose.yml" -f $revision)
+        )
+    Assert-Contract -Condition ($gitBlob.ExitCode -eq 0) -Code "fixture-compose-blob"
+    $composeSha256 = (Get-FileHash -LiteralPath $headComposePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $composeText = [IO.File]::ReadAllText($headComposePath, [Text.UTF8Encoding]::new($false, $true))
+    $workerModeLines = @($composeText -split "`n" | Where-Object { $_ -match "REFUNDDESK_WORKER_RUNTIME_MODE" })
+    if ($workerModeLines.Count -eq 0) {
+        $workerRuntimeMode = "LEGACY_NORMAL"
+    }
+    elseif ($workerModeLines.Count -eq 1 -and $workerModeLines[0] -ceq '      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}') {
+        $workerRuntimeMode = "NORMAL"
+    }
+    else { throw "contract-fixture-error:fixture-compose-worker-mode" }
+    [IO.File]::WriteAllText(
+        $templatePath,
+        (New-RemoteTemplate -Revision $revision -ComposeSha256 $composeSha256 -WorkerRuntimeMode $workerRuntimeMode),
+        [Text.UTF8Encoding]::new($false)
+    )
 
     $invalidCidrCases = @(
         [pscustomobject]@{ Value = ""; Code = "EXPECTED_SSH_CIDR_INVALID" },

@@ -151,18 +151,38 @@ binding_state() {
   fi
 }
 
-release_environment_revision() {
-  local line
+release_environment_identity() {
+  local line mode
   local -a lines
   file_has_metadata "${RELEASE_ENV}" 600 || return 1
   mapfile -t lines <"${RELEASE_ENV}" || return 1
-  (( ${#lines[@]} == 2 )) || return 1
+  (( ${#lines[@]} == 2 || ${#lines[@]} == 3 )) || return 1
   [[ "${lines[0]}" =~ ^REFUNDDESK_IMAGE_TAG=sandbox-([0-9a-f]{40})$ ]] || return 1
   local image_revision="${BASH_REMATCH[1]}"
   [[ "${lines[1]}" =~ ^REFUNDDESK_REVISION=([0-9a-f]{40})$ ]] || return 1
   line="${BASH_REMATCH[1]}"
   [[ "${image_revision}" == "${line}" ]] || return 1
-  printf '%s' "${line}"
+  if (( ${#lines[@]} == 2 )); then
+    mode=LEGACY_NORMAL
+  elif [[ "${lines[2]}" == "REFUNDDESK_WORKER_RUNTIME_MODE=normal" ]]; then
+    mode=NORMAL
+  elif [[ "${lines[2]}" == "REFUNDDESK_WORKER_RUNTIME_MODE=incident_admission" ]]; then
+    mode=INCIDENT_ADMISSION
+  else
+    return 1
+  fi
+  if [[ "${mode}" == LEGACY_NORMAL ]]; then
+    cmp --silent \
+      <(printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\n' \
+        "${image_revision}" "${image_revision}") \
+      "${RELEASE_ENV}" || return 1
+  else
+    cmp --silent \
+      <(printf 'REFUNDDESK_IMAGE_TAG=sandbox-%s\nREFUNDDESK_REVISION=%s\nREFUNDDESK_WORKER_RUNTIME_MODE=%s\n' \
+        "${image_revision}" "${image_revision}" "${lines[2]#*=}") \
+      "${RELEASE_ENV}" || return 1
+  fi
+  printf '%s|%s' "${image_revision}" "${mode}"
 }
 
 manifest_is_valid() {
@@ -350,6 +370,7 @@ container_observation() {
       expectedImageId: null, imageReferenceMatches: false,
       noPublishedPorts: false,
       effectiveGlobalLiveDisabled: null, effectiveLiveWebhookDisabled: null,
+      effectiveWorkerRuntimeMode: null,
       status: "UNKNOWN", health: "UNKNOWN", projectLabelMatches: false,
       serviceLabelMatches: false, revisionLabel: null
     }'
@@ -366,6 +387,7 @@ container_observation() {
       expectedImageId: null, imageReferenceMatches: false,
       noPublishedPorts: false,
       effectiveGlobalLiveDisabled: null, effectiveLiveWebhookDisabled: null,
+      effectiveWorkerRuntimeMode: null,
       status: "MISSING", health: "MISSING", projectLabelMatches: false,
       serviceLabelMatches: false, revisionLabel: null
     }'
@@ -378,6 +400,7 @@ container_observation() {
         expectedImageId: null, imageReferenceMatches: false,
         noPublishedPorts: false,
         effectiveGlobalLiveDisabled: null, effectiveLiveWebhookDisabled: null,
+        effectiveWorkerRuntimeMode: null,
         status: "UNKNOWN", health: "UNKNOWN", projectLabelMatches: false,
         serviceLabelMatches: false, revisionLabel: null
       }'
@@ -385,7 +408,7 @@ container_observation() {
   fi
   id="${ids[0]}"
   if ! inspect_line="$(bounded_capture 2048 timeout 15 docker inspect --format \
-    '{{.Id}}|{{.Image}}|{{eq .Config.Image "'"${expected_reference}"'"}}|{{eq (len .HostConfig.PortBindings) 0}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{eq (index .Config.Labels "com.docker.compose.project") "refunddesk"}}|{{eq (index .Config.Labels "com.docker.compose.service") "'"${service}"'"}}|{{index .Config.Labels "com.refunddesk.revision"}}|{{range .Config.Env}}{{if eq . "REFUNDDESK_GLOBAL_LIVE_ENABLED=false"}}global-disabled{{else if eq (index (split . "=") 0) "REFUNDDESK_GLOBAL_LIVE_ENABLED"}}global-other{{end}}{{end}}|{{range .Config.Env}}{{if eq . "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled"}}webhook-disabled{{else if eq (index (split . "=") 0) "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET"}}webhook-other{{end}}{{end}}' \
+    '{{.Id}}|{{.Image}}|{{eq .Config.Image "'"${expected_reference}"'"}}|{{eq (len .HostConfig.PortBindings) 0}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{eq (index .Config.Labels "com.docker.compose.project") "refunddesk"}}|{{eq (index .Config.Labels "com.docker.compose.service") "'"${service}"'"}}|{{index .Config.Labels "com.refunddesk.revision"}}|{{range .Config.Env}}{{if eq . "REFUNDDESK_GLOBAL_LIVE_ENABLED=false"}}global-disabled{{else if eq (index (split . "=") 0) "REFUNDDESK_GLOBAL_LIVE_ENABLED"}}global-other{{end}}{{end}}|{{range .Config.Env}}{{if eq . "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET=disabled"}}webhook-disabled{{else if eq (index (split . "=") 0) "STRIPE_ACCOUNT_LIVE_WEBHOOK_SECRET"}}webhook-other{{end}}{{end}}|{{range .Config.Env}}{{if eq . "REFUNDDESK_WORKER_RUNTIME_MODE=normal"}}worker-normal{{else if eq . "REFUNDDESK_WORKER_RUNTIME_MODE=incident_admission"}}worker-incident{{else if eq (index (split . "=") 0) "REFUNDDESK_WORKER_RUNTIME_MODE"}}worker-other{{end}}{{end}}' \
     "${id}")"; then
     jq --null-input --compact-output \
       --arg service "${service}" --argjson count "${present_count}" '{
@@ -393,13 +416,15 @@ container_observation() {
         expectedImageId: null, imageReferenceMatches: false,
         noPublishedPorts: false,
         effectiveGlobalLiveDisabled: null, effectiveLiveWebhookDisabled: null,
+        effectiveWorkerRuntimeMode: null,
         status: "UNKNOWN", health: "UNKNOWN", projectLabelMatches: false,
         serviceLabelMatches: false, revisionLabel: null
       }'
     return 0
   fi
-  local ports_empty global_token webhook_token global_disabled_json=null webhook_disabled_json=null
-  IFS='|' read -r actual_id image_id reference_match ports_empty state health project_match service_match revision_label global_token webhook_token \
+  local ports_empty global_token webhook_token worker_mode_token
+  local global_disabled_json=null webhook_disabled_json=null worker_mode_json=""
+  IFS='|' read -r actual_id image_id reference_match ports_empty state health project_match service_match revision_label global_token webhook_token worker_mode_token \
     <<<"${inspect_line}"
   [[ "${actual_id}" =~ ^[0-9a-f]{64}$ ]] || actual_id=""
   [[ "${image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] || image_id=""
@@ -430,6 +455,14 @@ container_observation() {
       webhook_disabled_json=false
     fi
   fi
+  if [[ "${service}" == "worker" ]]; then
+    case "${worker_mode_token}" in
+      "") worker_mode_json=LEGACY_NORMAL ;;
+      worker-normal) worker_mode_json=NORMAL ;;
+      worker-incident) worker_mode_json=INCIDENT_ADMISSION ;;
+      *) worker_mode_json=INVALID ;;
+    esac
+  fi
   jq --null-input --compact-output \
     --arg service "${service}" \
     --argjson count "${present_count}" \
@@ -440,6 +473,7 @@ container_observation() {
     --argjson ports_empty "${ports_empty}" \
     --argjson global_disabled "${global_disabled_json}" \
     --argjson webhook_disabled "${webhook_disabled_json}" \
+    --arg worker_mode "${worker_mode_json}" \
     --arg status "${state}" \
     --arg health "${health}" \
     --argjson project "${project_match}" \
@@ -454,6 +488,7 @@ container_observation() {
       noPublishedPorts: $ports_empty,
       effectiveGlobalLiveDisabled: $global_disabled,
       effectiveLiveWebhookDisabled: $webhook_disabled,
+      effectiveWorkerRuntimeMode: (if $worker_mode == "" then null else $worker_mode end),
       status: $status,
       health: $health,
       projectLabelMatches: $project,
@@ -577,13 +612,15 @@ listener_observation() {
 database_observation() {
   local postgres_id="$1" postgres_status="$2" postgres_health="$3" output compact
   local system_identifier active_workflows unreleased_guards active_jobs
-  local live_tenants live_installations prepared requests audits
+  local live_tenants live_installations prepared requests executions attempts receipts mutations audits
   if [[ ! "${postgres_id}" =~ ^[0-9a-f]{64}$ ||
     "${postgres_status}" != "RUNNING" || "${postgres_health}" != "HEALTHY" ]]; then
     jq --null-input --compact-output '{
       snapshotAvailable: false, systemIdentifier: null, activeWorkflows: null,
       unreleasedPaymentGuards: null, activeFinancialJobs: null, liveTenants: null,
       liveInstallations: null, preparedTransactions: null, refundRequests: null,
+      refundExecutions: null, refundExecutionAttempts: null,
+      webhookReceipts: null, apiMutationReceipts: null,
       auditEvents: null
     }'
     return 0
@@ -617,28 +654,27 @@ database_observation() {
           (SELECT count(*) FROM public.stripe_installations WHERE environment = 'live'),
           (SELECT count(*) FROM pg_catalog.pg_prepared_xacts),
           (SELECT count(*) FROM public.refund_requests),
+          (SELECT count(*) FROM public.refund_executions),
+          (SELECT count(*) FROM public.refund_execution_attempts),
+          (SELECT count(*) FROM public.webhook_receipts),
+          (SELECT count(*) FROM public.api_mutation_receipts),
           (SELECT count(*) FROM public.audit_events));
         ROLLBACK;
       ")" || output=""
   compact="$(printf '%s' "${output}" | tr -d '[:space:]')"
-  if [[ ! "${compact}" =~ ^([1-9][0-9]{17,19})\|([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)\|([0-9]+)$ ]]; then
+  if [[ ! "${compact}" =~ ^([1-9][0-9]{17,19})(\|[0-9]+){12}$ ]]; then
     jq --null-input --compact-output '{
       snapshotAvailable: false, systemIdentifier: null, activeWorkflows: null,
       unreleasedPaymentGuards: null, activeFinancialJobs: null, liveTenants: null,
       liveInstallations: null, preparedTransactions: null, refundRequests: null,
+      refundExecutions: null, refundExecutionAttempts: null,
+      webhookReceipts: null, apiMutationReceipts: null,
       auditEvents: null
     }'
     return 0
   fi
-  system_identifier="${BASH_REMATCH[1]}"
-  active_workflows="${BASH_REMATCH[2]}"
-  unreleased_guards="${BASH_REMATCH[3]}"
-  active_jobs="${BASH_REMATCH[4]}"
-  live_tenants="${BASH_REMATCH[5]}"
-  live_installations="${BASH_REMATCH[6]}"
-  prepared="${BASH_REMATCH[7]}"
-  requests="${BASH_REMATCH[8]}"
-  audits="${BASH_REMATCH[9]}"
+  IFS='|' read -r system_identifier active_workflows unreleased_guards active_jobs \
+    live_tenants live_installations prepared requests executions attempts receipts mutations audits <<<"${compact}"
   jq --null-input --compact-output \
     --arg system_identifier "${system_identifier}" \
     --argjson active_workflows "${active_workflows}" \
@@ -648,6 +684,10 @@ database_observation() {
     --argjson live_installations "${live_installations}" \
     --argjson prepared "${prepared}" \
     --argjson requests "${requests}" \
+    --argjson executions "${executions}" \
+    --argjson attempts "${attempts}" \
+    --argjson receipts "${receipts}" \
+    --argjson mutations "${mutations}" \
     --argjson audits "${audits}" '{
       snapshotAvailable: true,
       systemIdentifier: $system_identifier,
@@ -658,13 +698,18 @@ database_observation() {
       liveInstallations: $live_installations,
       preparedTransactions: $prepared,
       refundRequests: $requests,
+      refundExecutions: $executions,
+      refundExecutionAttempts: $attempts,
+      webhookReceipts: $receipts,
+      apiMutationReceipts: $mutations,
       auditEvents: $audits
     }'
 }
 
 capture_host() {
   local captured_at active_revision="" current_revision="" source_revision=""
-  local release_revision="" manifest_revision="" compose_sha="" manifest_sha=""
+  local release_identity="" release_revision="" release_worker_mode=""
+  local manifest_revision="" compose_sha="" manifest_sha=""
   local manifest_valid=false expected_images_available=false
   local expected_postgres_image="" expected_caddy_image=""
   local expected_web_image="" expected_worker_image=""
@@ -706,7 +751,11 @@ capture_host() {
       expected_worker_image="$(jq --raw-output '.images[] | select(.role == "worker") | .imageId' "${installed_manifest}")"
     fi
   fi
-  release_revision="$(release_environment_revision)" || release_revision=""
+  release_identity="$(release_environment_identity)" || release_identity=""
+  if [[ -n "${release_identity}" ]]; then
+    release_revision="${release_identity%%|*}"
+    release_worker_mode="${release_identity#*|}"
+  fi
 
   expected_postgres_image="$(expected_image_id "${POSTGRES_IMAGE_REFERENCE}")" ||
     expected_postgres_image=""
@@ -809,6 +858,7 @@ capture_host() {
     --arg captured_at "${captured_at}" \
     --arg active "${active_revision}" --arg current "${current_revision}" \
     --arg source "${source_revision}" --arg release "${release_revision}" \
+    --arg release_worker_mode "${release_worker_mode}" \
     --arg manifest_revision "${manifest_revision}" --arg compose_sha "${compose_sha}" \
     --arg manifest_sha "${manifest_sha}" --argjson manifest_valid "${manifest_valid}" \
     --argjson containers "${containers_json}" \
@@ -839,6 +889,7 @@ capture_host() {
           currentRevision: nullable($current),
           sourceRevision: nullable($source),
           releaseEnvironmentRevision: nullable($release),
+          releaseEnvironmentWorkerRuntimeMode: nullable($release_worker_mode),
           manifestRevision: nullable($manifest_revision),
           composeSha256: nullable($compose_sha),
           installedManifestSha256: nullable($manifest_sha),
@@ -892,7 +943,8 @@ empty_capture() {
     capturedAt: $captured_at,
     identity: {
       activeRevision: null, currentRevision: null, sourceRevision: null,
-      releaseEnvironmentRevision: null, manifestRevision: null, composeSha256: null,
+      releaseEnvironmentRevision: null, releaseEnvironmentWorkerRuntimeMode: null,
+      manifestRevision: null, composeSha256: null,
       installedManifestSha256: null, manifestSchemaValid: false
     },
     containers: ["postgres","verifier","worker","web","caddy"] | map({
@@ -900,6 +952,7 @@ empty_capture() {
       expectedImageId: null, imageReferenceMatches: false,
       noPublishedPorts: false,
       effectiveGlobalLiveDisabled: null, effectiveLiveWebhookDisabled: null,
+      effectiveWorkerRuntimeMode: null,
       status: "UNKNOWN", health: "UNKNOWN", projectLabelMatches: false,
       serviceLabelMatches: false, revisionLabel: null
     }),
@@ -927,6 +980,8 @@ empty_capture() {
       snapshotAvailable: false, systemIdentifier: null, activeWorkflows: null,
       unreleasedPaymentGuards: null, activeFinancialJobs: null, liveTenants: null,
       liveInstallations: null, preparedTransactions: null, refundRequests: null,
+      refundExecutions: null, refundExecutionAttempts: null,
+      webhookReceipts: null, apiMutationReceipts: null,
       auditEvents: null
     }
   }'
@@ -948,6 +1003,7 @@ emit_document() {
         and ($capture.identity.currentRevision != null)
         and ($capture.identity.sourceRevision != null)
         and ($capture.identity.releaseEnvironmentRevision != null)
+        and ($capture.identity.releaseEnvironmentWorkerRuntimeMode != null)
         and ($capture.identity.manifestRevision != null)
         and ($capture.identity.composeSha256 != null)
         and ($capture.identity.installedManifestSha256 != null)
@@ -976,7 +1032,9 @@ emit_document() {
           and .imageId == .expectedImageId
           and .imageReferenceMatches))
         and (all($capture.containers[] | select(.service != "caddy");
-          .noPublishedPorts));
+          .noPublishedPorts))
+        and (container($capture; "worker").effectiveWorkerRuntimeMode
+          == $capture.identity.releaseEnvironmentWorkerRuntimeMode);
       def stopped($capture; $service):
         (container($capture; $service).status
           | . == "CREATED" or . == "EXITED");
@@ -1201,7 +1259,7 @@ emit_document() {
 
 started_at="$(timestamp_now)" || exit "${EXIT_INCOMPLETE}"
 
-for required_command in cut date docker flock grep head id jq readlink sha256sum ss stat systemctl timeout tr; do
+for required_command in cmp cut date docker flock grep head id jq readlink sha256sum ss stat systemctl timeout tr; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     empty="$(empty_capture)" || exit "${EXIT_INCOMPLETE}"
     emit_document "${started_at}" "${empty}" "${empty}" TOOL_UNAVAILABLE

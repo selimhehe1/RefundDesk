@@ -394,6 +394,38 @@ jobs:
           )"
           test "$maintenance_membership" = "t"
           trap - EXIT
+      - name: Preload exact Caddy origin-contract image
+        env:
+          CADDY_IMAGE: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+        run: |
+          set -euo pipefail
+          docker pull "$CADDY_IMAGE"
+          image_id="$(docker image inspect --format '{{.Id}}' -- "$CADDY_IMAGE")"
+          [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+      - name: Exercise exact Caddy origin contract without network
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          synthetic_caddy_env=/tmp/refunddesk-caddy-origin-contract.env
+          cleanup_caddy_contract() {
+            status="$?"
+            trap - EXIT
+            sudo rm -f -- "$synthetic_caddy_env"
+            exit "$status"
+          }
+          trap cleanup_caddy_contract EXIT
+          sudo install -o root -g root -m 0600 /dev/null "$synthetic_caddy_env"
+          printf '%s\n' \
+            'REFUNDDESK_PUBLIC_HOST=localhost' \
+            'REFUNDDESK_ACME_EMAIL=contained-origin@example.invalid' \
+            'REFUNDDESK_EDGE_ORIGIN_TOKEN=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' |
+            sudo tee "$synthetic_caddy_env" >/dev/null
+          sudo chmod 0600 "$synthetic_caddy_env"
+          sudo bash deploy/lightsail/scripts/test-caddy-origin-contract.sh \
+            --revision "$EXPECTED_REVISION" \
+            --caddyfile "$PWD/deploy/lightsail/Caddyfile.public" \
+            --caddy-env "$synthetic_caddy_env"
       - name: Build provider-neutral OCI targets
         env:
           DOCKER_BUILDKIT: "1"
@@ -781,7 +813,7 @@ jobs:
 
   postflight-windows:
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Check out the exact Windows event revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -807,5 +839,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           node --test scripts/validate-lightsail-postflight.test.mjs
           node --test scripts/validate-lightsail-containment-reconciliation.test.mjs
+          node --test scripts/validate-lightsail-contained-promotion.test.mjs
+          node --test scripts/validate-lightsail-incident-admission.test.mjs
+          node --test scripts/validate-lightsail-edge-window.test.mjs
+          node --test scripts/validate-edge-operator-image.test.mjs
           powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-postflight.contract.Tests.ps1
           powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-containment-reconciliation.contract.Tests.ps1
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-contained-promotion.contract.Tests.ps1
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-incident-admission.contract.Tests.ps1
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/invoke-lightsail-edge-window.contract.Tests.ps1

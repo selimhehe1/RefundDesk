@@ -46,6 +46,10 @@ jobs:
           bundle_basename="refunddesk-sandbox-${actual_revision}.images.tar.zst"
           source_basename="refunddesk-source-${actual_revision}.tar.zst"
           manifest_basename="refunddesk-sandbox-${actual_revision}.manifest.json"
+          edge_operator_archive_basename="refunddesk-edge-operator-${actual_revision}.docker.tar.zst"
+          edge_operator_manifest_basename="refunddesk-edge-operator-${actual_revision}.manifest.json"
+          edge_operator_attestation_basename="refunddesk-edge-operator-${actual_revision}.attestation.jsonl"
+          edge_operator_provenance_basename="refunddesk-edge-operator-${actual_revision}.provenance.json"
 
           {
             echo "REVISION=$actual_revision"
@@ -53,21 +57,104 @@ jobs:
             echo "WEB_IMAGE=refunddesk-web:sandbox-$actual_revision"
             echo "WORKER_IMAGE=refunddesk-worker:sandbox-$actual_revision"
             echo "MIGRATE_IMAGE=refunddesk-migrate:sandbox-$actual_revision"
+            echo "EDGE_OPERATOR_IMAGE=refunddesk-edge-operator:sandbox-$actual_revision"
             echo "BUNDLE_BASENAME=$bundle_basename"
             echo "SOURCE_BASENAME=$source_basename"
             echo "MANIFEST_BASENAME=$manifest_basename"
+            echo "EDGE_OPERATOR_DIR=$OUT_DIR/edge-operator"
+            echo "EDGE_OPERATOR_ARCHIVE_BASENAME=$edge_operator_archive_basename"
+            echo "EDGE_OPERATOR_MANIFEST_BASENAME=$edge_operator_manifest_basename"
+            echo "EDGE_OPERATOR_ATTESTATION_BASENAME=$edge_operator_attestation_basename"
+            echo "EDGE_OPERATOR_PROVENANCE_BASENAME=$edge_operator_provenance_basename"
           } >> "$GITHUB_ENV"
           {
             echo "short_revision=$short_revision"
             echo "bundle_basename=$bundle_basename"
             echo "bundle_path=$GITHUB_WORKSPACE/$OUT_DIR/$bundle_basename"
+            echo "edge_operator_archive_path=$GITHUB_WORKSPACE/$OUT_DIR/edge-operator/$edge_operator_archive_basename"
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate the bundle workflow contract
         run: node scripts/check-sandbox-images-workflow.mjs
 
+      - name: Verify edge watchdog systemd units
+        run: |
+          set -euo pipefail
+          watchdog_install_path=/usr/local/libexec/refunddesk-edge-window-watchdog.sh
+          test ! -e "$watchdog_install_path"
+          cleanup_watchdog_install() {
+            status=$?
+            trap - EXIT
+            sudo rm --force -- "$watchdog_install_path" || status=1
+            exit "$status"
+          }
+          trap cleanup_watchdog_install EXIT
+          sudo install --directory --mode=0755 /usr/local/libexec
+          sudo install --mode=0555 \
+            deploy/lightsail/scripts/refunddesk-edge-window-watchdog.sh \
+            "$watchdog_install_path"
+          systemd-analyze verify --recursive-errors=yes \
+            deploy/lightsail/systemd/refunddesk-edge-window-watchdog.service \
+            deploy/lightsail/systemd/refunddesk-edge-window-watchdog.timer
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Prove the edge operator build context is deny-by-default
+        run: |
+          set -euo pipefail
+          canary_path="deploy/lightsail/refunddesk-edge-context-arbitrary-canary-${REVISION}.txt"
+          probe_dockerfile="deploy/lightsail/.refunddesk-edge-context-probe.Dockerfile"
+          probe_ignore="${probe_dockerfile}.dockerignore"
+          probe_root="$(mktemp -d "$RUNNER_TEMP/refunddesk-edge-context-probe.XXXXXX")"
+          cleanup_context_probe() {
+            status=$?
+            trap - EXIT
+            rm --force -- "$canary_path" "$probe_dockerfile" "$probe_ignore" || status=1
+            rm --force --recursive -- "$probe_root" || status=1
+            exit "$status"
+          }
+          trap cleanup_context_probe EXIT
+          test ! -e "$canary_path"
+          test ! -e "$probe_dockerfile"
+          test ! -e "$probe_ignore"
+          printf '%s\n' 'REFUNDDESK_EDGE_CONTEXT_CANARY_DO_NOT_PACKAGE' >"$canary_path"
+          cp --no-clobber -- \
+            deploy/lightsail/edge-operator.Dockerfile.dockerignore \
+            "$probe_ignore"
+
+          positive_output="$probe_root/positive"
+          printf '%s\n' \
+            'FROM scratch' \
+            'COPY deploy/lightsail/edge-operator.Dockerfile.dockerignore /allowed' \
+            >"$probe_dockerfile"
+          docker buildx build \
+            --file "$probe_dockerfile" \
+            --platform linux/amd64 \
+            --output "type=local,dest=$positive_output" \
+            .
+          cmp --silent -- \
+            deploy/lightsail/edge-operator.Dockerfile.dockerignore \
+            "$positive_output/allowed"
+
+          negative_log="$probe_root/negative.log"
+          negative_output="$probe_root/negative"
+          printf '%s\n' \
+            'FROM scratch' \
+            "COPY $canary_path /forbidden" \
+            >"$probe_dockerfile"
+          if docker buildx build \
+            --file "$probe_dockerfile" \
+            --platform linux/amd64 \
+            --progress plain \
+            --output "type=local,dest=$negative_output" \
+            . >"$negative_log" 2>&1; then
+            echo "::error::The edge-operator context admitted an arbitrary canary."
+            exit 1
+          fi
+          grep --fixed-strings --quiet -- "$canary_path" "$negative_log"
+          grep --extended-regexp --quiet -- 'not found|excluded by \.dockerignore' "$negative_log"
+          test ! -e "$negative_output/forbidden"
 
       - name: Build linux/amd64 runtime targets
         run: |
@@ -89,6 +176,55 @@ jobs:
               --load \
               .
           done
+
+      - name: Build the exact-revision edge operator image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file deploy/lightsail/edge-operator.Dockerfile \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
+            --tag "$EDGE_OPERATOR_IMAGE" \
+            --load \
+            .
+
+      - name: Inspect the edge operator image boundary
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect --format '{{.Config.User}}' "$EDGE_OPERATOR_IMAGE")" = "10001:10001"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$EDGE_OPERATOR_IMAGE")" = "linux/amd64"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$EDGE_OPERATOR_IMAGE")" = "$REVISION"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$EDGE_OPERATOR_IMAGE")" = "$SOURCE_URL"
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$EDGE_OPERATOR_IMAGE")" = '["/usr/local/bin/refunddesk-edge-operator"]'
+          test "$(docker image inspect --format '{{json .Config.Cmd}}' "$EDGE_OPERATOR_IMAGE")" = '[]'
+          test "$(docker image inspect --format '{{.Config.WorkingDir}}' "$EDGE_OPERATOR_IMAGE")" = '/workspace'
+          docker image inspect "$EDGE_OPERATOR_IMAGE" |
+            jq --exit-status '
+              (.[0].Config.ExposedPorts // {} | length) == 0 and
+              .[0].Config.Healthcheck == null and
+              ((.[0].Config.Env // []) | all(.[];
+                test("^(?:DATABASE_URL|WORKER_DATABASE_URL|PGBOSS_DATABASE_URL|DATABASE_MIGRATION_URL|STRIPE_.*(?:KEY|SECRET)|REFUNDDESK_.*(?:KEY|TOKEN)|.*PASSWORD)=") | not
+              ))
+            ' >/dev/null
+          docker run --rm --pull never --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 64 --memory 128m --cpus 0.5 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --entrypoint /usr/bin/python3 "$EDGE_OPERATOR_IMAGE" - <<'PY'
+          import hashlib
+          import pathlib
+          import shutil
+
+          expected = {"aws", "bash", "curl", "git", "jq", "node", "python3", "ssh"}
+          for name in expected:
+              path = shutil.which(name)
+              if path is None or not pathlib.Path(path).is_file():
+                  raise SystemExit(1)
+              if len(hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()) != 64:
+                  raise SystemExit(1)
+          if pathlib.Path("/var/run/docker.sock").exists() or pathlib.Path("/run/docker.sock").exists():
+              raise SystemExit(1)
+          PY
 
       - name: Inspect image identity and runtime boundaries
         run: |
@@ -178,12 +314,12 @@ jobs:
           docker image inspect "$MIGRATE_IMAGE" |
             jq --exit-status '(.[0].Config.ExposedPorts // {} | length) == 0' >/dev/null
 
-          docker run --rm --entrypoint node "$WEB_IMAGE" -e "
+          docker run --rm --pull never --entrypoint node "$WEB_IMAGE" -e "
             const fs = require('node:fs');
             const forbidden = ['/app/apps/worker', '/app/apps/migrator', '/workspace'];
             if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
           "
-          docker run --rm --entrypoint node "$WORKER_IMAGE" -e "
+          docker run --rm --pull never --entrypoint node "$WORKER_IMAGE" -e "
             const fs = require('node:fs');
             const forbidden = [
               '/app/apps/platform',
@@ -194,7 +330,7 @@ jobs:
             ];
             if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
           "
-          docker run --rm --entrypoint node "$MIGRATE_IMAGE" -e "
+          docker run --rm --pull never --entrypoint node "$MIGRATE_IMAGE" -e "
             const fs = require('node:fs');
             const forbidden = [
               '/workspace/apps/platform',
@@ -206,7 +342,7 @@ jobs:
             if (forbidden.some((path) => fs.existsSync(path))) process.exit(1);
           "
           test "$(
-            docker run --rm --network none --entrypoint pnpm "$MIGRATE_IMAGE" --version
+            docker run --rm --pull never --network none --entrypoint pnpm "$MIGRATE_IMAGE" --version
           )" = "11.17.0"
 
       - name: Exercise the constrained web liveness contract
@@ -222,6 +358,7 @@ jobs:
           trap cleanup_health_container EXIT
 
           docker run \
+            --pull never \
             --detach \
             --name "$container_name" \
             --network none \
@@ -380,22 +517,186 @@ jobs:
             ' \
             "$manifest_path" >/dev/null
 
+          mkdir -p "$EDGE_OPERATOR_DIR"
+          edge_archive_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_ARCHIVE_BASENAME"
+          edge_manifest_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_MANIFEST_BASENAME"
+          edge_tools_path="$RUNNER_TEMP/refunddesk-edge-operator-tools.json"
+          docker image save "$EDGE_OPERATOR_IMAGE" |
+            zstd --compress --threads=0 --no-progress --stdout > "$edge_archive_path"
+          (
+            cd "$EDGE_OPERATOR_DIR"
+            sha256sum "$EDGE_OPERATOR_ARCHIVE_BASENAME" > "$EDGE_OPERATOR_ARCHIVE_BASENAME.sha256"
+          )
+          edge_archive_sha256="$(sha256sum "$edge_archive_path" | cut -d ' ' -f 1)"
+          edge_archive_size="$(stat --format='%s' "$edge_archive_path")"
+          edge_config_sha256="$(
+            docker image inspect "$EDGE_OPERATOR_IMAGE" |
+              jq --compact-output --sort-keys '.[0].Config' |
+              sha256sum | cut -d ' ' -f 1
+          )"
+
+          docker run --rm --pull never --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 64 --memory 128m --cpus 0.5 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --entrypoint /usr/bin/python3 "$EDGE_OPERATOR_IMAGE" - >"$edge_tools_path" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import shutil
+          import subprocess
+
+          commands = {
+              "aws": ["aws", "--version"],
+              "bash": ["bash", "--version"],
+              "curl": ["curl", "--version"],
+              "git": ["git", "--version"],
+              "jq": ["jq", "--version"],
+              "node": ["node", "--version"],
+              "python3": ["python3", "--version"],
+              "ssh": ["ssh", "-V"],
+          }
+          tools = {}
+          for name, command in commands.items():
+              path = shutil.which(name)
+              if path is None:
+                  raise SystemExit(1)
+              version = subprocess.run(
+                  command,
+                  check=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  timeout=10,
+              ).stdout.splitlines()[0].strip()
+              tools[name] = {
+                  "path": path,
+                  "sha256": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),
+                  "version": version,
+              }
+          print(json.dumps(tools, ensure_ascii=True, separators=(",", ":"), sort_keys=True))
+          PY
+
+          jq --compact-output --null-input --sort-keys \
+            --arg archive_file "$EDGE_OPERATOR_ARCHIVE_BASENAME" \
+            --arg archive_sha256 "$edge_archive_sha256" \
+            --argjson archive_size "$edge_archive_size" \
+            --arg config_sha256 "$edge_config_sha256" \
+            --arg created_at "$(date --utc +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg dockerfile_ignore_sha256 "$(sha256sum deploy/lightsail/edge-operator.Dockerfile.dockerignore | cut -d ' ' -f 1)" \
+            --arg dockerfile_sha256 "$(sha256sum deploy/lightsail/edge-operator.Dockerfile | cut -d ' ' -f 1)" \
+            --arg entrypoint_sha256 "$(sha256sum deploy/lightsail/scripts/refunddesk-edge-operator.sh | cut -d ' ' -f 1)" \
+            --arg image_id "$(docker image inspect --format '{{.Id}}' "$EDGE_OPERATOR_IMAGE")" \
+            --arg image_reference "$EDGE_OPERATOR_IMAGE" \
+            --arg revision "$REVISION" \
+            --arg source "$SOURCE_URL" \
+            --slurpfile tools "$edge_tools_path" \
+            '{
+              archive:{file:$archive_file,sha256:$archive_sha256,sizeBytes:$archive_size},
+              build:{
+                dockerfileIgnoreSha256:$dockerfile_ignore_sha256,
+                dockerfileSha256:$dockerfile_sha256,
+                entrypointSha256:$entrypoint_sha256,
+                nodeBaseDigest:"node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+                snapshot:"20260808T000000Z"
+              },
+              createdAt:$created_at,
+              image:{configSha256:$config_sha256,id:$image_id,reference:$image_reference,user:"10001:10001"},
+              kind:"refunddesk.edge-operator-image",
+              platform:"linux/amd64",
+              revision:$revision,
+              schemaVersion:1,
+              source:$source,
+              tools:$tools[0]
+            }' >"$edge_manifest_path"
+          edge_manifest_sha256="$(sha256sum "$edge_manifest_path" | cut -d ' ' -f 1)"
+          (
+            cd "$EDGE_OPERATOR_DIR"
+            sha256sum --check "$EDGE_OPERATOR_ARCHIVE_BASENAME.sha256"
+          )
+          zstd --test --no-progress "$edge_archive_path"
+          node scripts/validate-edge-operator-image.mjs \
+            --archive "$edge_archive_path" \
+            --expected-archive-sha256 "$edge_archive_sha256" \
+            --expected-manifest-sha256 "$edge_manifest_sha256" \
+            --expected-revision "$REVISION" \
+            --manifest "$edge_manifest_path" \
+            --repository "$GITHUB_WORKSPACE"
+
       - name: Attest bundle provenance
         id: provenance
         uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
         with:
           subject-path: dist/sandbox-images/*.tar.zst
 
+      - name: Attest edge operator provenance
+        id: edge_provenance
+        uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35 # v4
+        with:
+          subject-path: dist/sandbox-images/edge-operator/*.tar.zst
+
+      - name: Materialize edge operator attestation bundle
+        env:
+          EDGE_ATTESTATION_BUNDLE_PATH: ${{ steps.edge_provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          test -n "$EDGE_ATTESTATION_BUNDLE_PATH"
+          test -f "$EDGE_ATTESTATION_BUNDLE_PATH"
+          test ! -L "$EDGE_ATTESTATION_BUNDLE_PATH"
+          cp --no-clobber -- "$EDGE_ATTESTATION_BUNDLE_PATH" \
+            "$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_ATTESTATION_BASENAME"
+          test -s "$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_ATTESTATION_BASENAME"
+
+      - name: Materialize edge operator input provenance
+        env:
+          EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SOURCE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          archive_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_ARCHIVE_BASENAME"
+          manifest_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_MANIFEST_BASENAME"
+          attestation_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_ATTESTATION_BASENAME"
+          provenance_path="$EDGE_OPERATOR_DIR/$EDGE_OPERATOR_PROVENANCE_BASENAME"
+          [[ "$EXPECTED_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$EXPECTED_SOURCE_REF" =~ ^refs/heads/(main|release/sandbox-edge-[0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]
+          archive_sha256="$(sha256sum "$archive_path" | cut -d ' ' -f 1)"
+          manifest_sha256="$(sha256sum "$manifest_path" | cut -d ' ' -f 1)"
+          attestation_sha256="$(sha256sum "$attestation_path" | cut -d ' ' -f 1)"
+          rekor_entry_index="$(
+            jq --exit-status --slurp --raw-output '
+              [.[].verificationMaterial.tlogEntries[]?.logIndex] | unique
+              | select(length == 1) | .[0]
+            ' "$attestation_path"
+          )"
+          [[ "$rekor_entry_index" =~ ^[1-9][0-9]*$ ]]
+          jq --compact-output --null-input --sort-keys \
+            --arg archiveSha256 "$archive_sha256" \
+            --arg attestationBundleSha256 "$attestation_sha256" \
+            --arg createdAt "$(date --utc +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg manifestSha256 "$manifest_sha256" \
+            --arg repository "selimhehe1/RefundDesk" \
+            --arg revision "$REVISION" \
+            --arg sourceRef "$EXPECTED_SOURCE_REF" \
+            --arg workflowPath ".github/workflows/sandbox-images.yml" \
+            --argjson rekorEntryIndex "$rekor_entry_index" \
+            --argjson workflowRunAttempt "$EXPECTED_RUN_ATTEMPT" \
+            --argjson workflowRunId "$EXPECTED_RUN_ID" \
+            '{archiveSha256:$archiveSha256,attestationBundleSha256:$attestationBundleSha256,createdAt:$createdAt,kind:"refunddesk-edge-operator-input-provenance",manifestSha256:$manifestSha256,rekorEntryIndex:$rekorEntryIndex,repository:$repository,revision:$revision,schemaVersion:1,sourceRef:$sourceRef,verification:"github-actions-attestation-bundle-issued",workflowPath:$workflowPath,workflowRunAttempt:$workflowRunAttempt,workflowRunId:$workflowRunId}' \
+            >"$provenance_path"
+          test -s "$provenance_path"
+
       - name: Require provenance success
         if: ${{ always() && !cancelled() }}
         env:
+          EDGE_PROVENANCE_OUTCOME: ${{ steps.edge_provenance.outcome }}
           PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}
         run: |
-          if [[ "$PROVENANCE_OUTCOME" = "success" ]]; then
-            echo "GitHub build provenance was attached to the image and operator-source bundles." >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PROVENANCE_OUTCOME" = "success" && "$EDGE_PROVENANCE_OUTCOME" = "success" ]]; then
+            echo "GitHub build provenance was attached to the runtime, operator-source and edge-operator bundles." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::error::GitHub build provenance is required before bundle delivery or promotion."
-            echo "GitHub provenance failed; the bundle is not deliverable or promotable." >> "$GITHUB_STEP_SUMMARY"
+            echo "GitHub provenance failed; no runtime or edge-operator bundle is deliverable or promotable." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -445,27 +746,7 @@ jobs:
             echo "::error::The temporary bucket credential did not propagate within ten minutes."
             exit 1
           fi
-          existing_count="$(jq '[.Contents[]?] | length' "$s3_listing")"
           rm --force "$s3_error"
-          rm --force "$s3_listing"
-          if [[ "$existing_count" != "0" ]]; then
-            echo "::error::The revision-scoped artifact prefix is not empty."
-            exit 1
-          fi
-
-          committed=false
-          cleanup_partial_upload() {
-            status=$?
-            trap - EXIT
-            if (( status != 0 )) && [[ "$committed" != true ]]; then
-              aws s3 rm \
-                "s3://$SANDBOX_ARTIFACT_BUCKET/$artifact_prefix/" \
-                --recursive \
-                --only-show-errors || status=1
-            fi
-            exit "$status"
-          }
-          trap cleanup_partial_upload EXIT
 
           mapfile -t artifact_files < <(
             find "$OUT_DIR" -maxdepth 1 -type f -printf '%f\n' | sort
@@ -482,6 +763,18 @@ jobs:
             echo "::error::The artifact directory does not contain exactly the expected five files."
             exit 1
           fi
+          declare -A runtime_remote_files=()
+          while IFS= read -r key; do
+            [[ -n "$key" ]] || continue
+            name="${key#"$artifact_prefix/"}"
+            if [[ "$name" == "$key" ]] || ! printf '%s\n' "${expected_files[@]}" | grep --fixed-strings --line-regexp --quiet "$name"; then
+              echo "::error::The revision-scoped runtime prefix contains an unexpected object."
+              exit 1
+            fi
+            [[ -z "${runtime_remote_files[$name]:-}" ]] || { echo "::error::Duplicate runtime object listing."; exit 1; }
+            runtime_remote_files[$name]=true
+          done < <(jq -r '.Contents[]?.Key' "$s3_listing")
+          rm --force "$s3_listing"
 
           upload_order=(
             "$BUNDLE_BASENAME"
@@ -491,13 +784,18 @@ jobs:
             "$MANIFEST_BASENAME"
           )
           for artifact_file in "${upload_order[@]}"; do
+            local_size="$(stat --format='%s' "$OUT_DIR/$artifact_file")"
+            local_checksum="$(openssl dgst -sha256 -binary "$OUT_DIR/$artifact_file" | base64 --wrap=0)"
+            if [[ "${runtime_remote_files[$artifact_file]:-}" == true ]]; then
+              existing_head="$(aws s3api head-object --bucket "$SANDBOX_ARTIFACT_BUCKET" --key "$artifact_prefix/$artifact_file" --output json)"
+              jq --exit-status --argjson size "$local_size" --arg checksum "$local_checksum" '
+                .ContentLength == $size and .ChecksumSHA256 == $checksum and .ServerSideEncryption == "AES256"
+              ' <<<"$existing_head" >/dev/null || { echo "::error::Existing runtime object differs from the exact local bytes."; exit 1; }
+              continue
+            fi
             echo "Uploading verified $artifact_file"
-            aws s3 cp \
-              "$OUT_DIR/$artifact_file" \
-              "s3://$SANDBOX_ARTIFACT_BUCKET/$artifact_prefix/$artifact_file" \
-              --only-show-errors \
-              --no-progress \
-              --sse AES256
+            aws s3 cp "$OUT_DIR/$artifact_file" "s3://$SANDBOX_ARTIFACT_BUCKET/$artifact_prefix/$artifact_file" \
+              --only-show-errors --no-progress --sse AES256 --checksum-algorithm SHA256
           done
 
           remote_listing="$(
@@ -513,21 +811,87 @@ jobs:
           fi
           for artifact_file in "${artifact_files[@]}"; do
             local_size="$(stat --format='%s' "$OUT_DIR/$artifact_file")"
-            remote_size="$(
-              aws s3api head-object \
-                --bucket "$SANDBOX_ARTIFACT_BUCKET" \
-                --key "$artifact_prefix/$artifact_file" \
-                --query 'ContentLength' \
-                --output text
-            )"
-            if [[ "$local_size" != "$remote_size" ]]; then
-              echo "::error::Remote size verification failed for $artifact_file."
-              exit 1
-            fi
+            local_checksum="$(openssl dgst -sha256 -binary "$OUT_DIR/$artifact_file" | base64 --wrap=0)"
+            remote_head="$(aws s3api head-object --bucket "$SANDBOX_ARTIFACT_BUCKET" --key "$artifact_prefix/$artifact_file" --output json)"
+            jq --exit-status --argjson size "$local_size" --arg checksum "$local_checksum" '
+              .ContentLength == $size and .ChecksumSHA256 == $checksum and .ServerSideEncryption == "AES256"
+            ' <<<"$remote_head" >/dev/null || { echo "::error::Remote runtime hash verification failed."; exit 1; }
           done
 
-          committed=true
-          echo "The exact five-file bundle was delivered to the private sandbox bucket and size-verified." >> "$GITHUB_STEP_SUMMARY"
+          echo "The exact five-file bundle was delivered or resumed byte-identically in the private sandbox bucket." >> "$GITHUB_STEP_SUMMARY"
+
+          edge_prefix="refunddesk-sandbox/edge-operator/$REVISION"
+          edge_listing="$(
+            aws s3api list-objects-v2 \
+              --bucket "$SANDBOX_ARTIFACT_BUCKET" \
+              --prefix "$edge_prefix/" \
+              --output json
+          )"
+          mapfile -t edge_artifact_files < <(
+            find "$EDGE_OPERATOR_DIR" -maxdepth 1 -type f -printf '%f\n' | sort
+          )
+          edge_expected_files=(
+            "$EDGE_OPERATOR_ARCHIVE_BASENAME"
+            "$EDGE_OPERATOR_ARCHIVE_BASENAME.sha256"
+            "$EDGE_OPERATOR_ATTESTATION_BASENAME"
+            "$EDGE_OPERATOR_MANIFEST_BASENAME"
+            "$EDGE_OPERATOR_PROVENANCE_BASENAME"
+          )
+          mapfile -t edge_expected_files < <(printf '%s\n' "${edge_expected_files[@]}" | sort)
+          if [[ "${edge_artifact_files[*]}" != "${edge_expected_files[*]}" ]]; then
+            echo "::error::The edge-operator artifact directory does not contain exactly five files."
+            exit 1
+          fi
+          declare -A edge_remote_files=()
+          while IFS= read -r key; do
+            [[ -n "$key" ]] || continue
+            name="${key#"$edge_prefix/"}"
+            if [[ "$name" == "$key" ]] || ! printf '%s\n' "${edge_expected_files[@]}" | grep --fixed-strings --line-regexp --quiet "$name"; then
+              echo "::error::The revision-scoped edge prefix contains an unexpected object."
+              exit 1
+            fi
+            [[ -z "${edge_remote_files[$name]:-}" ]] || { echo "::error::Duplicate edge object listing."; exit 1; }
+            edge_remote_files[$name]=true
+          done < <(jq -r '.Contents[]?.Key' <<<"$edge_listing")
+          edge_upload_order=(
+            "$EDGE_OPERATOR_ARCHIVE_BASENAME"
+            "$EDGE_OPERATOR_ARCHIVE_BASENAME.sha256"
+            "$EDGE_OPERATOR_MANIFEST_BASENAME"
+            "$EDGE_OPERATOR_ATTESTATION_BASENAME"
+            "$EDGE_OPERATOR_PROVENANCE_BASENAME"
+          )
+          for artifact_file in "${edge_upload_order[@]}"; do
+            local_size="$(stat --format='%s' "$EDGE_OPERATOR_DIR/$artifact_file")"
+            local_checksum="$(openssl dgst -sha256 -binary "$EDGE_OPERATOR_DIR/$artifact_file" | base64 --wrap=0)"
+            if [[ "${edge_remote_files[$artifact_file]:-}" == true ]]; then
+              existing_head="$(aws s3api head-object --bucket "$SANDBOX_ARTIFACT_BUCKET" --key "$edge_prefix/$artifact_file" --output json)"
+              jq --exit-status --argjson size "$local_size" --arg checksum "$local_checksum" '
+                .ContentLength == $size and .ChecksumSHA256 == $checksum and .ServerSideEncryption == "AES256"
+              ' <<<"$existing_head" >/dev/null || { echo "::error::Existing edge object differs from the exact local bytes."; exit 1; }
+              continue
+            fi
+            aws s3 cp "$EDGE_OPERATOR_DIR/$artifact_file" "s3://$SANDBOX_ARTIFACT_BUCKET/$edge_prefix/$artifact_file" \
+              --only-show-errors --no-progress --sse AES256 --checksum-algorithm SHA256
+          done
+          edge_remote_listing="$(
+            aws s3api list-objects-v2 \
+              --bucket "$SANDBOX_ARTIFACT_BUCKET" \
+              --prefix "$edge_prefix/" \
+              --output json
+          )"
+          if [[ "$(jq '[.Contents[]?] | length' <<<"$edge_remote_listing")" != "5" ]]; then
+            echo "::error::The private bucket does not contain exactly five edge-operator objects."
+            exit 1
+          fi
+          for artifact_file in "${edge_artifact_files[@]}"; do
+            local_size="$(stat --format='%s' "$EDGE_OPERATOR_DIR/$artifact_file")"
+            local_checksum="$(openssl dgst -sha256 -binary "$EDGE_OPERATOR_DIR/$artifact_file" | base64 --wrap=0)"
+            remote_head="$(aws s3api head-object --bucket "$SANDBOX_ARTIFACT_BUCKET" --key "$edge_prefix/$artifact_file" --output json)"
+            jq --exit-status --argjson size "$local_size" --arg checksum "$local_checksum" '
+              .ContentLength == $size and .ChecksumSHA256 == $checksum and .ServerSideEncryption == "AES256"
+            ' <<<"$remote_head" >/dev/null || { echo "::error::Remote edge hash verification failed."; exit 1; }
+          done
+          echo "The exact five-file edge-operator artifact was delivered or resumed byte-identically." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload one-day sandbox bundle to GitHub
         if: ${{ env.SANDBOX_ARTIFACT_BUCKET == '' }}

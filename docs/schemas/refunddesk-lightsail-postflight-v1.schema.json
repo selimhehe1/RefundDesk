@@ -247,6 +247,7 @@
         "noPublishedPorts",
         "effectiveGlobalLiveDisabled",
         "effectiveLiveWebhookDisabled",
+        "effectiveWorkerRuntimeMode",
         "status",
         "health",
         "projectLabelMatches",
@@ -263,6 +264,12 @@
         "noPublishedPorts": { "type": "boolean" },
         "effectiveGlobalLiveDisabled": { "$ref": "#/$defs/booleanOrNull" },
         "effectiveLiveWebhookDisabled": { "$ref": "#/$defs/booleanOrNull" },
+        "effectiveWorkerRuntimeMode": {
+          "oneOf": [
+            { "enum": ["LEGACY_NORMAL", "NORMAL", "INCIDENT_ADMISSION", "INVALID"] },
+            { "type": "null" }
+          ]
+        },
         "status": {
           "enum": [
             "MISSING",
@@ -290,6 +297,7 @@
         "currentRevision",
         "sourceRevision",
         "releaseEnvironmentRevision",
+        "releaseEnvironmentWorkerRuntimeMode",
         "manifestRevision",
         "composeSha256",
         "installedManifestSha256",
@@ -300,6 +308,12 @@
         "currentRevision": { "$ref": "#/$defs/revisionOrNull" },
         "sourceRevision": { "$ref": "#/$defs/revisionOrNull" },
         "releaseEnvironmentRevision": { "$ref": "#/$defs/revisionOrNull" },
+        "releaseEnvironmentWorkerRuntimeMode": {
+          "oneOf": [
+            { "enum": ["LEGACY_NORMAL", "NORMAL", "INCIDENT_ADMISSION"] },
+            { "type": "null" }
+          ]
+        },
         "manifestRevision": { "$ref": "#/$defs/revisionOrNull" },
         "composeSha256": { "$ref": "#/$defs/hex64OrNull" },
         "installedManifestSha256": { "$ref": "#/$defs/hex64OrNull" },
@@ -397,6 +411,10 @@
         "liveInstallations",
         "preparedTransactions",
         "refundRequests",
+        "refundExecutions",
+        "refundExecutionAttempts",
+        "webhookReceipts",
+        "apiMutationReceipts",
         "auditEvents"
       ],
       "properties": {
@@ -411,6 +429,10 @@
         "liveInstallations": { "$ref": "#/$defs/countOrNull" },
         "preparedTransactions": { "$ref": "#/$defs/countOrNull" },
         "refundRequests": { "$ref": "#/$defs/countOrNull" },
+        "refundExecutions": { "$ref": "#/$defs/countOrNull" },
+        "refundExecutionAttempts": { "$ref": "#/$defs/countOrNull" },
+        "webhookReceipts": { "$ref": "#/$defs/countOrNull" },
+        "apiMutationReceipts": { "$ref": "#/$defs/countOrNull" },
         "auditEvents": { "$ref": "#/$defs/countOrNull" }
       }
     },

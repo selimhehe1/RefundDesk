@@ -323,6 +323,7 @@ function deriveSummaries(document) {
     identity.currentRevision !== null &&
     identity.sourceRevision !== null &&
     identity.releaseEnvironmentRevision !== null &&
+    identity.releaseEnvironmentWorkerRuntimeMode !== null &&
     identity.manifestRevision !== null &&
     identity.composeSha256 !== null &&
     identity.installedManifestSha256 !== null &&
@@ -357,7 +358,9 @@ function deriveSummaries(document) {
     ) &&
     captureB.containers
       .filter((container) => container.service !== "caddy")
-      .every((container) => container.noPublishedPorts === true);
+      .every((container) => container.noPublishedPorts === true) &&
+    byService.get("worker").effectiveWorkerRuntimeMode ===
+      identity.releaseEnvironmentWorkerRuntimeMode;
   const surface = captureB.surface;
   const control = captureB.control;
   const database = captureB.database;
@@ -726,6 +729,18 @@ function assertPinnedComposeImages(composeBytes) {
       fail("PROVENANCE_REVISION_COMPOSE_IMAGE_INVALID");
     }
   }
+  const workerModeDeclaration =
+    "      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}";
+  const workerModeOccurrences = text
+    .split("\n")
+    .filter((line) => line.includes("REFUNDDESK_WORKER_RUNTIME_MODE"));
+  if (workerModeOccurrences.length === 0) {
+    return "LEGACY_NORMAL";
+  }
+  if (workerModeOccurrences.length !== 1 || workerModeOccurrences[0] !== workerModeDeclaration) {
+    fail("PROVENANCE_REVISION_COMPOSE_WORKER_MODE_INVALID");
+  }
+  return "EXPLICIT";
 }
 
 function assertRevisionComposeDigest({ document, gitExecutable, repository }) {
@@ -763,9 +778,59 @@ function assertRevisionComposeDigest({ document, gitExecutable, repository }) {
     if (sha256(composeBytes) !== identity.composeSha256) {
       fail("PROVENANCE_REVISION_COMPOSE_DIGEST_MISMATCH");
     }
-    assertPinnedComposeImages(composeBytes);
+    const workerModeContract = assertPinnedComposeImages(composeBytes);
+    const observedWorkerMode = identity.releaseEnvironmentWorkerRuntimeMode;
+    if (
+      observedWorkerMode !== null &&
+      ((observedWorkerMode === "LEGACY_NORMAL" && workerModeContract !== "LEGACY_NORMAL") ||
+        (observedWorkerMode !== "LEGACY_NORMAL" && workerModeContract !== "EXPLICIT"))
+    ) {
+      fail("PROVENANCE_REVISION_COMPOSE_WORKER_MODE_MISMATCH");
+    }
   }
   return complete;
+}
+
+function assertAttestedWorkspaceComposeDigest({ document, repository, expectedRevision }) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(expectedRevision)) {
+    fail("PROVENANCE_EXPECTED_REVISION_INVALID");
+  }
+  let composeBytes;
+  try {
+    composeBytes = readFileSync(resolve(repository, "deploy/lightsail/compose.yml"));
+  } catch {
+    fail("PROVENANCE_REVISION_COMPOSE_OBJECT_MISSING");
+  }
+  const composeSha256 = sha256(composeBytes);
+  const workerModeContract = assertPinnedComposeImages(composeBytes);
+  const revisionFields = [
+    "activeRevision",
+    "currentRevision",
+    "sourceRevision",
+    "releaseEnvironmentRevision",
+    "manifestRevision",
+  ];
+  for (const identity of [document.captures.a.identity, document.captures.b.identity]) {
+    if (
+      revisionFields.some(
+        (field) => identity[field] !== null && identity[field] !== expectedRevision,
+      )
+    ) {
+      fail("PROVENANCE_EXPECTED_REVISION_MISMATCH");
+    }
+    if (identity.activeRevision !== expectedRevision || identity.composeSha256 !== composeSha256) {
+      fail("PROVENANCE_REVISION_COMPOSE_DIGEST_MISMATCH");
+    }
+    const observedWorkerMode = identity.releaseEnvironmentWorkerRuntimeMode;
+    if (
+      observedWorkerMode !== null &&
+      ((observedWorkerMode === "LEGACY_NORMAL" && workerModeContract !== "LEGACY_NORMAL") ||
+        (observedWorkerMode !== "LEGACY_NORMAL" && workerModeContract !== "EXPLICIT"))
+    ) {
+      fail("PROVENANCE_REVISION_COMPOSE_WORKER_MODE_MISMATCH");
+    }
+  }
+  return true;
 }
 
 function assertExecutableSha256(path, expectedSha256) {
@@ -799,6 +864,8 @@ export function validatePostflightDocument(
     validatorPath = VALIDATOR_PATH,
     wrapperPath = WRAPPER_PATH,
     fixtureOnly = false,
+    attestedWorkspace = false,
+    expectedRevision,
   },
 ) {
   if (!/^[0-9a-f]{64}$/u.test(expectedNonce)) {
@@ -823,41 +890,47 @@ export function validatePostflightDocument(
   if (expectedGitSha256 !== undefined) {
     assertExecutableSha256(gitExecutable, expectedGitSha256);
   }
-  const repositoryHead = fixtureOnly ? null : readRepositoryHead(gitExecutable, repository);
+  if (fixtureOnly && attestedWorkspace) {
+    fail("PROVENANCE_MODE_INVALID");
+  }
+  const repositoryHead = fixtureOnly
+    ? null
+    : attestedWorkspace
+      ? expectedRevision
+      : readRepositoryHead(gitExecutable, repository);
+  const directWorkspaceSources = fixtureOnly || attestedWorkspace;
 
   const observer = readIndexedSource({
     gitExecutable,
     repository,
     repositoryHead,
     path: observerPath,
-    fixtureOnly,
+    fixtureOnly: directWorkspaceSources,
   });
   const validator = readIndexedSource({
     gitExecutable,
     repository,
     repositoryHead,
     path: validatorPath,
-    fixtureOnly,
+    fixtureOnly: directWorkspaceSources,
   });
   const schemaSource = readIndexedSource({
     gitExecutable,
     repository,
     repositoryHead,
     path: schemaPath,
-    fixtureOnly,
+    fixtureOnly: directWorkspaceSources,
   });
   const wrapper = readIndexedSource({
     gitExecutable,
     repository,
     repositoryHead,
     path: wrapperPath,
-    fixtureOnly,
+    fixtureOnly: directWorkspaceSources,
   });
-  const revisionComposeVerified = assertRevisionComposeDigest({
-    document,
-    gitExecutable,
-    repository,
-  });
+  const revisionComposeVerified = attestedWorkspace
+    ? assertAttestedWorkspaceComposeDigest({ document, repository, expectedRevision })
+    : assertRevisionComposeDigest({ document, gitExecutable, repository });
 
   return Object.freeze({
     schemaVersion: 1,
@@ -891,6 +964,8 @@ function parseArguments(argv) {
     "--git-executable",
     "--expected-git-sha256",
     "--fixture-only",
+    "--attested-workspace",
+    "--expected-revision",
   ]);
   const values = new Map();
   for (let index = 0; index < argv.length; index += 1) {
@@ -898,7 +973,7 @@ function parseArguments(argv) {
     if (!allowed.has(name) || values.has(name)) {
       fail("ARGUMENT_INVALID");
     }
-    if (name === "--fixture-only") {
+    if (name === "--fixture-only" || name === "--attested-workspace") {
       values.set(name, true);
       continue;
     }
@@ -922,6 +997,15 @@ function parseArguments(argv) {
       fail("ARGUMENT_REQUIRED_MISSING");
     }
   }
+  if (values.get("--attested-workspace") === true && !values.has("--expected-revision")) {
+    fail("ARGUMENT_REQUIRED_MISSING");
+  }
+  if (values.get("--attested-workspace") !== true && values.has("--expected-revision")) {
+    fail("ARGUMENT_INVALID");
+  }
+  if (values.get("--attested-workspace") === true && values.get("--fixture-only") === true) {
+    fail("ARGUMENT_INVALID");
+  }
   return values;
 }
 
@@ -943,6 +1027,7 @@ export async function runCli({ argv = process.argv.slice(2) } = {}) {
     const args = parseArguments(argv);
     const repository = resolve(args.get("--repository"));
     const fixtureOnly = args.get("--fixture-only") === true;
+    const attestedWorkspace = args.get("--attested-workspace") === true;
     const schemaBytes = readFileSync(resolve(repository, SCHEMA_PATH));
     let schema;
     try {
@@ -967,6 +1052,8 @@ export async function runCli({ argv = process.argv.slice(2) } = {}) {
       gitExecutable: args.get("--git-executable"),
       expectedGitSha256: args.get("--expected-git-sha256"),
       fixtureOnly,
+      attestedWorkspace,
+      expectedRevision: args.get("--expected-revision"),
     });
     process.stdout.write(`${JSON.stringify(validation)}\n`);
     return 0;

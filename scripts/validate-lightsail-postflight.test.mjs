@@ -13,6 +13,8 @@ import {
   validatePostflightDocument,
 } from "./validate-lightsail-postflight.mjs";
 
+const { structuredClone } = globalThis;
+
 const repository = resolve(import.meta.dirname, "..");
 const schema = JSON.parse(
   readFileSync(
@@ -32,6 +34,14 @@ const composeBytes = execFileSync(
   { encoding: null },
 );
 const digest = createHash("sha256").update(composeBytes).digest("hex");
+const workerRuntimeMode = composeBytes.includes(
+  Buffer.from(
+    "      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}",
+    "utf8",
+  ),
+)
+  ? "NORMAL"
+  : "LEGACY_NORMAL";
 const startedAt = "2026-08-08T10:00:00Z";
 const completedAt = "2026-08-08T10:00:02Z";
 
@@ -48,6 +58,7 @@ function container(service, index) {
     noPublishedPorts: true,
     effectiveGlobalLiveDisabled: new Set(["worker", "web"]).has(service) ? true : null,
     effectiveLiveWebhookDisabled: service === "web" ? true : null,
+    effectiveWorkerRuntimeMode: service === "worker" ? workerRuntimeMode : null,
     status: core.has(service) ? "RUNNING" : "EXITED",
     health: core.has(service) ? "HEALTHY" : "NONE",
     projectLabelMatches: true,
@@ -64,6 +75,7 @@ function capture(capturedAt) {
       currentRevision: revision,
       sourceRevision: revision,
       releaseEnvironmentRevision: revision,
+      releaseEnvironmentWorkerRuntimeMode: workerRuntimeMode,
       manifestRevision: revision,
       composeSha256: digest,
       installedManifestSha256: digest,
@@ -121,6 +133,10 @@ function capture(capturedAt) {
       liveInstallations: 0,
       preparedTransactions: 0,
       refundRequests: 2,
+      refundExecutions: 3,
+      refundExecutionAttempts: 4,
+      webhookReceipts: 5,
+      apiMutationReceipts: 6,
       auditEvents: 9,
     },
   };
@@ -214,6 +230,10 @@ function setDatabaseUnavailable(document) {
       liveInstallations: null,
       preparedTransactions: null,
       refundRequests: null,
+      refundExecutions: null,
+      refundExecutionAttempts: null,
+      webhookReceipts: null,
+      apiMutationReceipts: null,
       auditEvents: null,
     });
   }
@@ -243,6 +263,65 @@ test("accepts one canonical, schema-exact, nonce-bound contained observation", (
   assert.match(validation.provenance.observer.sha256, /^[0-9a-f]{64}$/u);
   assert.equal(validation.provenance.observer.gitObject, null);
   assert.match(validation.provenance.wrapper.sha256, /^[0-9a-f]{64}$/u);
+});
+
+test("attested workspace mode applies the full schema, derived summaries and result semantics", () => {
+  const options = fixtureOptions({
+    attestedWorkspace: true,
+    expectedRevision: revision,
+    fixtureOnly: false,
+  });
+  const attested = passDocument();
+  const workspaceCompose = readFileSync(join(repository, "deploy/lightsail/compose.yml"));
+  const workspaceComposeSha256 = createHash("sha256").update(workspaceCompose).digest("hex");
+  const workspaceWorkerMode = workspaceCompose.includes(
+    Buffer.from(
+      "      REFUNDDESK_WORKER_RUNTIME_MODE: ${REFUNDDESK_WORKER_RUNTIME_MODE:-normal}",
+      "utf8",
+    ),
+  )
+    ? "NORMAL"
+    : "LEGACY_NORMAL";
+  for (const captureValue of [attested.captures.a, attested.captures.b]) {
+    captureValue.identity.composeSha256 = workspaceComposeSha256;
+    captureValue.identity.releaseEnvironmentWorkerRuntimeMode = workspaceWorkerMode;
+    captureValue.containers.find(({ service }) => service === "worker").effectiveWorkerRuntimeMode =
+      workspaceWorkerMode;
+  }
+  const validation = validatePostflightDocument(bytes(attested), options);
+  assert.equal(validation.result, "PASS");
+  assert.equal(validation.provenance.repositoryHead, revision);
+  assert.equal(validation.provenance.revisionComposeVerified, true);
+
+  const caddyRunning = structuredClone(attested);
+  for (const captureValue of [caddyRunning.captures.a, caddyRunning.captures.b]) {
+    const caddy = captureValue.containers.find(({ service }) => service === "caddy");
+    caddy.status = "RUNNING";
+    caddy.health = "HEALTHY";
+  }
+  expectCode(
+    () => validatePostflightDocument(bytes(caddyRunning), options),
+    "SUMMARY_CONTAINMENT_MISMATCH",
+  );
+
+  const imageDrift = structuredClone(attested);
+  for (const captureValue of [imageDrift.captures.a, imageDrift.captures.b]) {
+    const web = captureValue.containers.find(({ service }) => service === "web");
+    web.imageId = `sha256:${"8".repeat(64)}`;
+  }
+  expectCode(
+    () => validatePostflightDocument(bytes(imageDrift), options),
+    "SUMMARY_AVAILABILITY_MISMATCH",
+  );
+
+  const listenerDrift = structuredClone(attested);
+  for (const captureValue of [listenerDrift.captures.a, listenerDrift.captures.b]) {
+    captureValue.surface.tcp443Listening = true;
+  }
+  expectCode(
+    () => validatePostflightDocument(bytes(listenerDrift), options),
+    "SUMMARY_CONTAINMENT_MISMATCH",
+  );
 });
 
 test("rejects BOM, CR, NUL, missing final LF, extra JSON, and non-canonical whitespace", () => {
@@ -428,6 +507,29 @@ test("requires exact expected images and no published core ports", () => {
   );
 });
 
+test("requires the release and effective worker runtime modes to agree", () => {
+  const mismatched = passDocument();
+  for (const captureValue of [mismatched.captures.a, mismatched.captures.b]) {
+    captureValue.containers.find(({ service }) => service === "worker").effectiveWorkerRuntimeMode =
+      captureValue.identity.releaseEnvironmentWorkerRuntimeMode === "INCIDENT_ADMISSION"
+        ? "NORMAL"
+        : "INCIDENT_ADMISSION";
+  }
+  expectCode(
+    () => validatePostflightDocument(bytes(mismatched), fixtureOptions()),
+    "SUMMARY_AVAILABILITY_MISMATCH",
+  );
+
+  const invalid = passDocument();
+  invalid.captures.a.containers.find(
+    ({ service }) => service === "worker",
+  ).effectiveWorkerRuntimeMode = "BROKEN";
+  expectCode(
+    () => validatePostflightDocument(bytes(invalid), fixtureOptions()),
+    "SCHEMA_ROOT_captures_a_containers_2_effectiveWorkerRuntimeMode_ONEOF_INVALID",
+  );
+});
+
 test("reports incomplete revision-to-compose provenance as false", () => {
   for (const missing of ["activeRevision", "composeSha256"]) {
     const incomplete = passDocument();
@@ -527,8 +629,12 @@ test("derives source digests from index objects and the observed revision tree",
         captureValue.identity[key] = commit;
       }
       captureValue.identity.composeSha256 = composeDigest;
+      captureValue.identity.releaseEnvironmentWorkerRuntimeMode = "LEGACY_NORMAL";
       for (const containerValue of captureValue.containers) {
         containerValue.revisionLabel = commit;
+        if (containerValue.service === "worker") {
+          containerValue.effectiveWorkerRuntimeMode = "LEGACY_NORMAL";
+        }
       }
     }
 

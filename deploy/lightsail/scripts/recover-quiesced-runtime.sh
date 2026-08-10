@@ -15,11 +15,48 @@ readonly RELEASE_CONTRACT_VERSION="2"
 readonly STABLE_RECOVERY_LAUNCHER="/usr/local/sbin/refunddesk-quiesce-recovery"
 readonly QUIESCE_JOURNAL="${REFUNDDESK_CONTROL_ROOT}/runtime-quiesce-in-progress.json"
 readonly TRANSITION_JOURNAL="${REFUNDDESK_CONFIG_ROOT}/application-key-transition-in-progress.json"
+readonly EDGE_WINDOW_LEASE="${REFUNDDESK_CONTROL_ROOT}/edge-window-lease.json"
+
+edge_window_allows_runtime_start() {
+  if [[ ! -e "${EDGE_WINDOW_LEASE}" && ! -L "${EDGE_WINDOW_LEASE}" ]]; then
+    return 0
+  fi
+  [[ -f "${EDGE_WINDOW_LEASE}" && ! -L "${EDGE_WINDOW_LEASE}" ]] || return 1
+  [[ "$(stat --format='%u:%g:%a' -- "${EDGE_WINDOW_LEASE}")" == "0:0:600" ]] || return 1
+  python3 - "${EDGE_WINDOW_LEASE}" <<'PY' >/dev/null 2>&1
+import datetime, json, re, sys
+path = sys.argv[1]
+raw = open(path, "rb").read()
+if not raw or len(raw) > 2048 or b"\x00" in raw:
+    raise SystemExit(1)
+try:
+    document = json.loads(raw.decode("utf-8"))
+except (UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if raw != (json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode():
+    raise SystemExit(1)
+if set(document) != {"completedAt", "expectedRevision", "kind", "nonce", "schemaVersion", "state"}:
+    raise SystemExit(1)
+if document.get("schemaVersion") != 1 or document.get("kind") != "refunddesk.edge-window-host-lease" or document.get("state") != "complete":
+    raise SystemExit(1)
+if re.fullmatch(r"[0-9a-f]{40}", document.get("expectedRevision", "")) is None or re.fullmatch(r"[0-9a-f]{64}", document.get("nonce", "")) is None:
+    raise SystemExit(1)
+try:
+    parsed = datetime.datetime.strptime(document.get("completedAt", ""), "%Y-%m-%dT%H:%M:%SZ")
+except ValueError:
+    raise SystemExit(1)
+if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != document["completedAt"]:
+    raise SystemExit(1)
+PY
+}
 
 require_root
 for command in cmp docker jq python3 readlink stat; do
   require_command "${command}"
 done
+
+edge_window_allows_runtime_start ||
+  die "runtime recovery is blocked by an active or invalid edge-window interlock"
 
 if [[ "${REFUNDDESK_QUIESCE_RECOVERY_LOCK_INHERITED:-}" == "true" ]]; then
   [[ -e /proc/self/fd/9 ]] ||
@@ -33,6 +70,8 @@ if [[ "${REFUNDDESK_QUIESCE_RECOVERY_LOCK_INHERITED:-}" == "true" ]]; then
 else
   acquire_operator_lock
 fi
+edge_window_allows_runtime_start ||
+  die "runtime recovery is blocked by an edge-window interlock acquired during lock handoff"
 assert_root_secret_directory "${REFUNDDESK_CONTROL_ROOT}"
 
 [[ "${REFUNDDESK_QUIESCE_RECOVERY_LAUNCHER_CONTRACT:-}" == "${RELEASE_CONTRACT_VERSION}" &&
@@ -66,10 +105,12 @@ expected_compose_file="${current_source}/deploy/lightsail/compose.yml"
 [[ "${REFUNDDESK_COMPOSE_FILE}" == "${expected_compose_file}" ]] ||
   die "recovery Compose file is not bound to the canonical active source"
 assert_root_control_file "${REFUNDDESK_COMPOSE_FILE}"
-mapfile -t release_lines <"${RELEASE_ENV_FILE}"
-(( ${#release_lines[@]} == 2 )) &&
-  [[ "${release_lines[0]}" == "REFUNDDESK_IMAGE_TAG=sandbox-${revision}" ]] &&
-  [[ "${release_lines[1]}" == "REFUNDDESK_REVISION=${revision}" ]] ||
+release_worker_mode="$(
+  standard_release_environment_worker_mode \
+    "${REFUNDDESK_COMPOSE_FILE}" \
+    "${RELEASE_ENV_FILE}" \
+    "${revision}"
+)" ||
   die "release environment changed before runtime recovery"
 
 DURABILITY_HELPER="${current_source}/deploy/lightsail/scripts/release-transition-journal.py"
@@ -148,7 +189,15 @@ refunddesk_compose up --detach --no-build --pull never postgres >/dev/null
 wait_for_container_health postgres 120 ||
   die "PostgreSQL did not become healthy during runtime recovery"
 assert_postgres_root_mount_contract
-refunddesk_compose up --detach --no-deps --no-build --pull never verifier worker web >/dev/null
+refunddesk_compose up --no-start --no-deps --no-build --pull never verifier worker web >/dev/null
+worker_container_id="$(exact_project_service_container_id worker)" ||
+  die "runtime recovery did not reserve exactly one worker container"
+worker_inspection="$(docker inspect "${worker_container_id}")" ||
+  die "runtime recovery worker mode cannot be inspected"
+assert_standard_worker_runtime_mode_from_inspection \
+  "${worker_inspection}" \
+  "${release_worker_mode}"
+refunddesk_compose start verifier worker web >/dev/null
 wait_for_container_health verifier 90 ||
   die "verifier did not become healthy during runtime recovery"
 wait_for_container_health worker 180 ||

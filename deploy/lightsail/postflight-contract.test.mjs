@@ -249,9 +249,12 @@ async function makeFixture(base, scenario) {
     0o644,
   );
   await symlink(currentTarget, join(root, "current"), "dir");
+  const releaseEnvironment = `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\n${scenario.releaseWorkerRuntimeMode ? `REFUNDDESK_WORKER_RUNTIME_MODE=${scenario.releaseWorkerRuntimeMode}\n` : ""}`;
   await writeMode(
     join(config, "release.env"),
-    `REFUNDDESK_IMAGE_TAG=sandbox-${revision}\nREFUNDDESK_REVISION=${revision}\n`,
+    scenario.releaseEnvironmentMissingFinalLf
+      ? releaseEnvironment.slice(0, -1)
+      : releaseEnvironment,
   );
   await writeMode(
     join(config, "platform.env"),
@@ -462,7 +465,7 @@ test(
 
 test(
   "Linux fixtures prove exact output, fail-closed cases, redaction and non-mutation",
-  { skip: process.platform !== "linux", timeout: 180_000 },
+  { skip: process.platform !== "linux", timeout: 300_000 },
   async (t) => {
     for (const scenario of selectedScenarios) {
       await t.test(scenario.name, async () => {

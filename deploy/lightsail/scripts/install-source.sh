@@ -17,6 +17,8 @@ REVISION=""
 EXPECTED_SHA256=""
 TEMP_SOURCE=""
 CONTROL_PLANE_DURABILITY_HELPER=""
+RECOVER_QUIESCED_RUNTIME=true
+OPERATOR_LOCK_INHERITED=false
 readonly RELEASE_CONTRACT_VERSION="2"
 readonly STABLE_RELEASE_LAUNCHER="/usr/local/sbin/refunddesk-release"
 readonly STABLE_RELEASE_FENCE="/usr/local/sbin/refunddesk-release-fence"
@@ -287,7 +289,7 @@ install_stable_control_plane() {
 
 usage() {
   printf '%s\n' \
-    'Usage: sudo bash install-source.sh --archive FILE --revision FULL_SHA --expected-sha256 SHA256'
+    'Usage: sudo bash install-source.sh --archive FILE --revision FULL_SHA --expected-sha256 SHA256 [--no-quiesce-recovery] [--operator-lock-inherited]'
 }
 
 while (( $# > 0 )); do
@@ -307,6 +309,16 @@ while (( $# > 0 )); do
       EXPECTED_SHA256="$2"
       shift 2
       ;;
+    --no-quiesce-recovery)
+      RECOVER_QUIESCED_RUNTIME=false
+      shift
+      ;;
+    --operator-lock-inherited)
+      [[ "${OPERATOR_LOCK_INHERITED}" == "false" ]] ||
+        die "--operator-lock-inherited may be supplied only once"
+      OPERATOR_LOCK_INHERITED=true
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -321,8 +333,14 @@ require_root
 for command in bash cmp find git grep jq python3 sha256sum systemctl tar zstd; do
   require_command "${command}"
 done
-acquire_operator_lock
+if [[ "${OPERATOR_LOCK_INHERITED}" == "true" ]]; then
+  adopt_inherited_operator_lock
+else
+  acquire_operator_lock
+fi
 if [[ -e "${QUIESCE_JOURNAL}" || -L "${QUIESCE_JOURNAL}" ]]; then
+  [[ "${RECOVER_QUIESCED_RUNTIME}" == "true" ]] ||
+    die "runtime quiescence journal is present and automatic recovery is forbidden"
   assert_root_control_entry \
     "${STABLE_RECOVERY_LAUNCHER}" \
     "${REFUNDDESK_CONTROL_PLANE_LINK}/scripts/quiesce-recovery-launcher.sh"
