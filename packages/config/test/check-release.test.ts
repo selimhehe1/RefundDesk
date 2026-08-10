@@ -199,6 +199,16 @@ describe("release configuration file check", () => {
     });
   });
 
+  it("reserves incident-admission mode for the isolated promotion runner", async () => {
+    const files = await createReleaseFiles({
+      workerEnvironment: { REFUNDDESK_WORKER_RUNTIME_MODE: "incident_admission" },
+    });
+
+    await expect(checkReleaseConfiguration(files.hostedPaths, files.directory)).rejects.toThrow(
+      "STANDARD_RELEASE_WORKER_RUNTIME_MODE_REQUIRED",
+    );
+  });
+
   it("accepts a canonical viewer origin distinct from the Caddy origin host", async () => {
     const files = await createReleaseFiles();
 

@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { QUEUES } from "../src/jobs.js";
 import type { Clock, ReconciliationCheckpoint, ScannableWorkerInstallation } from "../src/ports.js";
 import {
   createPgBossRuntimeReadinessSource,
   DEFAULT_WORKER_READINESS_THRESHOLDS,
+  evaluateIncidentAdmissionReadiness,
   evaluateWorkerReadiness,
   EXPECTED_WORKER_CONSUMERS,
   EXPECTED_WORKER_SCHEDULES,
@@ -44,6 +45,17 @@ function healthySchedules(): WorkerScheduleSnapshot[] {
   }));
 }
 
+function healthyIncidentConsumers(): WorkerConsumerSnapshot[] {
+  return Array.from({ length: 4 }, () => ({
+    name: QUEUES.executeRefund,
+    state: "active" as const,
+    count: 0,
+    createdOn: NOW_MS - 60_000,
+    lastFetchedOn: NOW_MS - 1_000,
+    lastJobStartedOn: null,
+  }));
+}
+
 function runtime(
   overrides: Partial<WorkerRuntimeSnapshot> = {},
 ): WorkerReadinessDependencies["runtime"] {
@@ -52,6 +64,7 @@ function runtime(
       Promise.resolve({
         stopping: false,
         globalLiveEnabled: false,
+        schedulingEnabled: true,
         consumers: healthyConsumers(),
         schedules: healthySchedules(),
         ...overrides,
@@ -393,6 +406,7 @@ describe("worker runtime readiness", () => {
       },
       isStopping: () => stopping,
       isGlobalLiveEnabled: () => false,
+      schedulingEnabled: true,
     });
 
     const snapshot = await source.snapshot();
@@ -410,6 +424,28 @@ describe("worker runtime readiness", () => {
     ]);
     expect(snapshot.schedules).toEqual([healthySchedules()[0]]);
     expect(JSON.stringify(snapshot)).not.toContain("sensitive");
+  });
+
+  it("does not query persistent schedules when the incident scheduler engine is disabled", async () => {
+    const getSchedules = vi.fn(() => Promise.resolve(healthySchedules()));
+    const source = createPgBossRuntimeReadinessSource({
+      boss: {
+        getWipData: () => healthyIncidentConsumers(),
+        getSchedules,
+      },
+      isStopping: () => false,
+      isGlobalLiveEnabled: () => false,
+      schedulingEnabled: false,
+    });
+
+    await expect(source.snapshot()).resolves.toEqual({
+      stopping: false,
+      globalLiveEnabled: false,
+      schedulingEnabled: false,
+      consumers: healthyIncidentConsumers(),
+      schedules: [],
+    });
+    expect(getSchedules).not.toHaveBeenCalled();
   });
 });
 
@@ -593,6 +629,64 @@ describe("scanner checkpoint readiness", () => {
       ready: false,
       scanner: "unchecked",
       code: "dependency_unavailable",
+    });
+  });
+});
+
+describe("incident-admission worker readiness", () => {
+  const evaluate = (
+    overrides: Partial<WorkerRuntimeSnapshot> = {},
+  ): ReturnType<typeof evaluateIncidentAdmissionReadiness> =>
+    evaluateIncidentAdmissionReadiness({
+      clock,
+      runtime: {
+        snapshot: () =>
+          Promise.resolve({
+            stopping: false,
+            globalLiveEnabled: false,
+            schedulingEnabled: false,
+            consumers: healthyIncidentConsumers(),
+            schedules: [],
+            ...overrides,
+          }),
+      },
+    });
+
+  it("accepts exactly four active refund-execution consumers and no schedules", async () => {
+    await expect(evaluate()).resolves.toEqual({ ready: true, scanner: "no_installations" });
+  });
+
+  it("rejects every extra or foreign consumer", async () => {
+    await expect(
+      evaluate({
+        consumers: [
+          ...healthyIncidentConsumers(),
+          { ...healthyIncidentConsumers()[0]!, name: QUEUES.processWebhook },
+        ],
+      }),
+    ).resolves.toEqual({
+      ready: false,
+      scanner: "unchecked",
+      code: "consumer_unavailable",
+    });
+    await expect(
+      evaluate({
+        consumers: healthyIncidentConsumers().map((consumer, index) =>
+          index === 0 ? { ...consumer, name: QUEUES.recoverApproved } : consumer,
+        ),
+      }),
+    ).resolves.toEqual({
+      ready: false,
+      scanner: "unchecked",
+      code: "consumer_unavailable",
+    });
+  });
+
+  it("rejects any schedule without consulting scanner state", async () => {
+    await expect(evaluate({ schedules: [healthySchedules()[0]!] })).resolves.toEqual({
+      ready: false,
+      scanner: "unchecked",
+      code: "schedule_mismatch",
     });
   });
 });

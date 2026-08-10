@@ -294,6 +294,9 @@ export async function checkReleaseConfiguration(
   ) {
     throw new Error("PRODUCTION_CONFIGURATION_REQUIRED");
   }
+  if (worker.runtimeMode !== "normal") {
+    throw new Error("STANDARD_RELEASE_WORKER_RUNTIME_MODE_REQUIRED");
+  }
   assertReleaseConfigSeparation({ platform, worker, migration });
 
   if (hostedMode) {

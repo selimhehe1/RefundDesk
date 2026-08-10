@@ -60,6 +60,22 @@ async function request(
 }
 
 describe("worker health server", () => {
+  it("does not expose signed-request authority routes when composition omits that authority", async () => {
+    const server = await start(readyProbe());
+    try {
+      for (const path of [
+        "/internal/v1/signed-requests/verify",
+        "/internal/v1/signed-requests/attest",
+      ]) {
+        const result = await request(server, path, { method: "POST" });
+        expect(result.response.status).toBe(404);
+        expect(result.body).toBe('{"status":"not_found"}');
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves generic, non-cacheable liveness without evaluating readiness", async () => {
     let readinessCalls = 0;
     const server = await start({

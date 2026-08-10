@@ -41,6 +41,7 @@ const webhookSecret = z.string().regex(/^whsec_[A-Za-z0-9_]+$/u);
 const postgresUrl = z.string().min(1);
 const workerHealthHost = z.enum(["127.0.0.1", "0.0.0.0", "::1", "::"]).default("127.0.0.1");
 const workerHealthPort = z.coerce.number().int().min(1).max(65_535).default(3101);
+const workerRuntimeMode = z.enum(["normal", "incident_admission"]).default("normal");
 const signedRequestVerifierUrl = z
   .url()
   .default("http://127.0.0.1:3101/internal/v1/signed-requests/verify");
@@ -483,6 +484,7 @@ const workerEnvironmentSchema = z
     REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN: base64Key,
     WORKER_HEALTH_HOST: workerHealthHost,
     WORKER_HEALTH_PORT: workerHealthPort,
+    REFUNDDESK_WORKER_RUNTIME_MODE: workerRuntimeMode,
   })
   .superRefine((value, context) => {
     // A previous App signing secret equal to its own current one makes a roll a no-op that
@@ -641,6 +643,7 @@ export interface PlatformConfig extends RuntimeConfig {
 }
 
 export interface WorkerConfig extends RuntimeConfig {
+  readonly runtimeMode: "normal" | "incident_admission";
   readonly workerDatabaseUrl: string;
   readonly pgBossDatabaseUrl: string;
   readonly signedRequestVerifierToken: string;
@@ -814,6 +817,7 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
       "REFUNDDESK_ACTIVE_APPROVAL_ATTESTATION_KEY_VERSION",
       "REFUNDDESK_APPROVAL_ATTESTATION_KEY_ROTATION_STATE",
       "REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN",
+      "REFUNDDESK_WORKER_RUNTIME_MODE",
     ],
   );
   const env = workerEnvironmentSchema.parse(source);
@@ -823,6 +827,7 @@ export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Worke
     workerDatabaseUrl: env.WORKER_DATABASE_URL,
     pgBossDatabaseUrl: env.PGBOSS_DATABASE_URL,
     signedRequestVerifierToken: env.REFUNDDESK_SIGNED_REQUEST_VERIFIER_TOKEN,
+    runtimeMode: env.REFUNDDESK_WORKER_RUNTIME_MODE,
     liveEnabled: false,
     stripe: {
       apiVersion: env.STRIPE_API_VERSION,

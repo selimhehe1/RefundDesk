@@ -5,6 +5,7 @@ import type { WorkerConfig } from "@refunddesk/config";
 import type { WorkerDependencies } from "../src/dependencies.js";
 import { QUEUES } from "../src/jobs.js";
 import {
+  startPgBossIncidentAdmissionWorker,
   startPgBossWithCleanup,
   startPgBossWorker,
   type PgBossLifecycle,
@@ -17,6 +18,7 @@ const operationalMonitor = vi.hoisted(() => ({
 }));
 
 const pgBoss = vi.hoisted(() => ({
+  construct: vi.fn<(options: unknown) => void>(),
   createQueue: vi.fn<(name: string, options: unknown) => Promise<void>>(),
   getSchedules: vi.fn<() => Promise<never[]>>(),
   getWipData: vi.fn<() => never[]>(),
@@ -30,6 +32,9 @@ const pgBoss = vi.hoisted(() => ({
 
 vi.mock("pg-boss", () => ({
   PgBoss: class {
+    constructor(options: unknown) {
+      pgBoss.construct(options);
+    }
     createQueue = pgBoss.createQueue;
     getSchedules = pgBoss.getSchedules;
     getWipData = pgBoss.getWipData;
@@ -49,6 +54,7 @@ vi.mock("../src/operational-monitor.js", () => ({
 const workerConfig = {
   liveEnabled: false,
   pgBossDatabaseUrl: "postgresql://queue@localhost/refunddesk",
+  runtimeMode: "normal",
 } as WorkerConfig;
 
 function workerDependencies() {
@@ -228,5 +234,42 @@ describe("pg-boss startup lifecycle", () => {
       graceful: false,
       timeout: 5_000,
     });
+  });
+
+  it("starts the incident-admission runtime with only four refund consumers and no lateral startup work", async () => {
+    const { dependencies, listScannableInstallations } = workerDependencies();
+    const worker = await startPgBossIncidentAdmissionWorker(
+      { ...workerConfig, runtimeMode: "incident_admission" },
+      dependencies,
+    );
+
+    expect(pgBoss.construct).toHaveBeenCalledWith(
+      expect.objectContaining({
+        application_name: "refunddesk-worker-incident-admission",
+        schedule: false,
+        supervise: false,
+        useListenNotify: false,
+      }),
+    );
+    expect(pgBoss.createQueue).not.toHaveBeenCalled();
+    expect(pgBoss.schedule).not.toHaveBeenCalled();
+    expect(pgBoss.send).not.toHaveBeenCalled();
+    expect(listScannableInstallations).not.toHaveBeenCalled();
+    expect(pgBoss.work).toHaveBeenCalledTimes(1);
+    expect(pgBoss.work).toHaveBeenCalledWith(
+      QUEUES.executeRefund,
+      { batchSize: 1, localConcurrency: 4 },
+      expect.any(Function),
+    );
+    await worker.stop();
+    expect(pgBoss.stop).toHaveBeenCalledWith({ graceful: true, timeout: 30_000 });
+  });
+
+  it("refuses to start the incident-admission runtime in normal mode", async () => {
+    const { dependencies } = workerDependencies();
+    await expect(startPgBossIncidentAdmissionWorker(workerConfig, dependencies)).rejects.toThrow(
+      "INCIDENT_ADMISSION_RUNTIME_MODE_REQUIRED",
+    );
+    expect(pgBoss.construct).not.toHaveBeenCalled();
   });
 });

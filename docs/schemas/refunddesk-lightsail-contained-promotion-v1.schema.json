@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.example/schemas/refunddesk-lightsail-contained-promotion-v1.schema.json",
+  "title": "RefundDesk Lightsail contained promotion evidence v1",
+  "oneOf": [{ "$ref": "#/$defs/passEvidence" }, { "$ref": "#/$defs/nonPassEvidence" }],
+  "$defs": {
+    "passEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "completedAt",
+        "containment",
+        "database",
+        "fromRevision",
+        "inputs",
+        "kind",
+        "nonce",
+        "operationStartedAt",
+        "phase",
+        "redaction",
+        "result",
+        "resumed",
+        "revision",
+        "runtime",
+        "schemaVersion",
+        "startedAt"
+      ],
+      "properties": {
+        "code": { "const": "PASS_CONTAINED_CANDIDATE_PROMOTED" },
+        "completedAt": { "$ref": "#/$defs/timestamp" },
+        "containment": { "$ref": "#/$defs/containment" },
+        "database": { "$ref": "#/$defs/database" },
+        "fromRevision": { "$ref": "#/$defs/revision" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "kind": { "const": "refunddesk-contained-promotion" },
+        "nonce": { "$ref": "#/$defs/sha256" },
+        "operationStartedAt": { "$ref": "#/$defs/timestamp" },
+        "phase": { "const": "complete" },
+        "redaction": { "$ref": "#/$defs/redaction" },
+        "result": { "const": "PASS" },
+        "resumed": { "type": "boolean" },
+        "revision": { "$ref": "#/$defs/revision" },
+        "runtime": { "$ref": "#/$defs/runtime" },
+        "schemaVersion": { "const": 1 },
+        "startedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "nonPassEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "completedAt",
+        "effects",
+        "fromRevision",
+        "inputs",
+        "kind",
+        "nonce",
+        "operationStartedAt",
+        "phase",
+        "redaction",
+        "result",
+        "revision",
+        "schemaVersion",
+        "startedAt"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "FAIL_CONTAINED_PROMOTION_PRE_COMMIT",
+            "FAIL_POSTFLIGHT_REJECTED_CONTAINED_PROMOTION",
+            "INCOMPLETE_CONTAINED_PROMOTION_POST_COMMIT",
+            "INCOMPLETE_POSTFLIGHT_FOR_CONTAINED_PROMOTION"
+          ]
+        },
+        "completedAt": { "$ref": "#/$defs/timestamp" },
+        "effects": { "$ref": "#/$defs/effects" },
+        "fromRevision": { "$ref": "#/$defs/revision" },
+        "inputs": { "$ref": "#/$defs/inputs" },
+        "kind": { "const": "refunddesk-contained-promotion" },
+        "nonce": { "$ref": "#/$defs/sha256" },
+        "operationStartedAt": { "$ref": "#/$defs/timestamp" },
+        "phase": {
+          "enum": [
+            "pre_journal",
+            "prepared",
+            "contained",
+            "images_loaded",
+            "database_prepared",
+            "candidate_inert",
+            "candidate_verified",
+            "committing",
+            "metadata_committed",
+            "complete",
+            "postflight"
+          ]
+        },
+        "redaction": { "$ref": "#/$defs/redaction" },
+        "result": { "enum": ["FAIL", "INCOMPLETE"] },
+        "revision": { "$ref": "#/$defs/revision" },
+        "schemaVersion": { "const": 1 },
+        "startedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caddyStopped",
+        "liveDisabled",
+        "maintenanceDisabled",
+        "maintenanceStopped",
+        "publicListenersAbsent",
+        "timersDisabled",
+        "verifierHealthy",
+        "webHealthy",
+        "workerStopped"
+      ],
+      "properties": {
+        "caddyStopped": { "const": true },
+        "liveDisabled": { "const": true },
+        "maintenanceDisabled": { "const": true },
+        "maintenanceStopped": { "const": true },
+        "publicListenersAbsent": { "const": true },
+        "timersDisabled": { "const": true },
+        "verifierHealthy": { "const": true },
+        "webHealthy": { "const": true },
+        "workerStopped": { "const": true }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeFinancialJobs",
+        "activeWorkflows",
+        "apiMutationReceipts",
+        "auditEvents",
+        "liveInstallations",
+        "liveTenants",
+        "preparedTransactions",
+        "refundExecutionAttempts",
+        "refundExecutions",
+        "refundRequests",
+        "snapshotSha256",
+        "stable",
+        "systemIdentifier",
+        "unreleasedPaymentGuards",
+        "webhookReceipts"
+      ],
+      "properties": {
+        "activeFinancialJobs": { "$ref": "#/$defs/count" },
+        "activeWorkflows": { "$ref": "#/$defs/count" },
+        "apiMutationReceipts": { "$ref": "#/$defs/count" },
+        "auditEvents": { "$ref": "#/$defs/count" },
+        "liveInstallations": { "$ref": "#/$defs/count" },
+        "liveTenants": { "$ref": "#/$defs/count" },
+        "preparedTransactions": { "$ref": "#/$defs/count" },
+        "refundExecutionAttempts": { "$ref": "#/$defs/count" },
+        "refundExecutions": { "$ref": "#/$defs/count" },
+        "refundRequests": { "$ref": "#/$defs/count" },
+        "snapshotSha256": { "$ref": "#/$defs/sha256" },
+        "stable": { "const": true },
+        "systemIdentifier": { "type": "string", "pattern": "^[1-9][0-9]{17,19}$" },
+        "unreleasedPaymentGuards": { "$ref": "#/$defs/count" },
+        "webhookReceipts": { "$ref": "#/$defs/count" }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caddyStarted",
+        "commitReached",
+        "containmentReasserted",
+        "databaseMigrationAttempted",
+        "edgeChanged",
+        "financialEffectAttempted",
+        "publicServicesStarted",
+        "remotePromotionPassed",
+        "sourceInstalled",
+        "workerStarted"
+      ],
+      "properties": {
+        "caddyStarted": { "const": false },
+        "commitReached": { "type": "boolean" },
+        "containmentReasserted": { "type": "boolean" },
+        "databaseMigrationAttempted": { "type": "boolean" },
+        "edgeChanged": { "const": false },
+        "financialEffectAttempted": { "const": false },
+        "publicServicesStarted": { "const": false },
+        "remotePromotionPassed": { "type": "boolean" },
+        "sourceInstalled": { "const": true },
+        "workerStarted": { "const": false }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleSha256", "manifestSha256", "provenanceSha256", "sourceSha256"],
+      "properties": {
+        "bundleSha256": { "$ref": "#/$defs/sha256" },
+        "manifestSha256": { "$ref": "#/$defs/sha256" },
+        "provenanceSha256": { "$ref": "#/$defs/sha256" },
+        "sourceSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "customerDataPresent",
+        "rawApiKeyPresent",
+        "rawPayloadPresent",
+        "rawSecretPresent",
+        "rawSignaturePresent",
+        "stderrPresent"
+      ],
+      "properties": {
+        "customerDataPresent": { "const": false },
+        "rawApiKeyPresent": { "const": false },
+        "rawPayloadPresent": { "const": false },
+        "rawSecretPresent": { "const": false },
+        "rawSignaturePresent": { "const": false },
+        "stderrPresent": { "const": false }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caddyContainerId",
+        "postgresContainerId",
+        "verifierContainerId",
+        "webContainerId",
+        "workerContainerId",
+        "workerRuntimeMode"
+      ],
+      "properties": {
+        "caddyContainerId": { "$ref": "#/$defs/containerId" },
+        "postgresContainerId": { "$ref": "#/$defs/containerId" },
+        "verifierContainerId": { "$ref": "#/$defs/containerId" },
+        "webContainerId": { "$ref": "#/$defs/containerId" },
+        "workerContainerId": { "$ref": "#/$defs/containerId" },
+        "workerRuntimeMode": { "const": "incident_admission" }
+      }
+    },
+    "containerId": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

@@ -108,10 +108,26 @@ describe("runtime-scoped configuration", () => {
     expect(config.stripe.managedSandboxAccountId).toBe("acct_ManagedSandbox456");
     expect(config.stripe.platformTestEffectKey).toBe("rk_test_platform_effect");
     expect(config.health).toEqual({ host: "127.0.0.1", port: 3101 });
+    expect(config.runtimeMode).toBe("normal");
     expect(config).not.toHaveProperty("databaseUrl");
     expect(config.stripe).not.toHaveProperty("accountTestWebhookSecret");
     expect(config.keys).not.toHaveProperty("fieldV1");
     expect(config.keys).not.toHaveProperty("exportV1");
+  });
+
+  it("accepts only the explicit bounded incident-admission worker runtime mode", () => {
+    expect(
+      loadWorkerConfig({
+        ...workerEnvironment(),
+        REFUNDDESK_WORKER_RUNTIME_MODE: "incident_admission",
+      }).runtimeMode,
+    ).toBe("incident_admission");
+    expect(() =>
+      loadWorkerConfig({
+        ...workerEnvironment(),
+        REFUNDDESK_WORKER_RUNTIME_MODE: "incident-admission",
+      }),
+    ).toThrow();
   });
 
   it("fails closed when production runtimes receive another service's known secrets", () => {

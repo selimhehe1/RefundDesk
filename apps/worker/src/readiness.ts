@@ -124,6 +124,7 @@ export interface WorkerScheduleSnapshot {
 export interface WorkerRuntimeSnapshot {
   readonly stopping: boolean;
   readonly globalLiveEnabled: boolean;
+  readonly schedulingEnabled: boolean;
   readonly consumers: readonly WorkerConsumerSnapshot[];
   readonly schedules: readonly WorkerScheduleSnapshot[];
 }
@@ -141,6 +142,7 @@ export interface PgBossRuntimeReadinessSourceOptions {
   readonly boss: PgBossReadinessClient;
   readonly isStopping: () => boolean;
   readonly isGlobalLiveEnabled: () => boolean;
+  readonly schedulingEnabled: boolean;
 }
 
 /**
@@ -161,16 +163,19 @@ export function createPgBossRuntimeReadinessSource(
         lastFetchedOn: consumer.lastFetchedOn,
         lastJobStartedOn: consumer.lastJobStartedOn,
       }));
-      const schedules = (await options.boss.getSchedules()).map((schedule) => ({
-        name: schedule.name,
-        key: schedule.key,
-        cron: schedule.cron,
-        timezone: schedule.timezone,
-        ...("data" in schedule ? { data: schedule.data } : {}),
-      }));
+      const schedules = options.schedulingEnabled
+        ? (await options.boss.getSchedules()).map((schedule) => ({
+            name: schedule.name,
+            key: schedule.key,
+            cron: schedule.cron,
+            timezone: schedule.timezone,
+            ...("data" in schedule ? { data: schedule.data } : {}),
+          }))
+        : [];
       return {
         stopping: options.isStopping(),
         globalLiveEnabled: options.isGlobalLiveEnabled(),
+        schedulingEnabled: options.schedulingEnabled,
         consumers,
         schedules,
       };
@@ -222,6 +227,11 @@ export interface WorkerReadinessDependencies {
   readonly clock: Clock;
   readonly thresholds?: Partial<WorkerReadinessThresholds>;
 }
+
+export type IncidentAdmissionReadinessDependencies = Pick<
+  WorkerReadinessDependencies,
+  "runtime" | "clock" | "thresholds"
+>;
 
 type ScannerCoverageResult =
   | {
@@ -470,6 +480,9 @@ export async function evaluateWorkerReadiness(
       code: "live_enabled",
     };
   }
+  if (!runtime.schedulingEnabled) {
+    return { ready: false, scanner: "unchecked", code: "schedule_mismatch" };
+  }
   if (!consumersAreReady(runtime.consumers, nowMs, thresholds)) {
     return {
       ready: false,
@@ -505,6 +518,64 @@ export async function evaluateWorkerReadiness(
       code: "dependency_unavailable",
     };
   }
+}
+
+/**
+ * Readiness for the one-shot ADR 0036 runtime. It deliberately has no scanner
+ * dependency: the incident runtime may consume only the refund-execution queue
+ * and must expose neither schedules nor any other consumer.
+ */
+export async function evaluateIncidentAdmissionReadiness(
+  dependencies: IncidentAdmissionReadinessDependencies,
+): Promise<WorkerReadinessResult> {
+  let thresholds: WorkerReadinessThresholds;
+  let runtime: WorkerRuntimeSnapshot;
+  let nowMs: number;
+  try {
+    thresholds = resolveThresholds(dependencies.thresholds);
+    runtime = await dependencies.runtime.snapshot();
+    nowMs = dependencies.clock.now().getTime();
+  } catch {
+    return { ready: false, scanner: "unchecked", code: "dependency_unavailable" };
+  }
+  if (!Number.isFinite(nowMs)) {
+    return { ready: false, scanner: "unchecked", code: "dependency_unavailable" };
+  }
+  if (runtime.stopping) {
+    return { ready: false, scanner: "unchecked", code: "process_stopping" };
+  }
+  if (runtime.globalLiveEnabled) {
+    return { ready: false, scanner: "unchecked", code: "live_enabled" };
+  }
+  if (runtime.schedulingEnabled) {
+    return { ready: false, scanner: "unchecked", code: "schedule_mismatch" };
+  }
+  const consumers = runtime.consumers;
+  const expectedCount = WORKER_CONSUMER_CONCURRENCY[QUEUES.executeRefund];
+  if (
+    runtime.schedules.length !== 0 ||
+    consumers.length !== expectedCount ||
+    consumers.some(
+      (consumer) =>
+        consumer.name !== QUEUES.executeRefund ||
+        !consumerIsHealthy(consumer, nowMs, 10 * MINUTE_MILLISECONDS, thresholds),
+    )
+  ) {
+    return {
+      ready: false,
+      scanner: "unchecked",
+      code: runtime.schedules.length === 0 ? "consumer_unavailable" : "schedule_mismatch",
+    };
+  }
+  return { ready: true, scanner: "no_installations" };
+}
+
+export function createIncidentAdmissionReadinessProbe(
+  dependencies: IncidentAdmissionReadinessDependencies,
+): WorkerReadinessProbe {
+  return {
+    check: () => evaluateIncidentAdmissionReadiness(dependencies),
+  };
 }
 
 export function createWorkerReadinessProbe(

@@ -24,6 +24,7 @@ import {
 } from "./operational-monitor.js";
 import { handleReconciliationScanJob } from "./reconciliation-scanner.js";
 import {
+  createIncidentAdmissionReadinessProbe,
   createPgBossRuntimeReadinessSource,
   createWorkerReadinessProbe,
   WORKER_CONSUMER_CONCURRENCY,
@@ -140,6 +141,11 @@ export class WorkerQueuePublisher {
 
 export interface RunningWorker {
   readonly publisher: WorkerQueuePublisher;
+  readonly readiness: WorkerReadinessProbe;
+  stop(): Promise<void>;
+}
+
+export interface RunningIncidentAdmissionWorker {
   readonly readiness: WorkerReadinessProbe;
   stop(): Promise<void>;
 }
@@ -297,6 +303,7 @@ export async function startPgBossWorker(
       boss,
       isStopping: () => stopping,
       isGlobalLiveEnabled: () => config.liveEnabled,
+      schedulingEnabled: true,
     }),
     store: dependencies.store,
     clock: dependencies.clock,
@@ -328,6 +335,64 @@ export async function startPgBossWorker(
       } finally {
         await boss.stop({ graceful: true, timeout: 30_000 });
       }
+    },
+  };
+}
+
+export async function startPgBossIncidentAdmissionWorker(
+  config: WorkerConfig,
+  dependencies: WorkerDependencies,
+): Promise<RunningIncidentAdmissionWorker> {
+  assertPilotConfiguration(config);
+  if (config.runtimeMode !== "incident_admission") {
+    throw new Error("INCIDENT_ADMISSION_RUNTIME_MODE_REQUIRED");
+  }
+  const boss = new PgBoss({
+    connectionString: config.pgBossDatabaseUrl,
+    application_name: "refunddesk-worker-incident-admission",
+    createSchema: false,
+    migrate: false,
+    schedule: false,
+    supervise: false,
+    useListenNotify: false,
+  });
+  boss.on("error", () => {
+    dependencies.logger.error({ code: "PGBOSS_ERROR" }, "pg-boss emitted an error");
+  });
+  boss.on("warning", () => {
+    dependencies.logger.warn({ code: "PGBOSS_WARNING" }, "pg-boss emitted an operational warning");
+  });
+
+  await startPgBossWithCleanup(boss, async () => {
+    await boss.work<unknown>(
+      QUEUES.executeRefund,
+      {
+        batchSize: 1,
+        localConcurrency: WORKER_CONSUMER_CONCURRENCY[QUEUES.executeRefund],
+      },
+      (jobs) => handleOne(jobs, (data) => handleRefundExecutionJob(data, dependencies)),
+    );
+  });
+
+  let stopping = false;
+  const readiness = createIncidentAdmissionReadinessProbe({
+    runtime: createPgBossRuntimeReadinessSource({
+      boss,
+      isStopping: () => stopping,
+      isGlobalLiveEnabled: () => config.liveEnabled,
+      schedulingEnabled: false,
+    }),
+    clock: dependencies.clock,
+  });
+  dependencies.logger.info(
+    { queue: QUEUES.executeRefund, runtimeMode: "incident_admission" },
+    "RefundDesk incident-admission worker started",
+  );
+  return {
+    readiness,
+    async stop(): Promise<void> {
+      stopping = true;
+      await boss.stop({ graceful: true, timeout: 30_000 });
     },
   };
 }

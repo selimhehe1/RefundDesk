@@ -1,0 +1,576 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.invalid/schemas/refunddesk-lightsail-incident-admission-v1.schema.json",
+  "title": "RefundDesk current Stripe binding incident admission v1",
+  "oneOf": [{ "$ref": "#/$defs/capture" }, { "$ref": "#/$defs/remote" }],
+  "$defs": {
+    "remote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "nonce",
+        "expectedRevision",
+        "repositoryHead",
+        "startedAt",
+        "completedAt",
+        "exitCode",
+        "result",
+        "code",
+        "diagnostics",
+        "promotion",
+        "marker",
+        "bindings",
+        "proof",
+        "containment",
+        "mutations",
+        "postIncidentBaseline",
+        "redaction"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "kind": { "const": "refunddesk.lightsail.incident-admission" },
+        "nonce": { "$ref": "#/$defs/lowerHex64" },
+        "expectedRevision": { "$ref": "#/$defs/lowerHex40" },
+        "repositoryHead": { "$ref": "#/$defs/lowerHex40" },
+        "startedAt": { "$ref": "#/$defs/timestamp" },
+        "completedAt": { "$ref": "#/$defs/timestamp" },
+        "exitCode": { "enum": [0, 20, 21] },
+        "result": { "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+        "code": { "$ref": "#/$defs/resultCode" },
+        "diagnostics": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/diagnostic" }
+        },
+        "promotion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidateRevision",
+            "evidenceSha256",
+            "bundleSha256",
+            "manifestSha256",
+            "sourceSha256",
+            "provenanceSha256",
+            "postflightAfterPromotion",
+            "contained"
+          ],
+          "properties": {
+            "candidateRevision": { "$ref": "#/$defs/lowerHex40" },
+            "evidenceSha256": { "$ref": "#/$defs/lowerHex64" },
+            "bundleSha256": { "$ref": "#/$defs/lowerHex64" },
+            "manifestSha256": { "$ref": "#/$defs/lowerHex64" },
+            "sourceSha256": { "$ref": "#/$defs/lowerHex64" },
+            "provenanceSha256": { "$ref": "#/$defs/lowerHex64" },
+            "postflightAfterPromotion": { "type": "boolean" },
+            "contained": { "type": "boolean" }
+          }
+        },
+        "marker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "resumed",
+            "markerTransitions",
+            "operationBound",
+            "sameIdempotencyKey",
+            "complete"
+          ],
+          "properties": {
+            "state": { "$ref": "#/$defs/markerState" },
+            "resumed": { "type": "boolean" },
+            "markerTransitions": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "operationBound": { "type": "boolean" },
+            "sameIdempotencyKey": { "type": "boolean" },
+            "complete": { "type": "boolean" }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "filesMode0600",
+            "accountBindingsExact",
+            "managedSandboxReadMatches",
+            "managedSandboxEffectMatches",
+            "stripeAppSigningMatches",
+            "predecessorBytesRetested"
+          ],
+          "properties": {
+            "filesMode0600": { "type": "boolean" },
+            "accountBindingsExact": { "type": "boolean" },
+            "managedSandboxReadMatches": { "type": "boolean" },
+            "managedSandboxEffectMatches": { "type": "boolean" },
+            "stripeAppSigningMatches": { "type": "boolean" },
+            "predecessorBytesRetested": { "const": false }
+          }
+        },
+        "proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workerStartedPrivately",
+            "readPaymentIntentSucceeded",
+            "readChargeSucceeded",
+            "readRefundCreateDenied",
+            "denialRefundSetUnchanged",
+            "appSigningAccepted",
+            "unrelatedSigningRejected",
+            "requesterApproverDistinct",
+            "workflowCount",
+            "refundCount",
+            "deterministicIdempotency",
+            "ambiguousResumeSameKey",
+            "terminalReconciled",
+            "guardReleased",
+            "workerStoppedAfter"
+          ],
+          "properties": {
+            "workerStartedPrivately": { "type": "boolean" },
+            "readPaymentIntentSucceeded": { "type": "boolean" },
+            "readChargeSucceeded": { "type": "boolean" },
+            "readRefundCreateDenied": { "type": "boolean" },
+            "denialRefundSetUnchanged": { "type": "boolean" },
+            "appSigningAccepted": { "type": "boolean" },
+            "unrelatedSigningRejected": { "type": "boolean" },
+            "requesterApproverDistinct": { "type": "boolean" },
+            "workflowCount": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "refundCount": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "deterministicIdempotency": { "type": "boolean" },
+            "ambiguousResumeSameKey": { "type": "boolean" },
+            "terminalReconciled": { "type": "boolean" },
+            "guardReleased": { "type": "boolean" },
+            "workerStoppedAfter": { "type": "boolean" }
+          }
+        },
+        "containment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourceExact",
+            "liveDisabled",
+            "financialBaselineQuiescent",
+            "financialDeltaExact",
+            "coreStable",
+            "caddyStopped",
+            "workerStopped",
+            "maintenanceStopped",
+            "publicListenersClosed",
+            "firewallClosed",
+            "markerComplete"
+          ],
+          "properties": {
+            "sourceExact": { "type": "boolean" },
+            "liveDisabled": { "type": "boolean" },
+            "financialBaselineQuiescent": { "type": "boolean" },
+            "financialDeltaExact": { "type": "boolean" },
+            "coreStable": { "type": "boolean" },
+            "caddyStopped": { "type": "boolean" },
+            "workerStopped": { "type": "boolean" },
+            "maintenanceStopped": { "type": "boolean" },
+            "publicListenersClosed": { "type": "boolean" },
+            "firewallClosed": { "type": "boolean" },
+            "markerComplete": { "type": "boolean" }
+          }
+        },
+        "mutations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "workerStarts",
+            "workerStops",
+            "markerTransitions",
+            "workflowsCreated",
+            "refundsCreated"
+          ],
+          "properties": {
+            "workerStarts": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "workerStops": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "markerTransitions": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "workflowsCreated": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "refundsCreated": { "type": "integer", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "postIncidentBaseline": {
+          "oneOf": [{ "$ref": "#/$defs/postIncidentBaseline" }, { "type": "null" }]
+        },
+        "redaction": { "$ref": "#/$defs/redaction" }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admission",
+        "awsControlPlane",
+        "capturedAt",
+        "code",
+        "exitCode",
+        "finalPostflight",
+        "kind",
+        "postIncidentBaseline",
+        "provenance",
+        "redaction",
+        "remote",
+        "remoteDocument",
+        "result",
+        "schemaVersion",
+        "validUntil"
+      ],
+      "properties": {
+        "admission": {
+          "enum": ["ADMISSIBLE_CURRENT_STRIPE_BINDING_INCIDENT", "NOT_ADMITTED", "FIXTURE_ONLY"]
+        },
+        "awsControlPlane": { "$ref": "#/$defs/captureAwsControlPlane" },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "code": { "$ref": "#/$defs/resultCode" },
+        "exitCode": { "enum": [0, 20, 21] },
+        "finalPostflight": { "$ref": "#/$defs/finalPostflight" },
+        "kind": { "const": "refunddesk.lightsail.incident-admission.capture" },
+        "postIncidentBaseline": { "$ref": "#/$defs/postIncidentBaseline" },
+        "provenance": { "$ref": "#/$defs/captureProvenance" },
+        "redaction": { "$ref": "#/$defs/redaction" },
+        "remote": { "$ref": "#/$defs/remote" },
+        "remoteDocument": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exitCode", "sha256"],
+          "properties": {
+            "exitCode": { "enum": [0, 20, 21] },
+            "sha256": { "$ref": "#/$defs/lowerHex64" }
+          }
+        },
+        "result": { "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+        "schemaVersion": { "const": 1 },
+        "validUntil": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "captureAwsControlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountMatches",
+        "firewallClosedAfter",
+        "firewallClosedBefore",
+        "firewallUnchanged",
+        "instanceMatches",
+        "regionMatches",
+        "targetId"
+      ],
+      "properties": {
+        "accountMatches": { "const": true },
+        "firewallClosedAfter": { "const": true },
+        "firewallClosedBefore": { "const": true },
+        "firewallUnchanged": { "const": true },
+        "instanceMatches": { "const": true },
+        "regionMatches": { "const": true },
+        "targetId": { "const": "refunddesk-sandbox-paris@eu-west-3" }
+      }
+    },
+    "captureProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dashboardAttestationSha256",
+        "fixtureInputSha256",
+        "fixtureOnly",
+        "postflightBeforeSha256",
+        "promotionEvidenceSha256",
+        "repositoryHead",
+        "sources",
+        "transportInputsPinned"
+      ],
+      "properties": {
+        "dashboardAttestationSha256": { "$ref": "#/$defs/lowerHex64" },
+        "fixtureInputSha256": { "$ref": "#/$defs/lowerHex64" },
+        "fixtureOnly": { "type": "boolean" },
+        "postflightBeforeSha256": { "$ref": "#/$defs/lowerHex64" },
+        "promotionEvidenceSha256": { "$ref": "#/$defs/lowerHex64" },
+        "repositoryHead": { "$ref": "#/$defs/lowerHex40" },
+        "sources": { "$ref": "#/$defs/captureSources" },
+        "transportInputsPinned": { "const": true }
+      }
+    },
+    "captureSources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "admissionAdr",
+        "admissionRunner",
+        "admissionSchema",
+        "admissionValidator",
+        "admissionWrapper",
+        "compose",
+        "hostCommand",
+        "postflightObserver",
+        "postflightSchema",
+        "postflightValidator",
+        "postflightWrapper",
+        "promotionRunner",
+        "promotionSchema",
+        "promotionValidator",
+        "proofClient"
+      ],
+      "properties": {
+        "admissionAdr": { "$ref": "#/$defs/sourceRecord" },
+        "admissionRunner": { "$ref": "#/$defs/sourceRecord" },
+        "admissionSchema": { "$ref": "#/$defs/sourceRecord" },
+        "admissionValidator": { "$ref": "#/$defs/sourceRecord" },
+        "admissionWrapper": { "$ref": "#/$defs/sourceRecord" },
+        "compose": { "$ref": "#/$defs/sourceRecord" },
+        "hostCommand": { "$ref": "#/$defs/sourceRecord" },
+        "postflightObserver": { "$ref": "#/$defs/sourceRecord" },
+        "postflightSchema": { "$ref": "#/$defs/sourceRecord" },
+        "postflightValidator": { "$ref": "#/$defs/sourceRecord" },
+        "postflightWrapper": { "$ref": "#/$defs/sourceRecord" },
+        "promotionRunner": { "$ref": "#/$defs/sourceRecord" },
+        "promotionSchema": { "$ref": "#/$defs/sourceRecord" },
+        "promotionValidator": { "$ref": "#/$defs/sourceRecord" },
+        "proofClient": { "$ref": "#/$defs/sourceRecord" }
+      }
+    },
+    "sourceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gitObject", "sha256"],
+      "properties": {
+        "gitObject": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/lowerHex40" }]
+        },
+        "sha256": { "$ref": "#/$defs/lowerHex64" }
+      }
+    },
+    "finalPostflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "awsControlPlane",
+        "candidateBinding",
+        "capturedAt",
+        "firewallClosed",
+        "officialValidation",
+        "posture",
+        "postIncidentBaselineSha256",
+        "provenance",
+        "revision",
+        "sha256",
+        "validUntil",
+        "workerRuntimeMode"
+      ],
+      "properties": {
+        "awsControlPlane": { "$ref": "#/$defs/finalPostflightAws" },
+        "candidateBinding": { "$ref": "#/$defs/finalCandidateBinding" },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "firewallClosed": { "const": true },
+        "officialValidation": { "const": true },
+        "posture": { "const": "COHERENT_CONTAINED" },
+        "postIncidentBaselineSha256": { "$ref": "#/$defs/lowerHex64" },
+        "provenance": { "$ref": "#/$defs/finalPostflightProvenance" },
+        "revision": { "$ref": "#/$defs/lowerHex40" },
+        "sha256": { "$ref": "#/$defs/lowerHex64" },
+        "validUntil": { "$ref": "#/$defs/timestamp" },
+        "workerRuntimeMode": { "const": "incident_admission" }
+      }
+    },
+    "finalPostflightAws": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountMatches",
+        "firewallClosedAfter",
+        "firewallClosedBefore",
+        "firewallUnchanged",
+        "instanceMatches",
+        "instanceRunning",
+        "regionMatches",
+        "targetId"
+      ],
+      "properties": {
+        "accountMatches": { "const": true },
+        "firewallClosedAfter": { "const": true },
+        "firewallClosedBefore": { "const": true },
+        "firewallUnchanged": { "const": true },
+        "instanceMatches": { "const": true },
+        "instanceRunning": { "const": true },
+        "regionMatches": { "const": true },
+        "targetId": { "const": "refunddesk-sandbox-paris@eu-west-3" }
+      }
+    },
+    "finalCandidateBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caddyContainerIdSha256",
+        "postgresContainerIdSha256",
+        "systemIdentifierSha256",
+        "verifierContainerIdSha256",
+        "webContainerIdSha256",
+        "workerContainerIdSha256"
+      ],
+      "properties": {
+        "caddyContainerIdSha256": { "$ref": "#/$defs/lowerHex64" },
+        "postgresContainerIdSha256": { "$ref": "#/$defs/lowerHex64" },
+        "systemIdentifierSha256": { "$ref": "#/$defs/lowerHex64" },
+        "verifierContainerIdSha256": { "$ref": "#/$defs/lowerHex64" },
+        "webContainerIdSha256": { "$ref": "#/$defs/lowerHex64" },
+        "workerContainerIdSha256": { "$ref": "#/$defs/lowerHex64" }
+      }
+    },
+    "finalPostflightProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtureOnly",
+        "observer",
+        "remoteDocumentSha256",
+        "repositoryHead",
+        "revisionComposeVerified",
+        "schema",
+        "transportInputsPinned",
+        "validator",
+        "wrapper"
+      ],
+      "properties": {
+        "fixtureOnly": { "type": "boolean" },
+        "observer": { "$ref": "#/$defs/sourceRecord" },
+        "remoteDocumentSha256": { "$ref": "#/$defs/lowerHex64" },
+        "repositoryHead": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/lowerHex40" }]
+        },
+        "revisionComposeVerified": { "const": true },
+        "schema": { "$ref": "#/$defs/sourceRecord" },
+        "transportInputsPinned": { "const": true },
+        "validator": { "$ref": "#/$defs/sourceRecord" },
+        "wrapper": { "$ref": "#/$defs/sourceRecord" }
+      }
+    },
+    "postIncidentBaseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeFinancialJobs",
+        "auditEvents",
+        "mutationReceipts",
+        "refundExecutionAttempts",
+        "refundExecutions",
+        "refundRequests",
+        "snapshotSha256",
+        "unreleasedPaymentGuards",
+        "webhookReceipts"
+      ],
+      "properties": {
+        "activeFinancialJobs": { "type": "integer", "minimum": 0 },
+        "auditEvents": { "type": "integer", "minimum": 0 },
+        "mutationReceipts": { "type": "integer", "minimum": 0 },
+        "refundExecutionAttempts": { "type": "integer", "minimum": 0 },
+        "refundExecutions": { "type": "integer", "minimum": 0 },
+        "refundRequests": { "type": "integer", "minimum": 0 },
+        "snapshotSha256": { "$ref": "#/$defs/lowerHex64" },
+        "unreleasedPaymentGuards": { "type": "integer", "minimum": 0 },
+        "webhookReceipts": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "lowerHex40": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "lowerHex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "markerState": {
+      "enum": [
+        "absent",
+        "prepared",
+        "proof_started",
+        "proof_observed",
+        "contained_verified",
+        "complete",
+        "invalid"
+      ]
+    },
+    "diagnostic": {
+      "enum": [
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "SOURCE_IDENTITY_UNAVAILABLE",
+        "SOURCE_IDENTITY_INVALID",
+        "INPUT_INVALID",
+        "DASHBOARD_AUTHORITY_CHANGED",
+        "BINDING_UNAVAILABLE",
+        "NEW_ROTATION_REQUIRED",
+        "ADMISSION_AUTHORITY_EXPIRED",
+        "CONTROL_STATE_UNAVAILABLE",
+        "MARKER_INVALID",
+        "MARKER_TRANSITION_FAILED",
+        "CONTAINMENT_INVALID",
+        "FINANCIAL_WORK_ACTIVE",
+        "WORKER_START_FAILED",
+        "WORKER_PROOF_FAILED",
+        "WORKER_PROOF_AMBIGUOUS",
+        "WORKER_STOP_FAILED",
+        "CAPTURE_CHANGED",
+        "PROMOTION_INVALID",
+        "PROMOTION_REVISION_MISMATCH",
+        "LOCAL_EVIDENCE_LIFETIME_INVALID"
+      ]
+    },
+    "resultCode": {
+      "enum": [
+        "PASS_INCIDENT_ADMITTED_CONTAINED",
+        "TOOL_UNAVAILABLE",
+        "OPERATOR_LOCK_UNAVAILABLE",
+        "SOURCE_IDENTITY_UNAVAILABLE",
+        "SOURCE_IDENTITY_INVALID",
+        "INPUT_INVALID",
+        "DASHBOARD_AUTHORITY_CHANGED",
+        "BINDING_UNAVAILABLE",
+        "NEW_ROTATION_REQUIRED",
+        "ADMISSION_AUTHORITY_EXPIRED",
+        "CONTROL_STATE_UNAVAILABLE",
+        "MARKER_INVALID",
+        "MARKER_TRANSITION_FAILED",
+        "CONTAINMENT_INVALID",
+        "FINANCIAL_WORK_ACTIVE",
+        "WORKER_START_FAILED",
+        "WORKER_PROOF_FAILED",
+        "WORKER_PROOF_AMBIGUOUS",
+        "WORKER_STOP_FAILED",
+        "CAPTURE_CHANGED",
+        "PROMOTION_INVALID",
+        "PROMOTION_REVISION_MISMATCH",
+        "LOCAL_EVIDENCE_LIFETIME_INVALID"
+      ]
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawSecretPresent",
+        "rawApiKeyPresent",
+        "rawSignaturePresent",
+        "rawPayloadPresent",
+        "customerDataPresent",
+        "stripeIdentifierPresent",
+        "arbitraryPathPresent",
+        "ipAddressPresent",
+        "stderrPresent",
+        "keyDigestPresent"
+      ],
+      "properties": {
+        "rawSecretPresent": { "const": false },
+        "rawApiKeyPresent": { "const": false },
+        "rawSignaturePresent": { "const": false },
+        "rawPayloadPresent": { "const": false },
+        "customerDataPresent": { "const": false },
+        "stripeIdentifierPresent": { "const": false },
+        "arbitraryPathPresent": { "const": false },
+        "ipAddressPresent": { "const": false },
+        "stderrPresent": { "const": false },
+        "keyDigestPresent": { "const": false }
+      }
+    }
+  }
+}
