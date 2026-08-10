@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.local/schemas/refunddesk-edge-operator-image-v1.schema.json",
+  "title": "RefundDesk exact-revision edge operator Docker image archive manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "archive",
+    "build",
+    "createdAt",
+    "image",
+    "kind",
+    "platform",
+    "revision",
+    "schemaVersion",
+    "source",
+    "tools"
+  ],
+  "properties": {
+    "archive": { "$ref": "#/$defs/archive" },
+    "build": { "$ref": "#/$defs/build" },
+    "createdAt": { "$ref": "#/$defs/timestamp" },
+    "image": { "$ref": "#/$defs/image" },
+    "kind": { "const": "refunddesk.edge-operator-image" },
+    "platform": { "const": "linux/amd64" },
+    "revision": { "$ref": "#/$defs/revision" },
+    "schemaVersion": { "const": 1 },
+    "source": { "const": "https://github.com/selimhehe1/RefundDesk" },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["aws", "bash", "curl", "git", "jq", "node", "python3", "ssh"],
+      "properties": {
+        "aws": { "$ref": "#/$defs/tool" },
+        "bash": { "$ref": "#/$defs/tool" },
+        "curl": { "$ref": "#/$defs/tool" },
+        "git": { "$ref": "#/$defs/tool" },
+        "jq": { "$ref": "#/$defs/tool" },
+        "node": { "$ref": "#/$defs/tool" },
+        "python3": { "$ref": "#/$defs/tool" },
+        "ssh": { "$ref": "#/$defs/tool" }
+      }
+    }
+  },
+  "$defs": {
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "sha256", "sizeBytes"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^refunddesk-edge-operator-[0-9a-f]{40}\\.docker\\.tar\\.zst$",
+          "maxLength": 96
+        },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dockerfileIgnoreSha256",
+        "dockerfileSha256",
+        "entrypointSha256",
+        "nodeBaseDigest",
+        "snapshot"
+      ],
+      "properties": {
+        "dockerfileIgnoreSha256": { "$ref": "#/$defs/sha256" },
+        "dockerfileSha256": { "$ref": "#/$defs/sha256" },
+        "entrypointSha256": { "$ref": "#/$defs/sha256" },
+        "nodeBaseDigest": {
+          "const": "node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d"
+        },
+        "snapshot": { "const": "20260808T000000Z" }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configSha256", "id", "reference", "user"],
+      "properties": {
+        "configSha256": { "$ref": "#/$defs/sha256" },
+        "id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "reference": {
+          "type": "string",
+          "pattern": "^refunddesk-edge-operator:sandbox-[0-9a-f]{40}$"
+        },
+        "user": { "const": "10001:10001" }
+      }
+    },
+    "revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/(?:usr|bin)/[^\\r\\n]{1,255}$" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\r\\n]+$" }
+      }
+    }
+  }
+}

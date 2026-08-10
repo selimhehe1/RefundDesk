@@ -1,0 +1,792 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://refunddesk.invalid/schemas/refunddesk-lightsail-edge-window-v1.schema.json",
+  "title": "RefundDesk bounded CloudFront origin window evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "admission",
+    "code",
+    "completedAt",
+    "containment",
+    "counts",
+    "database",
+    "diagnostics",
+    "exitCode",
+    "expectedRevision",
+    "firewall",
+    "interlocksAtCapture",
+    "kind",
+    "mutations",
+    "nonce",
+    "operationStartedAt",
+    "origin",
+    "prefixes",
+    "probes",
+    "provenance",
+    "redaction",
+    "result",
+    "schemaVersion",
+    "startedAt",
+    "topology",
+    "watchdog",
+    "window"
+  ],
+  "$defs": {
+    "boolean": { "type": "boolean" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableDigest": {
+      "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+    },
+    "nullableCount": {
+      "oneOf": [{ "$ref": "#/$defs/count" }, { "type": "null" }]
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "nullableTimestamp": {
+      "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeFinancialJobs",
+        "auditEvents",
+        "mutationReceipts",
+        "refundExecutionAttempts",
+        "refundExecutions",
+        "refundRequests",
+        "unreleasedPaymentGuards",
+        "webhookReceipts"
+      ],
+      "properties": {
+        "activeFinancialJobs": { "$ref": "#/$defs/count" },
+        "auditEvents": { "$ref": "#/$defs/count" },
+        "mutationReceipts": { "$ref": "#/$defs/count" },
+        "refundExecutionAttempts": { "$ref": "#/$defs/count" },
+        "refundExecutions": { "$ref": "#/$defs/count" },
+        "refundRequests": { "$ref": "#/$defs/count" },
+        "unreleasedPaymentGuards": { "$ref": "#/$defs/count" },
+        "webhookReceipts": { "$ref": "#/$defs/count" }
+      }
+    },
+    "databaseInvariantSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeWorkflows",
+        "liveInstallations",
+        "liveTenants",
+        "preparedTransactions",
+        "systemIdentifierSha256"
+      ],
+      "properties": {
+        "activeWorkflows": { "$ref": "#/$defs/nullableCount" },
+        "liveInstallations": { "$ref": "#/$defs/nullableCount" },
+        "liveTenants": { "$ref": "#/$defs/nullableCount" },
+        "preparedTransactions": { "$ref": "#/$defs/nullableCount" },
+        "systemIdentifierSha256": { "$ref": "#/$defs/nullableDigest" }
+      }
+    },
+    "sourceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headSha256", "indexSha256", "path", "sourceSha256"],
+      "properties": {
+        "headSha256": { "$ref": "#/$defs/digest" },
+        "indexSha256": { "$ref": "#/$defs/digest" },
+        "path": {
+          "type": "string",
+          "enum": [
+            ".dockerignore",
+            ".github/workflows/sandbox-images.yml",
+            "deploy/lightsail/Caddyfile.public",
+            "deploy/lightsail/compose.yml",
+            "deploy/lightsail/edge-operator.Dockerfile",
+            "deploy/lightsail/edge-operator.Dockerfile.dockerignore",
+            "deploy/lightsail/scripts/_common.sh",
+            "deploy/lightsail/scripts/observe-host-postflight.sh",
+            "deploy/lightsail/scripts/prove-bounded-edge-window.sh",
+            "deploy/lightsail/scripts/recover-quiesced-runtime.sh",
+            "deploy/lightsail/scripts/release.sh",
+            "deploy/lightsail/scripts/refunddesk-edge-operator.sh",
+            "deploy/lightsail/scripts/refunddesk-edge-window-watchdog.sh",
+            "deploy/lightsail/systemd/refunddesk-edge-window-watchdog.service",
+            "deploy/lightsail/systemd/refunddesk-edge-window-watchdog.timer",
+            "docs/adr/0037-bounded-cloudfront-origin-window.md",
+            "docs/schemas/refunddesk-edge-operator-image-v1.schema.json",
+            "docs/schemas/refunddesk-lightsail-contained-promotion-v1.schema.json",
+            "docs/schemas/refunddesk-lightsail-edge-window-v1.schema.json",
+            "docs/schemas/refunddesk-lightsail-incident-admission-v1.schema.json",
+            "docs/schemas/refunddesk-lightsail-postflight-v1.schema.json",
+            "scripts/check-sandbox-images-workflow.mjs",
+            "scripts/invoke-lightsail-edge-window.ps1",
+            "scripts/invoke-lightsail-postflight.ps1",
+            "scripts/submit-lightsail-edge-window-checkpoint.ps1",
+            "scripts/validate-edge-operator-image.mjs",
+            "scripts/validate-lightsail-contained-promotion.mjs",
+            "scripts/validate-lightsail-edge-window.mjs",
+            "scripts/validate-lightsail-incident-admission.mjs",
+            "scripts/validate-lightsail-postflight.mjs"
+          ]
+        },
+        "sourceSha256": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "refunddesk.lightsail.edge-window" },
+    "nonce": { "$ref": "#/$defs/digest" },
+    "expectedRevision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "operationStartedAt": { "$ref": "#/$defs/timestamp" },
+    "startedAt": { "$ref": "#/$defs/timestamp" },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "closedAt",
+        "deadlineAt",
+        "durationSeconds",
+        "openedAt",
+        "retryAuthorized",
+        "state"
+      ],
+      "properties": {
+        "closedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "deadlineAt": { "$ref": "#/$defs/timestamp" },
+        "durationSeconds": { "type": "integer", "minimum": 60, "maximum": 300 },
+        "openedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "retryAuthorized": { "const": false },
+        "state": {
+          "type": "string",
+          "enum": [
+            "prepared",
+            "origin_bound",
+            "watchdog_armed",
+            "ingress_open",
+            "functional_gate_passed",
+            "ingress_closed",
+            "contained_verified",
+            "complete",
+            "failed_closed"
+          ]
+        }
+      }
+    },
+    "completedAt": { "$ref": "#/$defs/timestamp" },
+    "exitCode": { "type": "integer", "enum": [0, 20, 21] },
+    "result": { "type": "string", "enum": ["PASS", "FAIL", "INCOMPLETE"] },
+    "code": {
+      "type": "string",
+      "enum": [
+        "ADMISSION_EVIDENCE_INVALID",
+        "CLOSE_STATE_UNAVAILABLE",
+        "CONTROL_PLANE_UNAVAILABLE",
+        "DURABLE_COUNTS_CHANGED",
+        "FINAL_CONTAINMENT_FAILED",
+        "FIREWALL_CLOSE_AMBIGUOUS",
+        "FIREWALL_OPEN_INVALID",
+        "LOCAL_PROBE_FAILED",
+        "LOCK_UNAVAILABLE",
+        "ORIGIN_CONFIGURATION_AMBIGUOUS",
+        "ORIGIN_DEPLOYMENT_TIMEOUT",
+        "PASS_EDGE_WINDOW_RECONTAINED",
+        "PREFIX_DOCUMENT_INVALID",
+        "PREFIX_DOCUMENT_STALE",
+        "PUBLIC_HEALTH_FAILED",
+        "REMOTE_STATE_UNAVAILABLE",
+        "SOURCE_PROVENANCE_INVALID",
+        "TOOL_UNAVAILABLE",
+        "TOPOLOGY_BINDING_INVALID",
+        "WATCHDOG_ARM_FAILED",
+        "WORKBENCH_CHECKPOINT_INVALID",
+        "WORKBENCH_CHECKPOINT_TIMEOUT"
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "maxItems": 24,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,63}$" }
+    },
+    "interlocksAtCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizationMarkerState",
+        "holderActive",
+        "hostLeaseMarkerState",
+        "watchdogMarkerState"
+      ],
+      "properties": {
+        "authorizationMarkerState": {
+          "type": "string",
+          "enum": ["absent", "held", "complete"]
+        },
+        "holderActive": { "$ref": "#/$defs/boolean" },
+        "hostLeaseMarkerState": {
+          "type": "string",
+          "enum": ["absent", "held", "complete"]
+        },
+        "watchdogMarkerState": {
+          "type": "string",
+          "enum": ["absent", "armed", "complete"]
+        }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizationAccepted",
+        "authorizationEvidenceSha256",
+        "authorizationMaxWindowSeconds",
+        "authorizationValidFrom",
+        "authorizationValidUntil",
+        "authorizedAwsAccountIdSha256",
+        "authorizedAwsRegionSha256",
+        "authorizedDistributionIdSha256",
+        "authorizedInstanceNameSha256",
+        "authorizedOriginIdSha256",
+        "authorizedPublicBaseUrlSha256",
+        "authorizedSshCidrSha256",
+        "authorizedSshHostSha256",
+        "incidentAccepted",
+        "incidentCapturedAt",
+        "incidentEvidenceSha256",
+        "incidentRemainingSecondsAtStart",
+        "incidentValidUntil",
+        "postflightAccepted",
+        "postflightCapturedAt",
+        "postflightEvidenceSha256",
+        "postflightRemainingSecondsAtStart",
+        "postflightValidUntil",
+        "promotionAccepted",
+        "promotionCaddyContainerIdSha256",
+        "promotionDatabaseSystemIdentifierSha256",
+        "promotionEvidenceSha256",
+        "promotionPostgresContainerIdSha256",
+        "promotionVerifierContainerIdSha256",
+        "promotionWebContainerIdSha256",
+        "promotionWorkerContainerIdSha256",
+        "promotionWorkerRuntimeMode",
+        "promotionRevision"
+      ],
+      "properties": {
+        "authorizationAccepted": { "$ref": "#/$defs/boolean" },
+        "authorizationEvidenceSha256": { "$ref": "#/$defs/digest" },
+        "authorizationMaxWindowSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 300
+        },
+        "authorizationValidFrom": { "$ref": "#/$defs/timestamp" },
+        "authorizationValidUntil": { "$ref": "#/$defs/timestamp" },
+        "authorizedAwsAccountIdSha256": { "$ref": "#/$defs/digest" },
+        "authorizedAwsRegionSha256": { "$ref": "#/$defs/digest" },
+        "authorizedDistributionIdSha256": { "$ref": "#/$defs/digest" },
+        "authorizedInstanceNameSha256": { "$ref": "#/$defs/digest" },
+        "authorizedOriginIdSha256": { "$ref": "#/$defs/digest" },
+        "authorizedPublicBaseUrlSha256": { "$ref": "#/$defs/digest" },
+        "authorizedSshCidrSha256": { "$ref": "#/$defs/digest" },
+        "authorizedSshHostSha256": { "$ref": "#/$defs/digest" },
+        "incidentAccepted": { "$ref": "#/$defs/boolean" },
+        "incidentCapturedAt": {
+          "$ref": "#/$defs/timestamp",
+          "description": "ADR 0036 outer capture time; at or after postflightCapturedAt and at or before edge startedAt."
+        },
+        "incidentEvidenceSha256": { "$ref": "#/$defs/digest" },
+        "incidentRemainingSecondsAtStart": {
+          "type": "integer",
+          "minimum": 720,
+          "maximum": 900
+        },
+        "incidentValidUntil": { "$ref": "#/$defs/timestamp" },
+        "postflightAccepted": { "$ref": "#/$defs/boolean" },
+        "postflightCapturedAt": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Referenced final ADR 0034 capture time; at or before incidentCapturedAt."
+        },
+        "postflightEvidenceSha256": { "$ref": "#/$defs/digest" },
+        "postflightRemainingSecondsAtStart": {
+          "type": "integer",
+          "minimum": 720,
+          "maximum": 900
+        },
+        "postflightValidUntil": { "$ref": "#/$defs/timestamp" },
+        "promotionAccepted": { "$ref": "#/$defs/boolean" },
+        "promotionCaddyContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "promotionDatabaseSystemIdentifierSha256": { "$ref": "#/$defs/digest" },
+        "promotionEvidenceSha256": { "$ref": "#/$defs/digest" },
+        "promotionPostgresContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "promotionVerifierContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "promotionWebContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "promotionWorkerContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "promotionWorkerRuntimeMode": { "const": "incident_admission" },
+        "promotionRevision": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accountMatched",
+        "aliasMatched",
+        "awsAccountIdSha256",
+        "awsRegionSha256",
+        "distributionDeployed",
+        "distributionEnabled",
+        "finalCaddyContainerIdSha256",
+        "hostRevisionMatched",
+        "hostSourcesMatched",
+        "instanceMatched",
+        "instanceRunning",
+        "originDomainMatched",
+        "runtimeContainersMatched",
+        "sshCidrSha256",
+        "sshInstanceMatched"
+      ],
+      "properties": {
+        "accountMatched": { "$ref": "#/$defs/boolean" },
+        "aliasMatched": { "$ref": "#/$defs/boolean" },
+        "awsAccountIdSha256": { "$ref": "#/$defs/digest" },
+        "awsRegionSha256": { "$ref": "#/$defs/digest" },
+        "distributionDeployed": { "$ref": "#/$defs/boolean" },
+        "distributionEnabled": { "$ref": "#/$defs/boolean" },
+        "finalCaddyContainerIdSha256": { "$ref": "#/$defs/digest" },
+        "hostRevisionMatched": { "$ref": "#/$defs/boolean" },
+        "hostSourcesMatched": { "$ref": "#/$defs/boolean" },
+        "instanceMatched": { "$ref": "#/$defs/boolean" },
+        "instanceRunning": { "$ref": "#/$defs/boolean" },
+        "originDomainMatched": { "$ref": "#/$defs/boolean" },
+        "runtimeContainersMatched": { "$ref": "#/$defs/boolean" },
+        "sshCidrSha256": { "$ref": "#/$defs/digest" },
+        "sshInstanceMatched": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bound",
+        "boundDeployed",
+        "distributionIdSha256",
+        "etagBindMatched",
+        "etagUnbindMatched",
+        "headerName",
+        "headerRemoved",
+        "originIdSha256",
+        "originMatched",
+        "secretMaterialEmitted",
+        "tokenFileRemoved",
+        "tokenGenerated",
+        "tokenLengthBytes",
+        "tokenMatched",
+        "tokenWrittenRootOnly",
+        "unboundDeployed",
+        "updateAttempts"
+      ],
+      "properties": {
+        "bound": { "$ref": "#/$defs/boolean" },
+        "boundDeployed": { "$ref": "#/$defs/boolean" },
+        "distributionIdSha256": { "$ref": "#/$defs/digest" },
+        "etagBindMatched": { "$ref": "#/$defs/boolean" },
+        "etagUnbindMatched": { "$ref": "#/$defs/boolean" },
+        "headerName": { "const": "X-RefundDesk-Origin-Token" },
+        "headerRemoved": { "$ref": "#/$defs/boolean" },
+        "originIdSha256": { "$ref": "#/$defs/digest" },
+        "originMatched": { "$ref": "#/$defs/boolean" },
+        "secretMaterialEmitted": { "$ref": "#/$defs/boolean" },
+        "tokenFileRemoved": { "$ref": "#/$defs/boolean" },
+        "tokenGenerated": { "$ref": "#/$defs/boolean" },
+        "tokenLengthBytes": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "tokenMatched": { "$ref": "#/$defs/boolean" },
+        "tokenWrittenRootOnly": { "$ref": "#/$defs/boolean" },
+        "unboundDeployed": { "$ref": "#/$defs/boolean" },
+        "updateAttempts": { "$ref": "#/$defs/count" }
+      }
+    },
+    "prefixes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowlistSha256",
+        "canonical",
+        "createDate",
+        "documentSha256",
+        "exactService",
+        "fetchedAt",
+        "firewallMatched",
+        "fresh",
+        "ipv4Count",
+        "ipv6Count",
+        "service",
+        "source",
+        "syncToken"
+      ],
+      "properties": {
+        "allowlistSha256": { "$ref": "#/$defs/digest" },
+        "canonical": { "$ref": "#/$defs/boolean" },
+        "createDate": { "$ref": "#/$defs/timestamp" },
+        "documentSha256": { "$ref": "#/$defs/digest" },
+        "exactService": { "$ref": "#/$defs/boolean" },
+        "fetchedAt": { "$ref": "#/$defs/timestamp" },
+        "firewallMatched": { "$ref": "#/$defs/boolean" },
+        "fresh": { "$ref": "#/$defs/boolean" },
+        "ipv4Count": { "$ref": "#/$defs/count" },
+        "ipv6Count": { "$ref": "#/$defs/count" },
+        "service": { "const": "CLOUDFRONT_ORIGIN_FACING" },
+        "source": { "const": "AWS_PUBLIC_IP_RANGES" },
+        "syncToken": { "type": "string", "pattern": "^[0-9]{1,20}$" }
+      }
+    },
+    "firewall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "afterSha256",
+        "beforeSha256",
+        "closeAmbiguous",
+        "closeAttemptedFirst",
+        "closeObserved",
+        "exactPrefixSet",
+        "finalClosed",
+        "openObserved",
+        "openedSha256",
+        "port80Closed",
+        "sshUnchanged",
+        "tcp443Only",
+        "udpClosed",
+        "wildcardAbsent"
+      ],
+      "properties": {
+        "afterSha256": { "$ref": "#/$defs/digest" },
+        "beforeSha256": { "$ref": "#/$defs/digest" },
+        "closeAmbiguous": { "$ref": "#/$defs/boolean" },
+        "closeAttemptedFirst": { "$ref": "#/$defs/boolean" },
+        "closeObserved": { "$ref": "#/$defs/boolean" },
+        "exactPrefixSet": { "$ref": "#/$defs/boolean" },
+        "finalClosed": { "$ref": "#/$defs/boolean" },
+        "openObserved": { "$ref": "#/$defs/boolean" },
+        "openedSha256": { "$ref": "#/$defs/nullableDigest" },
+        "port80Closed": { "$ref": "#/$defs/boolean" },
+        "sshUnchanged": { "$ref": "#/$defs/boolean" },
+        "tcp443Only": { "$ref": "#/$defs/boolean" },
+        "udpClosed": { "$ref": "#/$defs/boolean" },
+        "wildcardAbsent": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "watchdog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeBeforeIngress",
+        "armedAt",
+        "armedBeforeIngress",
+        "armedBoottimeMilliseconds",
+        "bootIdSha256",
+        "caddyFenced",
+        "closedBoottimeMilliseconds",
+        "deadlineAt",
+        "deadlineBoottimeMilliseconds",
+        "disarmed",
+        "failSafeContained",
+        "maintenanceStopped",
+        "markerComplete",
+        "monotonicBounded",
+        "monotonicDurationMilliseconds",
+        "publicListenersClosed",
+        "timer",
+        "triggered",
+        "unit",
+        "workerFenced"
+      ],
+      "properties": {
+        "activeBeforeIngress": { "$ref": "#/$defs/boolean" },
+        "armedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "armedBeforeIngress": { "$ref": "#/$defs/boolean" },
+        "armedBoottimeMilliseconds": { "$ref": "#/$defs/nullableCount" },
+        "bootIdSha256": { "$ref": "#/$defs/nullableDigest" },
+        "caddyFenced": { "$ref": "#/$defs/boolean" },
+        "closedBoottimeMilliseconds": { "$ref": "#/$defs/nullableCount" },
+        "deadlineAt": { "$ref": "#/$defs/timestamp" },
+        "deadlineBoottimeMilliseconds": { "$ref": "#/$defs/nullableCount" },
+        "disarmed": { "$ref": "#/$defs/boolean" },
+        "failSafeContained": { "$ref": "#/$defs/boolean" },
+        "maintenanceStopped": { "$ref": "#/$defs/boolean" },
+        "markerComplete": { "$ref": "#/$defs/boolean" },
+        "monotonicBounded": { "$ref": "#/$defs/boolean" },
+        "monotonicDurationMilliseconds": { "$ref": "#/$defs/nullableCount" },
+        "publicListenersClosed": { "$ref": "#/$defs/boolean" },
+        "timer": { "const": "refunddesk-edge-window-watchdog.timer" },
+        "triggered": { "$ref": "#/$defs/boolean" },
+        "unit": { "const": "refunddesk-edge-window-watchdog.service" },
+        "workerFenced": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finalPostflight", "localCaddy", "publicHealth", "workbench"],
+      "properties": {
+        "finalPostflight": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "capturedAt",
+            "contained",
+            "evidenceSha256",
+            "officialValidator",
+            "revisionMatches",
+            "validationSha256",
+            "validUntil"
+          ],
+          "properties": {
+            "capturedAt": { "$ref": "#/$defs/nullableTimestamp" },
+            "contained": { "$ref": "#/$defs/boolean" },
+            "evidenceSha256": { "$ref": "#/$defs/digest" },
+            "officialValidator": { "$ref": "#/$defs/boolean" },
+            "revisionMatches": { "$ref": "#/$defs/boolean" },
+            "validationSha256": { "$ref": "#/$defs/digest" },
+            "validUntil": { "$ref": "#/$defs/nullableTimestamp" }
+          }
+        },
+        "localCaddy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backendStripStatus",
+            "correctTokenStatus",
+            "missingTokenStatus",
+            "tokenStripped",
+            "wrongTokenStatus"
+          ],
+          "properties": {
+            "backendStripStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+            "correctTokenStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+            "missingTokenStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+            "tokenStripped": { "$ref": "#/$defs/boolean" },
+            "wrongTokenStatus": { "type": "integer", "minimum": 0, "maximum": 599 }
+          }
+        },
+        "publicHealth": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cloudFrontObserved", "noStore", "revisionMatches", "status"],
+          "properties": {
+            "cloudFrontObserved": { "$ref": "#/$defs/boolean" },
+            "noStore": { "$ref": "#/$defs/boolean" },
+            "revisionMatches": { "$ref": "#/$defs/boolean" },
+            "status": { "type": "integer", "minimum": 0, "maximum": 599 }
+          }
+        },
+        "workbench": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attestationSha256",
+            "capturedAt",
+            "cliUsed",
+            "createNewObserved",
+            "createdAfterOpen",
+            "createdBeforeDeadline",
+            "duplicate",
+            "eventFingerprintSha256",
+            "httpStatus",
+            "nonceMatches",
+            "revisionMatches",
+            "source"
+          ],
+          "properties": {
+            "attestationSha256": { "$ref": "#/$defs/nullableDigest" },
+            "capturedAt": { "$ref": "#/$defs/nullableTimestamp" },
+            "cliUsed": { "$ref": "#/$defs/boolean" },
+            "createNewObserved": { "$ref": "#/$defs/boolean" },
+            "createdAfterOpen": { "$ref": "#/$defs/boolean" },
+            "createdBeforeDeadline": { "$ref": "#/$defs/boolean" },
+            "duplicate": { "$ref": "#/$defs/boolean" },
+            "eventFingerprintSha256": { "$ref": "#/$defs/digest" },
+            "httpStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+            "nonceMatches": { "$ref": "#/$defs/boolean" },
+            "revisionMatches": { "$ref": "#/$defs/boolean" },
+            "source": { "const": "OPERATOR_WORKBENCH" }
+          }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["after", "before", "during", "quiescent", "unchanged"],
+      "properties": {
+        "after": { "$ref": "#/$defs/snapshot" },
+        "before": { "$ref": "#/$defs/snapshot" },
+        "during": { "$ref": "#/$defs/snapshot" },
+        "quiescent": { "$ref": "#/$defs/boolean" },
+        "unchanged": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["after", "before", "during", "quiescent", "stable"],
+      "properties": {
+        "after": { "$ref": "#/$defs/databaseInvariantSnapshot" },
+        "before": { "$ref": "#/$defs/databaseInvariantSnapshot" },
+        "during": { "$ref": "#/$defs/databaseInvariantSnapshot" },
+        "quiescent": { "$ref": "#/$defs/boolean" },
+        "stable": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "awsIngressClosed",
+        "caddyStopped",
+        "coreHealthy",
+        "finalPostflightContained",
+        "finalPostflightPass",
+        "financialQuiescent",
+        "financialStable",
+        "liveDisabled",
+        "maintenanceStopped",
+        "markerComplete",
+        "originHeaderRemoved",
+        "publicListenersClosed",
+        "tokenRemoved",
+        "watchdogDisarmed",
+        "workerStopped"
+      ],
+      "properties": {
+        "awsIngressClosed": { "$ref": "#/$defs/boolean" },
+        "caddyStopped": { "$ref": "#/$defs/boolean" },
+        "coreHealthy": { "$ref": "#/$defs/boolean" },
+        "finalPostflightContained": { "$ref": "#/$defs/boolean" },
+        "finalPostflightPass": { "$ref": "#/$defs/boolean" },
+        "financialQuiescent": { "$ref": "#/$defs/boolean" },
+        "financialStable": { "$ref": "#/$defs/boolean" },
+        "liveDisabled": { "$ref": "#/$defs/boolean" },
+        "maintenanceStopped": { "$ref": "#/$defs/boolean" },
+        "markerComplete": { "$ref": "#/$defs/boolean" },
+        "originHeaderRemoved": { "$ref": "#/$defs/boolean" },
+        "publicListenersClosed": { "$ref": "#/$defs/boolean" },
+        "tokenRemoved": { "$ref": "#/$defs/boolean" },
+        "watchdogDisarmed": { "$ref": "#/$defs/boolean" },
+        "workerStopped": { "$ref": "#/$defs/boolean" }
+      }
+    },
+    "mutations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caddyStarts",
+        "containersRestartFenced",
+        "containersStopped",
+        "firewallCloses",
+        "firewallOpens",
+        "markerTransitions",
+        "originUpdates",
+        "unitsStopRequested",
+        "watchdogArms"
+      ],
+      "properties": {
+        "caddyStarts": { "$ref": "#/$defs/count" },
+        "containersRestartFenced": { "$ref": "#/$defs/count" },
+        "containersStopped": { "$ref": "#/$defs/count" },
+        "firewallCloses": { "$ref": "#/$defs/count" },
+        "firewallOpens": { "$ref": "#/$defs/count" },
+        "markerTransitions": { "$ref": "#/$defs/count" },
+        "originUpdates": { "$ref": "#/$defs/count" },
+        "unitsStopRequested": { "$ref": "#/$defs/count" },
+        "watchdogArms": { "$ref": "#/$defs/count" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixtureOnly",
+        "operationRemainingSecondsAtRunnerStart",
+        "operatorBootIdentifierSha256",
+        "operatorControlCalculatedMonotonicMilliseconds",
+        "operatorDeadlineMonotonicMilliseconds",
+        "operatorLockHeld",
+        "operatorStartedMonotonicMilliseconds",
+        "repositoryHead",
+        "repositoryIndexSha256",
+        "runnerBootIdentifierSha256",
+        "runnerDeadlineBoottimeMilliseconds",
+        "runnerStartedBoottimeMilliseconds",
+        "sourceBundleSha256",
+        "sources",
+        "sourcesExact",
+        "transportInputsSha256",
+        "transportInputsPinned",
+        "toolImageIdSha256",
+        "workflowRunId",
+        "workflowRunObservationSha256"
+      ],
+      "properties": {
+        "fixtureOnly": { "$ref": "#/$defs/boolean" },
+        "operationRemainingSecondsAtRunnerStart": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1860
+        },
+        "operatorBootIdentifierSha256": { "$ref": "#/$defs/digest" },
+        "operatorControlCalculatedMonotonicMilliseconds": { "$ref": "#/$defs/count" },
+        "operatorDeadlineMonotonicMilliseconds": { "$ref": "#/$defs/count" },
+        "operatorLockHeld": { "$ref": "#/$defs/boolean" },
+        "operatorStartedMonotonicMilliseconds": { "$ref": "#/$defs/count" },
+        "repositoryHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "repositoryIndexSha256": { "$ref": "#/$defs/digest" },
+        "runnerBootIdentifierSha256": { "$ref": "#/$defs/digest" },
+        "runnerDeadlineBoottimeMilliseconds": { "$ref": "#/$defs/count" },
+        "runnerStartedBoottimeMilliseconds": { "$ref": "#/$defs/count" },
+        "sourceBundleSha256": { "$ref": "#/$defs/digest" },
+        "sources": {
+          "type": "array",
+          "minItems": 30,
+          "maxItems": 30,
+          "items": { "$ref": "#/$defs/sourceRecord" }
+        },
+        "sourcesExact": { "$ref": "#/$defs/boolean" },
+        "transportInputsSha256": { "$ref": "#/$defs/digest" },
+        "transportInputsPinned": { "$ref": "#/$defs/boolean" },
+        "toolImageIdSha256": { "$ref": "#/$defs/digest" },
+        "workflowRunId": { "type": "integer", "minimum": 1 },
+        "workflowRunObservationSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arbitraryPathPresent",
+        "customerDataPresent",
+        "ipAddressPresent",
+        "keyDigestPresent",
+        "rawApiKeyPresent",
+        "rawPayloadPresent",
+        "rawSecretPresent",
+        "rawSignaturePresent",
+        "stderrPresent",
+        "stripeIdentifierPresent"
+      ],
+      "properties": {
+        "arbitraryPathPresent": { "const": false },
+        "customerDataPresent": { "const": false },
+        "ipAddressPresent": { "const": false },
+        "keyDigestPresent": { "const": false },
+        "rawApiKeyPresent": { "const": false },
+        "rawPayloadPresent": { "const": false },
+        "rawSecretPresent": { "const": false },
+        "rawSignaturePresent": { "const": false },
+        "stderrPresent": { "const": false },
+        "stripeIdentifierPresent": { "const": false }
+      }
+    }
+  }
+}

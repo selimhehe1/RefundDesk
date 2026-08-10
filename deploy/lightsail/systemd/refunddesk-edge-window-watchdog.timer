@@ -1,0 +1,14 @@
+[Unit]
+Description=Check the RefundDesk bounded edge-window deadline
+Documentation=https://github.com/selimhehe1/RefundDesk/blob/main/docs/adr/0037-bounded-cloudfront-origin-window.md
+
+[Timer]
+OnBootSec=1s
+OnUnitActiveSec=1s
+AccuracySec=1ms
+RandomizedDelaySec=0
+Persistent=false
+Unit=refunddesk-edge-window-watchdog.service
+
+[Install]
+WantedBy=timers.target

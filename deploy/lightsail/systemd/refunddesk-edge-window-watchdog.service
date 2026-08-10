@@ -1,0 +1,46 @@
+[Unit]
+Description=RefundDesk bounded edge-window fail-safe containment
+Documentation=https://github.com/selimhehe1/RefundDesk/blob/main/docs/adr/0037-bounded-cloudfront-origin-window.md
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=PATH=/usr/bin:/bin
+Environment=DOCKER_HOST=unix:///run/docker.sock
+Environment=DOCKER_CONFIG=/run/refunddesk/edge-window-watchdog-docker-config
+UnsetEnvironment=DOCKER_CONTEXT DOCKER_CERT_PATH DOCKER_TLS_VERIFY DOCKER_TLS
+ExecSearchPath=/usr/bin:/bin
+ExecStart=/usr/local/libexec/refunddesk-edge-window-watchdog.sh
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/refunddesk/control /run/refunddesk -/run/docker.sock
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# The script's declared sequential worst case is below 160 seconds, including
+# every TERM-ignoring child reaching its explicit KILL deadline, five fixed
+# unit paths, one globally bounded release/fence bulk stop, two aggregate
+# container groups and all final listener/state checks. No Docker ordering is
+# declared: this fail-safe must run even while docker.service is activating,
+# stopping or failed.
+TimeoutStartSec=180s
+
+[Install]
+WantedBy=multi-user.target
