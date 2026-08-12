@@ -948,7 +948,14 @@ foreach ($contract in @(
     Assert-Contains $wrapper ([string] $contract[0]) ([string] $contract[1])
 }
 Assert-Contract (-not $wrapper.Contains('target=/workspace,readonly')) "the caller repository must never be mounted into the network-enabled operator"
-Assert-Contract (([regex]::Matches($wrapper, 'Assert-RunnerContainerContract \$(?:container|cleanupInspect\[0\])')).Count -eq 2) "normal and cleanup containers must both use the shared exact predicate"
+# Name the two sites this contract exists to protect instead of counting loose
+# matches. The count could not express the intent: `\$container` prefix-matches
+# `$containers[0]`, so the regex found three occurrences against a fixed two,
+# while the wrapper legitimately calls the shared predicate at five sites
+# (normal, cleanup, attempt and two recovery paths). Adding a sixth call would
+# have failed a contract whose own message asks only that both of these use it.
+Assert-Contract ($wrapper -match 'Assert-RunnerContainerContract \$container ') "the normal container must use the shared exact predicate"
+Assert-Contract ($wrapper -match 'Assert-RunnerContainerContract \$cleanupInspect\[0\] ') "the cleanup container must use the shared exact predicate"
 Assert-Contract (([regex]::Matches($wrapper, 'Assert-RunnerContainerContract \$existingContainer\[0\]')).Count -eq 2) "both recovery paths must reapply the shared exact container predicate"
 Assert-Contract (-not $wrapper.Contains('"container", "kill", "--signal", "KILL", $Name')) "the wrapper must never KILL a runner before exact AWS-close evidence"
 Assert-Contract (-not $wrapper.Contains('"container", "kill", "--signal", "TERM", $cleanupName')) "the wrapper must never signal a running cleanup helper before exact AWS-close evidence"
