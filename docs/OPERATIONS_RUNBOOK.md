@@ -277,8 +277,9 @@ reopening decision.
 
 > **The ADR 0037 implementation is not frozen.** Measured on 10 August 2026 as an unprivileged user
 > on a native Linux filesystem, the edge contract returns 229 of 229 passing, zero skipped, up from
-> 160 before four defects were repaired. The production-path PowerShell contract still does not
-> terminate on the Windows workstation, so no hash is frozen. **Do not follow the procedure below**;
+> 160 before four defects were repaired. The production-path PowerShell contract terminates in
+> 27.1 minutes and fails one source-level assertion, so no hash is frozen. It prints nothing at any
+> point, so treat silence as normal and never bound it under 30 minutes. **Do not follow the procedure below**;
 > running it would consume operator inputs and a bounded public window against a wrapper whose own
 > Windows contract has never completed once.
 >

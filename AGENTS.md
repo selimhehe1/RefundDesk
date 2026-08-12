@@ -176,8 +176,11 @@ window.
 
 That implementation is not yet frozen. On 10 August 2026 the Linux edge contract returns **229 of
 229 passing**, zero skipped, measured as an unprivileged user on a native Linux filesystem, up from
-160 before four defects were repaired. The production-path PowerShell contract still does not
-terminate on the Windows workstation, so the freeze remains blocked on that gate alone. The dominant defect was a deadline comparison written inside a jq pipe,
+160 before four defects were repaired. The production-path PowerShell contract does terminate, in
+27.1 minutes on the Windows workstation; an earlier claim that it did not was wrong, and came from
+imposing a 25-minute bound on a suite that contains no output statement at all, so silence is its
+normal state. Any bound must exceed 30 minutes. One source-level assertion in it still fails and
+the freeze remains blocked on that. The dominant defect was a deadline comparison written inside a jq pipe,
 where `.` is the number being tested, so `. >= .runnerStartedBoottimeMilliseconds` asked jq to index
 a number with a string; the resulting error failed the whole journal-restore predicate and made every
 replay return `INCOMPLETE`. Moving it to the top level recovered 68 scenarios at once, which is why

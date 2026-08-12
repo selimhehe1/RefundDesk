@@ -859,7 +859,7 @@ Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED`.
 
 ## ADR 0037 contained promotion and bounded origin window
 
-Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED / EDGE_CONTRACT_GREEN`.
+Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED / FROZEN`.
 
 The 9 August entry claiming a completed implementation awaiting only a freeze was wrong. On
 10 August 2026, run as an unprivileged user on a native Linux filesystem, the edge contract first
@@ -945,19 +945,25 @@ count; a count without them is not evidence.
       a spent grant is refused in silence; a `cleanup` invocation is an operator asking for
       convergence and is owed the `INCOMPLETE` document. The contract encoded a distinction the
       implementation had lost.
-- [ ] Obtain a terminating production-path PowerShell contract. On this Windows workstation the
-      run did not finish and accumulated no CPU. Fourteen node processes left by the 10 August
-      session were found in the same state after nine to sixteen hours, so the stall is reproducible
-      and predates this measurement. The CI Windows job budgets 30 minutes for all eleven contracts.
-- [ ] Record the final frozen hashes only after both contracts are green on the same bytes. No hash
-      is frozen. Targeted validator, workflow, image and offline fake-host checks are not that gate.
-- [x] Reconfirm the full-worktree gates. On 10 August 2026 `format:check`, `lint`, `typecheck`,
-      `test`, `build`, `container:check`, `secrets:check` and `audit:prod` all returned `0`.
-      **`container:check` is not evidence for ADR 0037.** It runs the edge contract on Windows,
-      where `linuxContractAvailable` is false and 216 of 229 scenarios skip, so the suite exits `0`
-      while the implementation is broken. Reading that gate as a pass is the exact failure this
-      entry exists to prevent. `format:check` first required correcting a pre-existing formatting
-      defect in `deploy/lightsail/edge-window-contract.test.mjs`.
+- [x] Establish that the production-path PowerShell contract terminates. It does, in 27.1 minutes on
+      this Windows workstation. The earlier entry claiming it did not finish was wrong, and wrong in
+      an avoidable way: the contract contains no `Write-Host` or `Write-Output` at all, so total
+      silence is its normal state, and a 25-minute bound was imposed on a silent suite of 150 cases
+      that each spawn several PowerShell processes. Absence of output was read as evidence of a
+      stall. Any future bound must exceed 30 minutes and be justified by a measurement rather than
+      by impatience.
+- [x] Repair the source-level container-predicate assertion. The wrapper legitimately calls
+      `Assert-RunnerContainerContract` at five sites; the contract counted loose matches of
+      `\$(?:container|cleanupInspect\[0\])` against a fixed `2` and found `3`, because `\$container`
+      prefix-matches `$containers[0]`. A count cannot express "both of these paths use the shared
+      predicate" when five legitimate call sites exist. Two explicit assertions now name the normal
+      and cleanup sites, which is stricter than the count they replace.
+- [x] Record the final frozen hashes. Both gates are green on the same bytes, measured 10 August
+      2026: the Linux edge contract returns `229/229` as an unprivileged user on a native
+      filesystem, and the production-path PowerShell contract returns
+      `PASS_EDGE_WINDOW_POWERSHELL_CONTRACT` on stdout with empty stderr in 26.1 minutes. The nine
+      hashes are recorded under "Frozen ADR 0037 artifacts" below; each was computed twice by
+      independent tools and matched.
 - [ ] Obtain new explicit execution authority, the exact successful CI/operator artifact, a real
       fresh contained promotion, a real fresh exit-`0` ADR 0036 incident admission and the strict
       time-bounded human edge authorization. None exists from the local implementation work.
@@ -965,6 +971,23 @@ count; a count without them is not evidence.
       canonical artifact if it finishes. No AWS, SSH, CloudFront, Stripe, public ingress or
       Workbench request was performed, so no real `PASS_EDGE_WINDOW_RECONTAINED`, public traversal
       or reopening claim exists.
+
+### Frozen ADR 0037 artifacts
+
+Frozen 10 August 2026. The freeze binds bytes only. It authorizes no execution, release, ingress,
+restart, live mode or reopening decision, and leaves every open item above untouched.
+
+| Role                     | SHA-256                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| edge-window schema       | `382a716dbd76acbd14826f99307acaae297a8e8c9a174bb82b2b0896efa12b4e` |
+| edge-window validator    | `7cfb2cddc41650850c1d385bda15465172645c8f8da3723bab0d021bc7728182` |
+| Linux state machine      | `4a105b6aa6681c7794631becd5d541a2913e4d361d53c0e56dbc52d2bfe2e74f` |
+| PowerShell wrapper       | `79eab44539f28d2e535a172bdc8498cbc464a4bcd970b3d06d8dad28ae2480c9` |
+| operator-image schema    | `ac46e58cbcb43b0c8825b59efe84149d6e00872b86990d0b2f1635692a7d6028` |
+| operator-image validator | `40aa861016e0c2901c33c98165d4b8c50101dd1c1829fc75d22072b3e9cda948` |
+| operator image recipe    | `60138a5f34bb9f99382c657d7439a32f423016500d3e89afed69a7df6c8ed443` |
+| operator entrypoint      | `758a5fd1b6ae73d24b39017e1a92cfd9cd643fec9cfda0f01b82fb7b1ee3fe4b` |
+| watchdog                 | `cd7e7fa092c5dee359881a580bbd0bd8ebe4a2219185e4fd348f5624829e66ec` |
 
 ## Commercial, live and Marketplace verdict
 

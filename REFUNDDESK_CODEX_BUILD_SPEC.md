@@ -903,7 +903,7 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
 - L'implémentation est **incomplète**, contrairement à ce que laissait entendre le § 18.3. Le contrat
   edge Linux rend **`229/229`** réussis, zéro ignoré, mesuré sous Node 24.18.0 en conteneur Linux, en
   utilisateur non privilégié sur un système de fichiers natif, contre `160/229` avant réparation.
-  Aucun hash n'est figé : le contrat PowerShell du chemin production ne termine toujours pas.
+  Aucun hash n'est figé tant que le contrat PowerShell du chemin production n'est pas vert.
 - Les 69 échecs initiaux avaient **une cause dominante unique**, et non les cinq que suggérait leur
   distribution d'erreurs. Dans le prédicat de restauration du journal, la comparaison d'ordre était
   écrite à l'intérieur d'un pipe jq, où `.` désigne le nombre testé : demander
@@ -941,7 +941,18 @@ La construction d’une v1 complète n’est autorisée qu’après un pilote s�
 - Les contrats ADR 0036 et ADR 0037 n'ont **jamais tourné en intégration continue** : leurs entrées
   sont des ajouts à `container:check` dans un `package.json` non committé, donc absentes des runs
   antérieurs.
-- Le contrat PowerShell chemin production ne termine pas sur le poste Windows et n'y consomme aucun
+- Le contrat PowerShell chemin production **termine** en 27,1 minutes sur le poste Windows. L'entrée
+  antérieure affirmant le contraire était fausse : ce contrat ne contient **aucune** instruction
+  d'affichage, donc le silence total est son état normal, et un délai de 25 minutes avait été imposé
+  à une suite muette de 150 cas lançant chacun plusieurs processus PowerShell. Une absence de sortie
+  avait été lue comme une preuve de blocage. Toute borne future doit dépasser 30 minutes et se
+  fonder sur une mesure.
+- Reste un échec réel, au niveau du source : le contrat comptait les correspondances de
+  `\$(?:container|cleanupInspect\[0\])` contre un `2` fixe et en trouvait `3`, parce que
+  `\$container` préfixe-matche `$containers[0]`, alors que le wrapper appelle légitimement le
+  prédicat partagé sur cinq sites. Le compteur est remplacé par deux assertions nommant
+  explicitement le site normal et le site de nettoyage.
+- Ancienne observation devenue caduque : le contrat n'y consomme aucun
   CPU. Des processus laissés par la session du 10 août ont été observés dans le même état après neuf
   à seize heures, ce qui rend le blocage reproductible et antérieur à cette mesure.
 - Les huit gates full-worktree — `format:check`, `lint`, `typecheck`, `test`, `build`,
