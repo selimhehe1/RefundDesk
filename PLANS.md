@@ -989,6 +989,36 @@ restart, live mode or reopening decision, and leaves every open item above untou
 | operator entrypoint      | `758a5fd1b6ae73d24b39017e1a92cfd9cd643fec9cfda0f01b82fb7b1ee3fe4b` |
 | watchdog                 | `cd7e7fa092c5dee359881a580bbd0bd8ebe4a2219185e4fd348f5624829e66ec` |
 
+## ADR 0020 platform access probe
+
+Status: `IMPLEMENTED_LOCAL_ONLY / NOT_EXECUTED`.
+
+ADR 0020 section 2b makes the `platform` authentication model provisional and forbids building a
+registry, an OAuth flow or a per-account webhook destination until a specific test returns. That
+test waited on the exact-e4 rotation, which completed on 3 August 2026, and was never run. It is the
+single blocker on every multi-account decision, and therefore on selling to anyone.
+
+- [x] Add the probe as `apps/platform/test/sandbox/platform-access.test.ts`, reusing the existing
+      sandbox harness: consent flag, long timeouts and the redacted-evidence convention. It refuses,
+      before any network call, a restricted key, a live key, a malformed account id and a malformed
+      PaymentIntent id. Two offline refusals are asserted and pass; the network case is skipped
+      without consent.
+- [x] Scope the probe honestly. It emits `PASS_PLATFORM_ACCESS_AUTHENTICATION`, deliberately not the
+      `PASS_PLATFORM_ACCESS` that ADR 0020 section 2b defines, because that gate also requires the
+      refund to travel the normal distinct-requester/approver workflow. This probe exercises the four
+      declared permissions directly and settles authentication only. Do not cite it for the ADR gate.
+- [x] Bound the effect. One refund of one minor unit, under an idempotency key derived from the exact
+      account and PaymentIntent, so a rerun can never create a second refund. Identifiers are emitted
+      as SHA-256 digests; no credential value can reach the artifact.
+- [ ] Run it. It needs the publisher's platform secret key and a test account that has installed the
+      App, both of which only the owner can supply. A restricted key is refused by design: accepting
+      one would reproduce ADR 0012's failure and prove nothing about the platform model.
+- [ ] Decide the account model on the result. `PASS` selects `platform`, which stores no merchant
+      credential and therefore needs no registry and no per-account rotation. `FAIL` selects the
+      `oauth` fallback with a token store respecting ADR 0010's separation. The multi-merchant webhook
+      shape is deferred to the same result, with one rule already unconditional: the account derives
+      from the route or the verified delivery, never from the body.
+
 ## Commercial, live and Marketplace verdict
 
 Status: `NO_GO`.

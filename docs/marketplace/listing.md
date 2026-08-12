@@ -17,8 +17,8 @@ stated rather than hidden.
 | Compatible with            | Payments, Customers                                                             |
 | Countries of establishment | _(pending)_                                                                     |
 | Supported languages        | English                                                                         |
-| Pricing                    | _(pending decision: Free / Free trial / Paid subscription)_                     |
-| Pricing page               | _(required only if paid)_                                                       |
+| Pricing                    | Free                                                                            |
+| Pricing page               | Not required: free apps do not need one                                         |
 | Privacy policy             | See `privacy-policy.md`; needs a public URL before submission                   |
 | Terms of service           | _(optional)_                                                                    |
 | Support channel            | _(pending: address plus a stated response time, e.g. "within 2 business days")_ |
@@ -90,10 +90,16 @@ That last sentence is the honest form of the value proposition. Stripe's `View O
 role that permits support work also permits refunds, and roles are additive rather than
 subtractive.
 
+## Why free for the first submission
+
+Free removes the entire billing surface from the first review: no pricing page, and no subscription
+flow that must route users through our own site before Stripe Checkout. The spec defers Billing,
+trials and quotas outright, so none of it exists. Paid can be added later on an app that is already
+approved, and a second submission is faster than a first.
+
 ## Open before submission
 
 - Legal entity name, countries of establishment, support channel and response time.
-- Pricing model, and a pricing page if paid.
 - A public privacy policy URL.
 - A 300x300 square logo matching `apps/stripe-app/assets/icon.png`.
 - Three key-feature images at 1600px or wider, with synthetic data only.

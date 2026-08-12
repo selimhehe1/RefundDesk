@@ -40,6 +40,19 @@ the direct-account pilot credentials during earlier work.
 
 Publishing means arbitrary accounts install the app on day one. The pilot is bound to one.
 
+ADR 0020 section 2b defines the test that settles this and forbids building a registry, an OAuth
+flow or a per-account webhook destination until it returns. It waited on the exact-e4 rotation,
+which completed on 3 August, and was never run. That test now exists as
+`apps/platform/test/sandbox/platform-access.test.ts`: it needs the publisher's platform secret key
+and a test account that has installed the app, refuses a restricted or live key before any network
+call, and settles the authentication half of the question. It is the single cheapest unblocker on
+this page.
+
+## Not blocking, because the first submission is free
+
+Billing, a pricing page and the subscription flow are out of scope for a free listing. The spec
+defers them and none exists; adding them later, to an already approved app, is the cheaper order.
+
 ## Blocking, business and legal
 
 None of these exist:
@@ -49,8 +62,7 @@ None of these exist:
 - a public privacy policy URL — a draft is in `privacy-policy.md`, with every undecided commitment
   marked pending rather than invented;
 - a support channel with a stated response time;
-- a legal entity name and country of establishment;
-- a pricing decision, and a pricing page if paid.
+- a legal entity name and country of establishment.
 
 ## Blocking, listing assets
 
