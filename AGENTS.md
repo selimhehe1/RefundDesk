@@ -2,6 +2,30 @@
 
 Read `REFUNDDESK_CODEX_BUILD_SPEC.md` before changing product behavior. Read the relevant ADR and runbook before changing a financial boundary.
 
+## The AWS infrastructure no longer exists
+
+On 13 August 2026, by explicit owner decision to stop all spending, every AWS resource was
+permanently deleted: the Lightsail instance `refunddesk-sandbox-paris`, its attached static IP, the
+versioned backup bucket, the SSH key pair, and CloudFront distribution `E3OSH9E8AJPRNH`. Verified
+afterwards across `eu-west-3`, `eu-west-1` and `us-east-1`: zero instances, buckets, static IPs,
+disks, snapshots and distributions.
+
+Consequences, because most of this guide and the runbook were written while that host was alive:
+
+- **No host operation is possible.** SSH, postflight, release, containment reconciliation and the
+  bounded edge window all target something that is gone. `deploy/lightsail/` and every
+  `pnpm sandbox:*` script aim at nothing.
+- The runbook and ADR 0029 through 0037 remain valid as **design**, never as state. Read them for
+  what was decided, never as a description of what is running.
+- `apps/stripe-app/stripe-app.json` still declares the origin `d2xv7szimbgban.cloudfront.net`. That
+  domain no longer resolves. It was deliberately left rather than replaced with a plausible but
+  equally dead URL. Resuming the project requires new hosting **and** a new manifest.
+- The redacted evidence under `sandbox-evidence.local/` is local, intact, and remains the only
+  record of what was actually proven. Never delete it.
+
+Nothing irreplaceable was lost. The deleted backups held synthetic test data only; the deployed
+revision rebuilds from git; the ADR 0037 artifacts are frozen and recorded in `PLANS.md`.
+
 ## Scope
 
 - Phase 0 passed with `34/34` real Stripe cases; mocks never contributed to that verdict.

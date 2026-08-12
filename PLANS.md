@@ -1019,6 +1019,37 @@ single blocker on every multi-account decision, and therefore on selling to anyo
       shape is deferred to the same result, with one rule already unconditional: the account derives
       from the route or the verified delivery, never from the body.
 
+## AWS infrastructure decommissioned
+
+Status: `DELETED`.
+
+On 13 August 2026 the owner decided to stop all spending on this project and authorised deletion.
+Every AWS resource was removed permanently: the Lightsail instance `refunddesk-sandbox-paris`, its
+attached static IP, the versioned backup bucket, the SSH key pair and CloudFront distribution
+`E3OSH9E8AJPRNH`. CloudFront was disabled first and deleted once it returned to `Deployed`, since it
+refuses deletion while enabled.
+
+Verified after the fact across `eu-west-3`, `eu-west-1` and `us-east-1`: zero instances, buckets,
+static IPs, disks, snapshots and distributions. A detached static IP is billed even with no instance
+attached, so its release was checked explicitly rather than assumed.
+
+The decision was taken on a corrected premise. The owner believed the sandbox cost about EUR 10 per
+month; Cost Explorer showed Amazon Lightsail at **0** for the current month and fractions of a cent
+for the three before, because the instance was still inside the Lightsail free window. Deleting
+therefore saved nothing immediately and prevented a bill from roughly late October. That was put to
+the owner before anything was destroyed, and the decision was reaffirmed.
+
+Nothing irreplaceable was lost:
+
+- the deleted backups held synthetic test data only;
+- the deployed revision rebuilds from git;
+- the redacted evidence under `sandbox-evidence.local/` is local and untouched;
+- the ADR 0037 artifacts are frozen and their hashes are recorded above.
+
+Every operational gate in this ledger that depends on a running host is now unreachable without new
+hosting. The gates themselves are unchanged; what changed is that no host exists to run them
+against.
+
 ## Commercial, live and Marketplace verdict
 
 Status: `NO_GO`.

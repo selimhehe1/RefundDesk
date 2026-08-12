@@ -24,3 +24,9 @@ packages/db/src/generated/
 stripe-fixtures.local.json
 phase-0-evidence.local/
 sandbox-evidence.local/
+
+# Rotation candidates and any other local secret material. These have always
+# lived under sandbox-evidence.local/, so they were only ever protected by that
+# directory being ignored. Cover the name itself, so one created anywhere else
+# cannot be committed by accident.
+*.secret.local
